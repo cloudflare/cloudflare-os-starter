@@ -1,0 +1,23 @@
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_fde7acb5f26430::t_d8cd4f91dfb7f2 1-353
+.agents/skills/cloudflare-os-operator/references/troubleshooting.md
+  s_fde7acb5f26430::t_9d18e8f746edc4 1-246
+.agents/skills/cloudflare-os-operator/references/upgrade-and-rollback.md
+  s_fde7acb5f26430::t_f480de0acb03b3 1-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b8240cd8126139a52b090e4d50d6676ec8e5a4ef",
+  "prompts": {},
+  "sessions": {
+    "s_fde7acb5f26430": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_030e6d3dfffePzTsebVN18DwmO",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
