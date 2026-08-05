@@ -13,6 +13,12 @@
     "jsonc-parser": "^3.3.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10",
-    "wrangler": "^4.115.0"
+    "wrangler": "^4.115.0",
+    "alchemy": "2.0.0-beta.67",
+    "effect": "4.0.0-beta.103",
+    "@effect/platform-node": "4.0.0-beta.103",
+    "cloudflare-os": "workspace:*",
+    "custom-gatekeeper": "workspace:*",
+    "ws": "^8.20.0"
   }
 }
