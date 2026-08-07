@@ -344,7 +344,7 @@ async function readDeployment(path) {
 }
 
 function run(args, cwd = root, env = process.env) {
-  const result = spawnSync("pnpm", args, { cwd, env, stdio: "inherit" });
+  const result = spawnSync("pnpm", args, { cwd, env, stdio: "inherit", shell: process.platform === "win32" });
   if (result.error) throw result.error;
   if (result.status !== 0) {
     const where = relative(root, cwd) || ".";
