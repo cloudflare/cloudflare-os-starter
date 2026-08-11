@@ -24,7 +24,11 @@ const validConfig = {
     providers: ["anthropic", "cloudflare"],
     workersAi: { mode: "gateway", gateway: "cloudflare-os-workers-ai" },
   },
-  context: { sharingDomain: "production", kvNamespaceId: "context-kv-id" },
+  context: {
+    sharingDomain: "production",
+    kvNamespaceId: "context-kv-id",
+    artifacts: { enabled: true, namespace: "acme-context-collections" },
+  },
   customGatekeeper: { name: "Acme", message: "Use the company handbook." },
   errorReporting: { enabled: true, environment: "production", release: "abc123" },
   resources: {
@@ -98,6 +102,26 @@ test("rejects destructive or malformed deployment values", () => {
   const invalidTraceSampling = structuredClone(validConfig);
   invalidTraceSampling.observability.traces.headSamplingRate = 2;
   assert.throws(() => validateConfig(invalidTraceSampling), /sampling/i);
+
+  const stringArtifactsEnabled = structuredClone(validConfig);
+  stringArtifactsEnabled.context.artifacts.enabled = "true";
+  assert.throws(() => validateConfig(stringArtifactsEnabled), /Artifacts enabled.*boolean/i);
+
+  const nullArtifactsConfig = structuredClone(validConfig);
+  nullArtifactsConfig.context.artifacts = null;
+  assert.throws(() => validateConfig(nullArtifactsConfig), /Artifacts configuration.*object/i);
+
+  const arrayArtifactsConfig = structuredClone(validConfig);
+  arrayArtifactsConfig.context.artifacts = [];
+  assert.throws(() => validateConfig(arrayArtifactsConfig), /Artifacts configuration.*object/i);
+
+  const nullArtifactsNamespace = structuredClone(validConfig);
+  nullArtifactsNamespace.context.artifacts.namespace = null;
+  assert.throws(() => validateConfig(nullArtifactsNamespace), /namespace must be omitted/i);
+
+  const invalidArtifactsNamespace = structuredClone(validConfig);
+  invalidArtifactsNamespace.context.artifacts.namespace = "context/collections";
+  assert.throws(() => validateConfig(invalidArtifactsNamespace), /namespace must be omitted/i);
 });
 
 test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", async () => {
@@ -145,6 +169,10 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
   assert.equal(generated.workshop.r2_buckets[0].bucket_name, "cloudflare-os-blueprints");
   assert.equal(generated.context.name, "acme-cloudflare-os-context");
   assert.equal(generated.context.kv_namespaces[0].id, "context-kv-id");
+  assert.deepEqual(generated.context.artifacts, [{
+    binding: "ARTIFACTS",
+    namespace: "acme-context-collections",
+  }]);
   assert.equal(generated.customGatekeeper.name, "acme-cloudflare-os-custom");
   assert.deepEqual(generated.customGatekeeper.vars, {
     CUSTOM_NAME: "Acme",
@@ -205,6 +233,38 @@ test("ignores the gateway name in direct Workers AI mode", async () => {
 
   assert.equal(generated.workshop.vars.CF_AI_GATEWAY_WAI_DIRECT, "true");
   assert.equal(generated.workshop.vars.CF_AI_GATEWAY_WAI, undefined);
+});
+
+test("uses the default Context Artifacts namespace when omitted", async () => {
+  const config = structuredClone(validConfig);
+  delete config.context.artifacts.namespace;
+
+  const generated = generateConfigs(config, await baseConfigs());
+
+  assert.deepEqual(generated.context.artifacts, [{
+    binding: "ARTIFACTS",
+    namespace: "gatekeeper-context-collections",
+  }]);
+});
+
+test("omits disabled Context Artifacts configuration", async () => {
+  const config = structuredClone(validConfig);
+  config.context.artifacts = {};
+  const bases = await baseConfigs();
+  bases.context.artifacts = [{ binding: "ARTIFACTS", namespace: "upstream-default" }];
+
+  const generated = generateConfigs(config, bases);
+
+  assert.equal(generated.context.artifacts, undefined);
+});
+
+test("defaults Context Artifacts to disabled when configuration is omitted", async () => {
+  const config = structuredClone(validConfig);
+  delete config.context.artifacts;
+
+  const generated = generateConfigs(config, await baseConfigs());
+
+  assert.equal(generated.context.artifacts, undefined);
 });
 
 test("generates binding-only storage for automatic provisioning", async () => {

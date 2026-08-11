@@ -50,6 +50,14 @@
     // null: Wrangler provisions and remembers a KV namespace on first deploy.
     // string: bind an existing namespace by ID.
     "kvNamespaceId": null
+
+    // Optional Git-compatible storage for Context collections. To enable it, add a comma after
+    // kvNamespaceId and uncomment this object. Requires Artifacts account access.
+    // "artifacts": {
+    //   "enabled": true,
+    //   // Optional override; defaults to "gatekeeper-context-collections".
+    //   "namespace": "custom-context-collections"
+    // }
   },
 
   // Displayed to agents when the example custom integration is enabled in /admin.

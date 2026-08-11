@@ -30,7 +30,7 @@ The custom logo appears in the app chrome, sign-in screens, and browser tab on e
 | `workers.workshop.route` | Public Workshop address | `customDomain` for production or `workersDev: true` for evaluation |
 | `access` | Cloudflare Access trust and administrator list | Access team issuer, application audience, and verified email list |
 | `aiGateway` | Deployment-funded model catalog | Disabled, Workers AI direct, or provider traffic through AI Gateway |
-| `context` | Context sharing boundary and snapshot KV | A stable domain label; automatic or existing KV |
+| `context` | Context sharing boundary, snapshot KV, and optional Artifacts repositories | A stable domain label; automatic or existing KV; Git-backed collections disabled or enabled |
 | `customGatekeeper` | Example integration identity and guidance | Organization-specific display text |
 | `errorReporting` | Private explicit-issue destination | Console Reporter enabled state, environment, and release metadata |
 | `resources` | Blueprint/avatar KV and blueprint-content R2 | `null` to provision or explicit IDs/names to reuse |
@@ -85,7 +85,10 @@ Access policies decide who can sign in. The `admins` list decides which signed-i
 Wrangler supports [automatic provisioning](https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning) for KV and R2. Leave these values as `null` for a new deployment:
 
 ```jsonc
-"context": { "sharingDomain": "production", "kvNamespaceId": null },
+"context": {
+  "sharingDomain": "production",
+  "kvNamespaceId": null
+},
 "resources": {
   "blueprintsKvNamespaceId": null,
   "avatarsKvNamespaceId": null,
@@ -94,6 +97,25 @@ Wrangler supports [automatic provisioning](https://developers.cloudflare.com/wor
 ```
 
 Wrangler creates resources with the Worker name as a prefix and reconnects them on future deploys. To adopt existing data, replace the relevant `null` with a [KV namespace ID](https://developers.cloudflare.com/kv/reference/kv-commands/#kv-namespace) or [R2 bucket name](https://developers.cloudflare.com/r2/reference/wrangler-commands/#r2-bucket).
+
+### Context Artifacts
+
+The Context Gatekeeper can use [Artifacts](https://developers.cloudflare.com/artifacts/) as Git-compatible storage for Context collections. This is disabled when `enabled` is omitted or false and requires Artifacts access on the deployment account. Enable it without specifying a namespace to use `gatekeeper-context-collections`:
+
+```jsonc
+"artifacts": { "enabled": true }
+```
+
+To isolate repositories under another stable namespace, add the optional property:
+
+```jsonc
+"artifacts": {
+  "enabled": true,
+  "namespace": "acme-context-collections"
+}
+```
+
+Artifacts creates the namespace implicitly when the first repository is created. Keep the selected namespace stable: existing Git-backed collections refer to repositories in it. Disabling the binding later stops repository refresh and token management but does not delete repositories; the last synchronized Context content remains readable. Write tokens grant repository mutation authority, so protect them like other credentials and revoke them when no longer needed.
 
 ### AI models
 

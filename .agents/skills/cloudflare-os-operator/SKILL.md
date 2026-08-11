@@ -166,11 +166,11 @@ Ask once for any decisions not established by existing approved configuration:
 7. Custom Gatekeeper disabled, optional, or enabled, and whether its code still matches the low-stakes example.
 8. Rollback tolerance and the person authorized to approve production mutation.
 
-Default recommendations for a first evaluation are AI disabled, new storage, Error Reporter enabled and private, Custom Gatekeeper disabled until reviewed, narrow Access policy, and operators-only access until verification completes.
+Default recommendations for a first evaluation are AI disabled, Context Artifacts disabled, new storage, Error Reporter enabled and private, Custom Gatekeeper disabled until reviewed, narrow Access policy, and operators-only access until verification completes. Do not ask first-time operators about Context Artifacts; discuss it only when the existing configuration enables it or the operator explicitly requests Git-backed Context collections.
 
 ### 3. Prepare The Workspace
 
-Require Node.js major 24 and pnpm major 11 unless the current repository says otherwise. Confirm account access to every enabled product, including Workers, KV, R2, Browser Rendering, Dynamic Worker Loaders, and optional AI products.
+Require Node.js major 24 and pnpm major 11 unless the current repository says otherwise. Confirm account access to every enabled product, including Workers, KV, R2, Browser Rendering, Dynamic Worker Loaders, and optional AI or Artifacts products.
 
 Run the repository's documented setup commands. Stop if installation unexpectedly changes lockfiles, the submodule gitlink, or tracked files. Resolve provenance or version drift; do not normalize it away.
 
@@ -207,12 +207,15 @@ Edit only the annotated, non-secret control surface unless the requested feature
 - The Access issuer is an HTTPS origin without a path; the audience is exact and unpadded.
 - Administrator emails must match the verified identity representation expected by the current backend.
 - Keep `context.sharingDomain` stable unless intentionally creating a new data-isolation boundary.
+- Context Artifacts defaults to disabled when `enabled` is omitted; when enabled, keep its namespace stable. Omitting the namespace selects `gatekeeper-context-collections`, while `null` is invalid.
 - `customGatekeeper.message` is tracked and agent-readable. It is not a secret store.
 - Set release metadata only to a real deployment identifier; use `null` otherwise.
 
 Account IDs, administrator emails, hostnames, resource identifiers, and organization guidance are non-secret but potentially sensitive repository metadata. Confirm the repository audience before committing them.
 
 Choose storage separately for all four bindings. `null` requests Wrangler automatic provisioning. An explicit value adopts an existing resource and therefore requires proof of account ownership, data classification, compatibility, and backup status. Similar names are not proof.
+
+Context Artifacts is separate from those KV/R2 resources. Enabling it creates the namespace implicitly with the first repository. Disabling it later stops repository refresh and token management but does not delete repositories or cached Context content. Treat repository write tokens as credentials and record the namespace in the deployment inventory.
 
 After first production provisioning, inventory the actual resource identities. Consider pinning explicit IDs/names when reproducible binding is required. Treat Worker renames as migration work because they can create new service identities, provision empty resources, or orphan old mappings.
 
@@ -298,6 +301,7 @@ Success requires evidence for every applicable item:
 - Signup, connector, Context, and Gatekeeper policies match the approved decisions.
 - Context, Custom Gatekeeper, and Error Reporter have no unintended public routes.
 - Existing data remains visible; newly created data persists across a safe reload or redeploy test.
+- Context Artifacts is absent when disabled, or an approved Git-backed collection can be populated and refreshed in the intended stable namespace when enabled.
 - Each Workshop service binding targets the intended service, entrypoint, and props.
 - The Custom Gatekeeper is disabled or behaves according to its reviewed policy; approved reads appear as observations.
 - AI is intentionally disabled or one approved low-cost request proves the runtime path, with separate evidence for token scope, billing ownership, provider/Gateway selection, prompt collection, retention, and log access.
