@@ -20,6 +20,16 @@
 
 ## Four steps
 
+> [!TIP]
+> **Recommended: deploy with [alchemy](https://alchemy.run).** The root
+> [`alchemy.run.ts`](alchemy.run.ts) replaces `deployment.jsonc` + the deploy
+> script with one typed stack — the [`cloudflare-os` package](https://github.com/cloudflare/cloudflare-os/tree/main/packages/alchemy)
+> provisions every Worker, binding, build, and resource (including the AI
+> Gateway and its stored provider keys), and `pnpm exec alchemy destroy`
+> tears it all down. Edit the placeholders in `alchemy.run.ts`, then
+> `pnpm exec alchemy deploy`. The steps below describe the wrangler-based
+> flow.
+
 1. Install the dependencies and run `pnpm exec wrangler login`.
 2. Fill in `deployment.jsonc`: account ID, Worker names, hostname, Access audience, admin emails.
 3. Run `pnpm check`, then `pnpm deploy`.

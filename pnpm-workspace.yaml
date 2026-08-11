@@ -1,9 +1,9 @@
 packages:
-  - cloudflare-os/packages/workshop-shared
-  - cloudflare-os/packages/error-reporting
+  - cloudflare-os/packages/*
   - packages/*
 
 allowBuilds:
   esbuild: true
   sharp: true
   workerd: true
+  msgpackr-extract: false
