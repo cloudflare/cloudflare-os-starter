@@ -1,0 +1,114 @@
+packages/custom-gatekeeper/package.json
+  s_ea02e51719966b::t_fe72caa3be86da 9,13-14,17-22
+.agents/skills/cloudflare-os-operator/references/troubleshooting.md
+  s_62c8798dd5900e::t_f2600cb84404c5 31-32,34,70,72-75
+  s_468ba4f943f873::t_0882862c1a33d0 80-81,93,127-131,147-152,165-166,201-203,223
+scripts/tsconfig.json
+  s_ea02e51719966b::t_971a3c1d8a2f7b 1-24
+pnpm-workspace.yaml
+  s_468ba4f943f873::t_28f52ae5d29ef6 6-41,43-44,46
+.agents/skills/cloudflare-os-operator/references/upgrade-and-rollback.md
+  s_468ba4f943f873::t_88ee90720bc6bf 29,31,33-38
+README.md
+  s_468ba4f943f873::t_f16610b67506e3 13-15,42,47,49-51,65,74,80,85,96,104,109,130-133
+packages/custom-gatekeeper/vite.config.ts
+  s_ea02e51719966b::t_b66bf1ab199c4c 1-42
+scripts/deploy.ts
+  s_468ba4f943f873::t_7d96c16c4fa0c8 6-609,612-613,699
+  s_62c8798dd5900e::t_99984b390c8538 617-694,697,703-704
+  s_468ba4f943f873::t_db9fab4d00f0ba 614-616
+  s_468ba4f943f873::t_c908376294bdf7 610-611
+  s_62c8798dd5900e::t_3896c1bcc4d2a4 701
+scripts/deploy.test.ts
+  s_468ba4f943f873::t_2857300a2e35cf 5-417,420-432
+  s_62c8798dd5900e::t_6c117571d31def 418,434-525
+docs/assets/architecture.svg
+  s_5435a72d9df8cf::t_e91dc422cb66dd 3,11,28,47-113
+docs/customization.md
+  s_468ba4f943f873::t_0c56efd32bfb2f 33-34,44,46-56,59,62,65-66,69-70,81,89,103,115-120,142,148-149,153-163,165-169,172,175-177,185,207-210
+  s_62c8798dd5900e::t_fe82146f2a8dac 29,31
+deployment.jsonc
+  s_468ba4f943f873::t_cebe06e2c56eca 22,45-47,50-59,61-62
+  s_468ba4f943f873::t_a8fb35c272c98d 63
+  s_62c8798dd5900e::t_f28e62face97aa 6-12,16-19,26-28,36,68-69
+packages/error-reporter/vite.config.ts
+  s_ea02e51719966b::t_3fe01b99a500cb 1-28
+packages/custom-gatekeeper/tsconfig.json
+  s_468ba4f943f873::t_2c18818550c491 9-10
+vite.config.ts
+  s_ea02e51719966b::t_259afd62c94267 1-112
+docs/migrate-from-hosted.md
+  s_ea02e51719966b::t_4cf0c25073afae 167-169
+  s_ea02e51719966b::t_19a9f5ab51ab94 1-166
+  s_62c8798dd5900e::t_99671a939b8bff 170-189
+packages/custom-gatekeeper/README.md
+  s_468ba4f943f873::t_04015bdb5c2215 14
+scripts/deployment-config.ts
+  s_468ba4f943f873::t_88aac8eb5add51 1-192
+  s_62c8798dd5900e::t_9c00f713c047bb 193-205
+tsconfig.json
+  s_ea02e51719966b::t_fd7b71120d4cfe 1-26
+.gitattributes
+  s_ea02e51719966b::t_d844fb8325712d 1-4
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_62c8798dd5900e::t_3971d26dd10fd0 11,290,292,306-307,311,314,316-317
+  s_468ba4f943f873::t_9d392e1aa73865 18,24-25,32,99,137,140,162,164,166,171,175,185-186,196,198,210-211,214,227-231,233,235-238,240,242
+pnpm-lock.yaml
+  s_468ba4f943f873::t_1267164d66383f 7-34,40-44,49-56,58-59,64-65,67-68,73-74,76-77,80-81,89-90,92-93,96-97,99-100,102-103,105-106,108-109,111-112,121-122,124-125,127-128,130-131,135-149,163-164,170-171,176-189,194-195,200-213,218-219,224-231,584-587,591-874,1125-1137,1147-1148,1150-1154,1156-1160,1162-1166,1168-1172,1174-1178,1180-1184,1186-1306,1309-1553,1561-1562,1570-1571,1587-1590,1595-1597,1630-1632,1714-1717,1721-1726,1729-1732,1742-1771,1785-1788,1793-1799,1822-1825,1851-1854,1859-1862,1871-1875,1879-1880,1897,1919-1921,1924-1925,1927,1929,1932-1933,1937,1940,1955-1956,1979,1988,2021-2022,2026-2042,2046,2069-2074,2080-2091,2094,2098,2100,2102-2104,2106,2112-2114,2121-2127,2130,2133,2136,2139,2142-2151,2358-2501,2503-2504,2506-2507,2509,2512-2514,2570-2571,2654-2670,2680,2684-2772,2782,2788,2814-2935,2940,2943,2945,2957,2967-2968,2971-2972,3019-3020,3074-3075,3080-3092,3096-3097,3104-3105,3110-3167,3176-3177,3184-3191,3211,3281-3286,3304-3305,3308-3309,3315-3337,3340,3346,3355,3357,3359-3362,3364,3370-3374,3376-3383,3385-3398,3400-3426,3428,3431,3448,3451-3452,3463-3488,3490-3494,3496,3499,3502,3505,3507,3528-3559
+packages/error-reporter/tsconfig.json
+  s_468ba4f943f873::t_940ec98269746b 9-10
+package.json
+  s_468ba4f943f873::t_2eb56bc4f41d57 5-8,10-17,20-21,23-26
+packages/error-reporter/package.json
+  s_ea02e51719966b::t_a72667a9b0c95c 9,15-18
+cloudflare-os
+  s_31543a7f28315d::t_937ef1465cef97 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fd97f56a37e3ed81f538c0b6a5302af4274555fc",
+  "prompts": {},
+  "sessions": {
+    "s_31543a7f28315d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fe50f071cffeHrEicJmtYKKSDL",
+        "model": "gpt-5.6"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_468ba4f943f873": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "55112baf-aa26-452c-bd3a-11324d913307",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_5435a72d9df8cf": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fe50f5f08ffeqd3IHptYcQeLpV",
+        "model": "gpt-5.6"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_62c8798dd5900e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a7d02c1f-422c-4560-936c-d449dab85a65",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_ea02e51719966b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "69722b37-a87f-46c2-bee8-3c2a79849264",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
