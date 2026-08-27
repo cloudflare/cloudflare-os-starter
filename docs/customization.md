@@ -33,6 +33,7 @@ The custom logo appears in the app chrome, sign-in screens, and browser tab on e
 | `aiGateway` | Deployment-managed model catalog | Enabled by default over the Workers AI binding; which providers to advertise, and which gateway |
 | `context` | Context sharing boundary, snapshot KV, and optional Artifacts repositories | `null` to scope data to the public origin, or a pinned stable label; automatic or existing KV; Git-backed collections disabled or enabled |
 | `customGatekeeper` | Example integration identity and guidance | Organization-specific display text |
+| `googleSheetsGuard` | Optional P3 fixed-range Google Sheets facade | Disabled or enabled; credentials, spreadsheet ID, and range remain Worker secrets |
 | `errorReporting` | Private explicit-issue destination | Console Reporter enabled state, environment, and release metadata |
 | `resources` | Blueprint/avatar KV and blueprint-content R2 | `null` to provision or explicit IDs/names to reuse |
 | `observability` | Worker telemetry | Structured logs, invocation logs, traces, and sampling; see the [observability guide](observability.md) |
@@ -41,7 +42,7 @@ Secrets are never valid values in this file. Install them interactively with Wra
 
 ### Workers and routing
 
-The deployment is six Workers. Keep their names unique: service bindings use these names, so update and deploy them together.
+The default deployment is six Workers. Enabling `googleSheetsGuard` adds an optional seventh Worker. Keep active Worker names unique: service bindings use these names, so update and deploy them together.
 
 | Worker | Role |
 | --- | --- |
@@ -50,11 +51,12 @@ The deployment is six Workers. Keep their names unique: service bindings use the
 | `context` | The Context Gatekeeper. |
 | `scheduler` | The Scheduler Gatekeeper, which gives agents scheduled and recurring work. |
 | `customGatekeeper` | This repository's example integration. |
+| `googleSheetsGuard` | Optional wrapper-owned P3 facade for one fixed range in one synthetic Google Spreadsheet. |
 | `errorReporter` | The private explicit-issue destination. |
 
 Context and Scheduler are *ambient*: upstream's release marks both `PREINSTALL`, so the hosted flow installs them on every instance and this starter deploys them for the same reason. Neither takes configuration beyond its name — the Scheduler takes none at all.
 
-Only the router takes a route; the other five are reachable only over service bindings, and the deploy turns off `workers.dev` and [Preview URLs](https://developers.cloudflare.com/workers/configuration/previews/) on all six. That keeps the router the single Access-protected way in.
+Only the router takes a route; every other active Worker is reachable only over service bindings, and the deploy turns off `workers.dev` and [Preview URLs](https://developers.cloudflare.com/workers/configuration/previews/) on all of them. That keeps the router the single Access-protected way in.
 
 For production, set a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) on it:
 
@@ -199,6 +201,44 @@ The minimal example flow is:
 6. The Workshop service binding makes the vendor available to Cloudflare OS.
 
 Read the [package guide](../packages/custom-gatekeeper/README.md) and upstream [`write-gatekeeper` skill](https://github.com/cloudflare/cloudflare-os/blob/main/.agents/skills/write-gatekeeper/SKILL.md) before adding OAuth, URL-scoped resources, writes, simulations, hooks, configurator UI, or stricter observer verification.
+
+### P3 Google Sheets Guard
+
+`packages/google-sheets-guard` is disabled by default. When enabled, the deploy adds a private
+facade Worker bound as `GATEKEEPER_GOOGLE_SHEETS_GUARD`; the router maps that binding to
+`/gatekeeper/google-sheets-guard`, while Workshop uses the internal vendor ID
+`google_sheets_guard`.
+
+The facade inherits the pinned upstream Google OAuth and Sheets reader, but exposes only
+`readApprovedRange()`. Its spreadsheet ID and quoted-sheet bounded A1 range are required Worker
+secrets, and the range cannot exceed 1,000 cells. Arbitrary ranges, range batches, metadata
+discovery, writes, actions, and use as a Google sign-in provider fail closed. Cloudflare OS
+`ApprovalQueue` authorization runs before each agent-visible range read reaches the upstream API;
+upstream's post-read observation remains a second record. This is not an OM OS Canonical Runtime
+Authorization connection and does not grant OM OS Authority or Permission.
+
+The inherited OAuth flow still requests Google identity scopes plus `spreadsheets.readonly` and
+`drive.metadata.readonly`. That token is not Google-enforced to one spreadsheet. Enable P3 only
+with a dedicated Google account whose ACL exposes no personal or production content and only the
+approved synthetic spreadsheet.
+
+The inherited OAuth/identity flow and observer ACL verification remain control-plane operations
+and may contact Google without that per-range `ApprovalQueue` check. The pre-authorization claim
+is limited to `readApprovedRange()` data-plane calls.
+
+Enabling the package declares four required secrets without storing their values in Git:
+
+```jsonc
+"googleSheetsGuard": { "enabled": true }
+```
+
+- `CLIENT_ID`
+- `CLIENT_SECRET`
+- `P3_SPREADSHEET_ID`
+- `P3_ALLOWED_RANGE`, for example `'P3_READONLY'!A1:D20`
+
+OAuth client creation, secret installation, account connection, and the first runtime read remain
+separate Human Gates. See the [package boundary](../packages/google-sheets-guard/README.md).
 
 ## Code extensions
 

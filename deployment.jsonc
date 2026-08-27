@@ -33,6 +33,7 @@
     "scheduler": { "name": "<SCHEDULER_WORKER_NAME>" },
 
     "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
+    "googleSheetsGuard": { "name": "<GOOGLE_SHEETS_GUARD_WORKER_NAME>" },
     "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
   },
 
@@ -91,6 +92,13 @@
   "customGatekeeper": {
     "name": "<ORGANIZATION_DISPLAY_NAME>",
     "message": "<ORGANIZATION_GUIDANCE>"
+  },
+
+  // P3 is fail-closed by default. Enabling this adds a private Google Sheets facade Worker and
+  // declares four required Worker secrets. It does not create OAuth credentials or install them.
+  // The facade exposes one deployment-approved spreadsheet and one fixed A1 range only.
+  "googleSheetsGuard": {
+    "enabled": false
   },
 
   // Explicit backend issue reports go to a private Worker that emits structured console errors.
