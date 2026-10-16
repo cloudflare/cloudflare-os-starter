@@ -1,0 +1,35 @@
+.agents/skills/cloudflare-os-operator/references/troubleshooting.md
+  s_0531fbabd18fd0::t_19841ad530d1ec 215
+README.md
+  s_0531fbabd18fd0::t_f30c836d3b3f36 118
+packages/cfos/src/core/deployment.test.ts
+  s_0531fbabd18fd0::t_473056bed59e7c 10,327,365,628,650,658,664-677,684,695-719,721
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_0531fbabd18fd0::t_83b32aad03cbb4 294,296-298,300,308
+packages/cfos/src/commands/deploy.ts
+  s_0531fbabd18fd0::t_8321fc95d843cd 5,9-18,30,35,47,72-79,81,84-88,96-97,99,101-147,253-254,256
+packages/cfos/src/core/deployment.ts
+  s_0531fbabd18fd0::t_61f9b5c98e4502 3-5,611-613,626-628,630,637-640,642-645,647-649,652-654,659-664,666,668-673,676-680
+packages/cfos/package.json
+  s_0531fbabd18fd0::t_cf2d8bb4710c1d 3
+packages/cfos/src/run-tasks.ts
+  s_0531fbabd18fd0::t_e17b00b0f2b500 1-138
+packages/cfos/src/run-tasks.test.ts
+  s_0531fbabd18fd0::t_1f596fcd71e13c 1-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "32d24f1bc4f217f89cc4426056b5dac80deac292",
+  "prompts": {},
+  "sessions": {
+    "s_0531fbabd18fd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52e617e9-0fb5-404e-9df3-61dfd5384c98",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
