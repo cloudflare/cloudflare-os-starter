@@ -1,0 +1,23 @@
+packages/cfos/package.json
+  s_0531fbabd18fd0::t_0c6c307c0888cd 3
+packages/cfos/src/pnpm-command.ts
+  s_0531fbabd18fd0::t_dbf4eea4fc4c16 7-8,40-46,51-57
+packages/cfos/src/pnpm-command.test.ts
+  s_0531fbabd18fd0::t_b7538fb3747baa 38-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b1550a4bc34ac39f985231be40f8db4182ccb422",
+  "prompts": {},
+  "sessions": {
+    "s_0531fbabd18fd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52e617e9-0fb5-404e-9df3-61dfd5384c98",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
