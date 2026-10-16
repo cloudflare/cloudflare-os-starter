@@ -1,0 +1,21 @@
+packages/cfos/README.md
+  s_8fe4ce38d76cc5::t_402fe0c523cdc5 12
+packages/cfos/package.json
+  s_8fe4ce38d76cc5::t_9dbb318bcae3c0 5-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c495fd8b9449a9c43188106afc387e979b81fa01",
+  "prompts": {},
+  "sessions": {
+    "s_8fe4ce38d76cc5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "83870561-8063-4478-88f3-9e1ce3c14153",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
