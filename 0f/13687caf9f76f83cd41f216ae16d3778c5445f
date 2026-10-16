@@ -1,0 +1,39 @@
+docs/migrate-from-hosted.md
+  s_8fe4ce38d76cc5::t_197e7e573a8c06 55-56,60-61,75
+packages/cfos/src/commands/access.ts
+  s_8fe4ce38d76cc5::t_cbebe832c3891c 44
+packages/cfos/src/commands/deploy.ts
+  s_8fe4ce38d76cc5::t_33718f00b1c7a1 179
+packages/cfos/src/commands/import.ts
+  s_8fe4ce38d76cc5::t_7a5f5e76b10d42 37,120
+packages/cfos/src/commands/init.test.ts
+  s_8fe4ce38d76cc5::t_f0d46fef7f403c 139-141,166,174-176,190-195,219-221,226-227
+packages/cfos/src/commands/init.ts
+  s_8fe4ce38d76cc5::t_203ff30871a5f1 24-25,251-252,260-287,316-317,327-344,413-415
+packages/cfos/src/core/edits.ts
+  s_8fe4ce38d76cc5::t_1a84ff7eed6554 25-50
+packages/cfos/src/core/naming.test.ts
+  s_8fe4ce38d76cc5::t_e24c53d9b04772 3,44-58
+packages/cfos/src/core/wizard.test.ts
+  s_8fe4ce38d76cc5::t_54db7671ae7bd4 87,90,94-95,99
+packages/cfos/src/core/wizard.ts
+  s_8fe4ce38d76cc5::t_47c23ef9ffaa34 147,150-153,163-165
+packages/cfos/vite.config.ts
+  s_8fe4ce38d76cc5::t_73b30137bd6b47 17-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0f13687caf9f76f83cd41f216ae16d3778c5445f",
+  "prompts": {},
+  "sessions": {
+    "s_8fe4ce38d76cc5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "83870561-8063-4478-88f3-9e1ce3c14153",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
