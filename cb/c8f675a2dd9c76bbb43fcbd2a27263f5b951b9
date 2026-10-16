@@ -1,0 +1,43 @@
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_06682c84bddbb7::t_57d9c732551573 60,62
+README.md
+  s_06682c84bddbb7::t_24f60fd8458e13 24-26,65,68-71,74-76,79,82-83,86,103,118
+docs/migrate-from-hosted.md
+  s_06682c84bddbb7::t_cca86c7e7b6e6e 42-43,46,60-62
+packages/cfos/README.md
+  s_06682c84bddbb7::t_054f17a9416004 8,11,14,20,24
+packages/cfos/package.json
+  s_06682c84bddbb7::t_3a5fb62fae626d 3
+packages/cfos/src/commands/deploy.test.ts
+  s_06682c84bddbb7::t_a6d5080ba57b73 6-8,50-81
+packages/cfos/src/commands/deploy.ts
+  s_06682c84bddbb7::t_70fe9ab21dc799 33,35,177-189
+packages/cfos/src/commands/init.test.ts
+  s_06682c84bddbb7::t_5e3b4dbb658cf6 17-18,40-62,64-70,75-77,79-81,105,144,212,258,279-281,293,311-400
+packages/cfos/src/commands/init.ts
+  s_06682c84bddbb7::t_915167bb526275 8-11,50,62-79,368-397,400-412,431-432,472-486
+packages/cfos/src/commands/scaffold.test.ts
+  s_06682c84bddbb7::t_2fcdf492bb49a0 6,86-87,131-137,142-144,146-147,155-171,173-181,183-185,191
+packages/cfos/src/commands/scaffold.ts
+  s_06682c84bddbb7::t_5f700d1159626c 5-9,18,21,109-126,128-136,138-140,142-155,157-158,189,202-203,207
+packages/cfos/src/main.ts
+  s_06682c84bddbb7::t_f1db67371d9437 60
+packages/cfos/src/tools.ts
+  s_06682c84bddbb7::t_d8dde04b02d150 1-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cbc8f675a2dd9c76bbb43fcbd2a27263f5b951b9",
+  "prompts": {},
+  "sessions": {
+    "s_06682c84bddbb7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f964fd19-850b-4915-8cac-685cde8314fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
