@@ -1,0 +1,23 @@
+packages/cfos/package.json
+  s_06682c84bddbb7::t_74c293939af34a 3
+packages/cfos/src/commands/scaffold.test.ts
+  s_06682c84bddbb7::t_e4110c19a5b285 155-156,169,177,186,189-190,196,199
+packages/cfos/src/commands/scaffold.ts
+  s_06682c84bddbb7::t_7eb1331e1244c0 128-132,140,142,145-149,154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9de3a0100af221f18ead3bcb3955dc1f04219080",
+  "prompts": {},
+  "sessions": {
+    "s_06682c84bddbb7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f964fd19-850b-4915-8cac-685cde8314fa",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
