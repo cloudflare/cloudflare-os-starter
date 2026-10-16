@@ -1,0 +1,27 @@
+package.json
+  s_0531fbabd18fd0::t_9719a9b2fa4774 13-14
+packages/cfos/package.json
+  s_0531fbabd18fd0::t_6bca1cdb632c49 3
+packages/cfos/src/commands/deploy.test.ts
+  s_0531fbabd18fd0::t_f1bb20f2c0981b 76
+packages/cfos/src/commands/install.test.ts
+  s_0531fbabd18fd0::t_a8989cf031a014 75-86
+packages/cfos/src/main.test.ts
+  s_0531fbabd18fd0::t_5f0d334c0f85cd 166-168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cfdc254db64a36f04bc0fac9bd1b9232becf67ea",
+  "prompts": {},
+  "sessions": {
+    "s_0531fbabd18fd0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52e617e9-0fb5-404e-9df3-61dfd5384c98",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
