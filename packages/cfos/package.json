@@ -1,0 +1,36 @@
+{
+  "name": "cfos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scaffold, configure and deploy a self-hosted Cloudflare OS.",
+  "type": "module",
+  "engines": {
+    "node": ">=24.19.0"
+  },
+  "bin": {
+    "cfos": "./src/main.ts"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "bin": {
+      "cfos": "./dist/main.js"
+    }
+  },
+  "scripts": {
+    "pack:build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm run pack:build"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "cf": "1.0.0-beta.17",
+    "jsonc-parser": "^3.3.1"
+  },
+  "devDependencies": {
+    "@gadgets/scripts": "link:../../cloudflare-os/scripts",
+    "@types/node": "26.1.0",
+    "typescript": "catalog:"
+  }
+}

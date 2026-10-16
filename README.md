@@ -21,9 +21,9 @@
 
 ## Four steps
 
-1. Install the dependencies and run `pnpm exec wrangler login`.
-2. Fill in `deployment.jsonc`: account ID, Worker names, hostname, Access audience, admin emails.
-3. Run `pnpm check`, then `pnpm deploy`.
+1. Create the project: `npx cfos init my-os`. It clones this starter, installs, and offers the Wrangler and `cf` sign-ins. In a clone you already have, run `pnpm install` instead.
+2. Configure it: `pnpm cfos init` asks for the Worker names, hostname, admin emails and AI Gateway, with defaults read from your account, sets up the Access application, and writes `deployment.jsonc`. The first step runs it for you.
+3. Run `pnpm cfos check`, then `pnpm cfos deploy`.
 4. Open `/admin` and set the site name, logo, and accent color; branding needs no redeploy.
 
 [Deploy](#deploy) and [Customization](#customization) expand each step. Everything else on this page is optional reading.
@@ -46,7 +46,7 @@ This repository adds deployment controls around a pinned [Cloudflare OS](https:/
 
 <img src="docs/assets/architecture.svg" alt="Cloudflare OS deployment architecture: users reach one public route, owned by the router Worker, which serves the frontend and proxies /api to the Workshop backend and /gatekeeper/&lt;name&gt; to the matching Gatekeeper. Behind it is the pinned Cloudflare OS release, holding the Workshop kernel, Gadgets, Blueprints, and the default Gatekeepers. Service bindings connect it to the Workers and resources this repository owns: AI Gateway with no API token, custom Gatekeepers, the Error Reporter, and KV and R2 storage.">
 
-The deployment is six Workers. A **router** owns the public route and serves the frontend, proxying `/api` to the Workshop backend and `/gatekeeper/<name>` to whichever Gatekeeper the binding name matches; the Workshop, the Context, Scheduler and custom Gatekeepers, and the Error Reporter sit behind it with no route of their own, reachable only over service bindings.
+The deployment is seven Workers. A **router** owns the public route and serves the frontend, proxying `/api` to the Workshop backend and `/gatekeeper/<name>` to whichever Gatekeeper the binding name matches; the Workshop, the Context, Scheduler, Web Search and custom Gatekeepers, and the Error Reporter sit behind it with no route of their own, reachable only over service bindings.
 
 The deploy command derives temporary Wrangler files from upstream base configs, builds the frontend in Cloudflare Access mode, deploys the private Error Reporter, the Gatekeepers and the Workshop before the router that binds them, and removes generated files even on failure. Secrets never enter tracked configuration.
 
@@ -62,14 +62,28 @@ Anything past that needs your own code or settings, which is what this repositor
 
 ### 1. Prepare the workspace
 
-Install [Node.js 24.19 or newer](https://nodejs.org/) (the deploy scripts are TypeScript run directly by `node`), [pnpm 11.17](https://pnpm.io/installation), and authenticate [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/#login):
+Install [Node.js 24.19 or newer](https://nodejs.org/) (the `cfos` CLI is TypeScript run directly by `node`) and [pnpm 11.17](https://pnpm.io/installation) (`corepack enable` provides it). Then create the project:
 
 ```sh
-git submodule update --init
-pnpm install
-pnpm --dir cloudflare-os install
-pnpm exec wrangler login
+npx cfos init my-os
 ```
+
+That clones this starter with its history and its `cloudflare-os` submodule, renames the `origin` remote to `starter` (so `git pull starter main` brings in starter updates), runs `pnpm install`, offers both sign-ins, and starts the configuration in step 2. `--template <url|path>` and `--ref <branch>` clone a fork or a branch instead. The same by hand:
+
+```sh
+git clone --recurse-submodules https://github.com/cloudflare/cloudflare-os-starter my-os
+cd my-os
+git remote rename origin starter
+pnpm install
+pnpm exec wrangler login
+pnpm exec cf auth login
+```
+
+`pnpm install` installs the submodule's own workspace too, from a `postinstall` hook. If you install with `--ignore-scripts`, run `pnpm cfos install` afterwards; `pnpm cfos check` says so if you forget.
+
+Two sign-ins, because two tools talk to Cloudflare. [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/#login) deploys the Workers. The `cf` CLI looks things up and sets up Access: `pnpm cfos init` reads your zones, AI Gateways, email and workers.dev subdomain through it to offer defaults, `pnpm cfos access` and `pnpm cfos import` run on it, and `pnpm cfos check` uses it to confirm the Access application and storage IDs in `deployment.jsonc` exist in the account. `cf` is optional. Without it, `init` asks you to type those values, `check` skips the account checks with a one-line notice, and you do the Access steps below by hand. Instead of logging in, you can set `CLOUDFLARE_API_TOKEN` to a token with Access: Apps and Policies Edit, plus Read on Workers Scripts, Workers KV Storage, Workers R2 Storage, AI Gateway, Zone and DNS.
+
+[`packages/cfos`](packages/cfos/README.md) lists every `cfos` command and flag. `pnpm check` and `pnpm deploy` still work as aliases.
 
 Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](https://developers.cloudflare.com/kv/), [R2](https://developers.cloudflare.com/r2/), [Browser Rendering](https://developers.cloudflare.com/browser-rendering/), and [Dynamic Worker Loaders](https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/). It also needs [Workers AI](https://developers.cloudflare.com/workers-ai/) and [AI Gateway](https://developers.cloudflare.com/ai-gateway/), which the default model catalog runs on; only turning that catalog off makes them dispensable. [Artifacts](https://developers.cloudflare.com/artifacts/) is optional.
 
@@ -77,19 +91,29 @@ Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](h
 
 Cloudflare OS supports several sign-in methods. This starter deploys [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) mode, which verifies identity before a request reaches the Worker. See [Sign-in methods](docs/customization.md#sign-in-methods) for the alternatives and what switching involves.
 
-1. Choose a public hostname in an [active Cloudflare zone](https://developers.cloudflare.com/dns/zone-setups/), such as `os.example.com`.
-2. Create a [self-hosted Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) for that hostname.
-3. Copy its [application audience tag](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/#get-your-aud-tag).
-4. Open [`deployment.jsonc`](deployment.jsonc) and replace the active placeholders. Every control is annotated in place.
+Run `pnpm cfos init` and choose **A new deployment**. It asks, with defaults:
+
+1. A base name. The seven Worker names derive from it the way the hosted deploy names them (`<name>-backend`, `<name>-gk-context`, ...), and it stops if any of them is already taken in the account.
+2. Where people reach it: a hostname in one of your [active zones](https://developers.cloudflare.com/dns/zone-setups/), `os.<zone>` by default, or a `workers.dev` evaluation address. It warns if the hostname already has a DNS record, which would block the custom domain.
+3. The admin emails, defaulting to the one `cf` is signed in as, then the AI Gateway and model providers, then the example custom Gatekeeper's text.
+4. Access. It reuses the [self-hosted Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) that already covers the hostname, or offers to create one that admits exactly the admins. If the Zero Trust organization has no identity provider, nobody could sign in, so it offers to add a One-time PIN provider.
+
+It writes every answer into `deployment.jsonc` in place, comments intact (`--out <path>` writes a copy instead). Storage, error reporting and observability keep the template's defaults. Every control is annotated in the file, so editing it by hand afterwards is fine.
+
+Without a terminal, or to do it by hand, fill in [`deployment.jsonc`](deployment.jsonc)'s placeholders except `access.issuer` and `access.audience`, then run `pnpm cfos access`. It finds or creates the application the same way and writes the team's issuer and the application's audience into the file. Add `--dry-run` first to see the request without sending it. To admit more people than the admins (an email domain, an identity-provider group), widen the application's policy in the Zero Trust dashboard afterwards.
+
+The account needs a [Zero Trust organization](https://developers.cloudflare.com/cloudflare-one/setup/), and both `init` and `pnpm cfos access` stop with a link if there isn't one. To do it by hand instead, create the application yourself, copy its [audience tag](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/#get-your-aud-tag) into `access.audience`, and set `access.issuer` to `https://<team>.cloudflareaccess.com`.
 
 The hostname belongs to the router, the only Worker here with a public route. Wrangler creates its DNS and TLS at deploy time. For an evaluation without a zone, switch the annotated route to `{ "workersDev": true }` and set `publicBaseUrl` to the resulting origin.
 
 ### 3. Validate and deploy
 
 ```sh
-pnpm check
-pnpm deploy
+pnpm cfos check
+pnpm cfos deploy
 ```
+
+Both validate `deployment.jsonc`, then confirm with `cf` that the account has the Access application, team domain, and any KV namespace, R2 bucket or AI Gateway it names. A mismatch stops them before anything builds. `check` then builds everything and dry-runs every deploy; `deploy` deploys for real, without asking for confirmation. Run on the unconfigured template at a terminal, either offers to start `pnpm cfos init` instead of failing.
 
 With resource values left as `null`, Wrangler creates the three KV namespaces and R2 bucket automatically and reconnects them on later deploys. Set explicit IDs or a bucket name when the deployment must reuse existing resources.
 
@@ -102,12 +126,13 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 ### 4. Verify the deployment
 
 - Open the router's hostname and confirm Access signs in with the expected identity, and that it is the only public route into the deployment.
-- Open `/admin`, confirm the email is an administrator, and set Context, Scheduler and Custom Gatekeepers to disabled, optional, or enabled.
+- Open `/admin`, confirm the email is an administrator, and set Context, Scheduler, Web Search and Custom Gatekeepers to disabled, optional, or enabled.
 - If Context Artifacts is enabled, create a Git-backed collection and confirm its repository can be populated and refreshed.
 - Enable the Custom Gatekeeper, ask for deployment information, and confirm its read appears as an observation.
 - Open the Error Reporter Worker's [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) and verify its structured `error_report` query surface.
 - Ask an agent to schedule something a few minutes out, and confirm it runs — that exercises the Scheduler Gatekeeper end to end.
-- Review logs for the router, Workshop, Context, Scheduler, custom Gatekeeper, and Error Reporter Workers.
+- Ask an agent to search the web for something recent, and confirm it returns results. That exercises the Web Search Gatekeeper and the account's `default` AI Gateway it searches through.
+- Review logs for the router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, and Error Reporter Workers.
 
 ## Customization
 
@@ -131,4 +156,4 @@ The complete control reference and recipes live in [Customization](docs/customiz
 
 ### Moving here from the hosted deploy (os.cloudflare.app/deploy)
 
-Ejecting an instance created by the hosted flow means redeploying over Workers that already hold your data. Worker names, storage IDs, the public URL, and AI Gateway all have to be carried across by hand, and each one fails quietly if it is not: the deploy succeeds against empty storage. [Migrating from the hosted deploy](docs/migrate-from-hosted.md) is the checklist.
+Ejecting an instance created by the hosted flow means redeploying over Workers that already hold your data. Worker names, storage IDs, the public URL, AI Gateway and the Access application all have to be carried across, and each one fails quietly if it is not: the deploy succeeds against empty storage. `pnpm cfos init`'s **Take over a hosted instance** finds them in your account, asks for the few values the hosted deploy never had, and fills them into `deployment.jsonc`; `pnpm cfos check` then confirms they exist. `pnpm cfos import` is the same lookup on its own, read-only and scriptable. [Migrating from the hosted deploy](docs/migrate-from-hosted.md) explains each value and what is left to do by hand.

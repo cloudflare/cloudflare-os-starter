@@ -8,8 +8,10 @@ export class ErrorReporter extends WorkerEntrypoint<unknown, ErrorReporterProps>
   }
 }
 
-// Keep ES Module worker format; this worker is used over RPC, not HTTP. An empty default export
-// deploys as a script with no registered event handlers and the API rejects it.
+/**
+ * Keeps the ES Module worker format; this worker is used over RPC, not HTTP. An empty default
+ * export deploys as a script with no registered event handlers and the API rejects it.
+ */
 export default {
   async fetch(): Promise<Response> {
     return new Response("Error Reporter worker is running.", {

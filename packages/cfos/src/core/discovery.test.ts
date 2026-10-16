@@ -1,0 +1,107 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { CfAuthError } from "./client.ts";
+import { discover, fetchInventory, type Inventory } from "./discovery.ts";
+import { editsAsFragment } from "./edits.ts";
+import { memoryClient, type MemoryAccount } from "./memory-client.ts";
+
+const ACCOUNT = "0123456789abcdef0123456789abcdef";
+
+/** A hosted instance "acme" deployed before Web Search shipped, with one wizard-installed extra. */
+export function hostedAccount(): MemoryAccount & Required<Pick<MemoryAccount, "workers" | "accessApps">> {
+  return {
+    organization: { auth_domain: "acme-team.cloudflareaccess.com" },
+    workers: [
+      { name: "acme", subdomain: { enabled: true, url: "https://acme.acme-sub.workers.dev" } },
+      { name: "acme-backend" },
+      { name: "acme-gk-context" },
+      { name: "acme-gk-scheduler" },
+      { name: "acme-gk-github" },
+      { name: "acme-staging-gk-context" },
+      { name: "unrelated" },
+    ],
+    kvNamespaces: [
+      { id: "kv-blueprints", title: "acme-blueprints" },
+      { id: "kv-avatars", title: "acme-avatars" },
+      { id: "kv-context", title: "acme-context-collections" },
+      { id: "kv-other", title: "acme-staging-blueprints" },
+    ],
+    buckets: ["acme-blueprint-content"],
+    gateways: [{ id: "default" }, { id: "acme-ai" }],
+    accessApps: [
+      { name: "Cloudflare OS acme 1a2b3c4d", aud: "aud-acme", domain: "acme.acme-sub.workers.dev" },
+      { name: "Cloudflare OS acme-staging 9f8e7d6c", aud: "aud-staging", domain: "acme-staging.acme-sub.workers.dev" },
+    ],
+  };
+}
+
+function inventory(account: MemoryAccount = hostedAccount()): Promise<Inventory> {
+  return fetchInventory(memoryClient(account), ACCOUNT);
+}
+
+test("fills in exactly what it found", async () => {
+  const discovery = discover("acme", await inventory());
+  assert.deepEqual(editsAsFragment(discovery.edits), {
+    workers: {
+      router: { name: "acme", route: { workersDev: true } },
+      workshop: { name: "acme-backend" },
+      context: { name: "acme-gk-context" },
+      scheduler: { name: "acme-gk-scheduler" },
+    },
+    resources: {
+      blueprintsKvNamespaceId: "kv-blueprints",
+      avatarsKvNamespaceId: "kv-avatars",
+      blueprintContentBucket: "acme-blueprint-content",
+    },
+    context: { kvNamespaceId: "kv-context" },
+    aiGateway: { name: "acme-ai", enabled: true, accountId: null },
+    access: { audience: "aud-acme", issuer: "https://acme-team.cloudflareaccess.com" },
+    publicBaseUrl: "https://acme.acme-sub.workers.dev",
+  });
+});
+
+test("reports what it did not find instead of guessing, and the Gatekeepers that lose a binding", async () => {
+  const discovery = discover("acme", await inventory());
+  const missing = discovery.rows.filter((row) => row.found === null);
+  assert.deepEqual(missing.map((row) => row.path), ["workers.websearch.name"]);
+  assert.match(missing[0].note!, /deployed before Web Search/);
+  assert.deepEqual(discovery.orphanedGatekeepers, ["acme-gk-github"]);
+  assert.ok(!discovery.edits.some((edit) => edit.path.join(".") === "workers.websearch.name"));
+  // Suggestions are not hosted resources: never looked for, never reported missing.
+  assert.ok(!discovery.rows.some((row) => /customGatekeeper|errorReporter/.test(row.path)));
+});
+
+test("does not count a starter-deployed custom Gatekeeper as orphaned", async () => {
+  const account = hostedAccount();
+  account.workers.push({ name: "acme-gk-custom" });
+  assert.deepEqual(discover("acme", await inventory(account)).orphanedGatekeepers, ["acme-gk-github"]);
+});
+
+test("takes a custom domain from the Access application", async () => {
+  const account = hostedAccount();
+  account.accessApps[0].domain = "os.example.com";
+  const fragment = editsAsFragment(discover("acme", await inventory(account)).edits) as
+    { workers: { router: { route: unknown } }; publicBaseUrl: unknown };
+  assert.deepEqual(fragment.workers.router.route, { customDomain: "os.example.com" });
+  assert.equal(fragment.publicBaseUrl, null);
+});
+
+test("falls back to the router's workers.dev address without an Access application", async () => {
+  const discovery = discover("acme", await inventory({ ...hostedAccount(), accessApps: [] }));
+  assert.equal(editsAsFragment(discovery.edits).publicBaseUrl, "https://acme.acme-sub.workers.dev");
+  assert.ok(discovery.rows.some((row) => row.path === "access.audience" && row.found === null));
+});
+
+test("does not pick between two applications named for the instance", async () => {
+  const account = hostedAccount();
+  account.accessApps.push({ name: "Cloudflare OS acme deadbeef", aud: "aud-second", domain: "acme.acme-sub.workers.dev" });
+  const discovery = discover("acme", await inventory(account));
+  assert.ok(!discovery.edits.some((edit) => edit.path.join(".") === "access.audience"));
+  assert.match(discovery.notes.join("\n"), /2 Access applications/);
+});
+
+test("survives an account with no Zero Trust organization, but not missing credentials", async () => {
+  const discovery = discover("acme", await inventory({ ...hostedAccount(), organization: null }));
+  assert.ok(discovery.rows.some((row) => row.path === "access.issuer" && row.found === null));
+  await assert.rejects(inventory({ signedOut: true }), CfAuthError);
+});

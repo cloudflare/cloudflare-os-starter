@@ -1,24 +1,26 @@
 packages:
-  - cloudflare-os/packages/workshop-shared
-  - cloudflare-os/packages/error-reporting
   - packages/*
+  # Nothing under `cloudflare-os/`: this repository's packages `link:` to the submodule's, whose
+  # dependencies come from cloudflare-os/pnpm-lock.yaml (`cfos install`). Neither this
+  # lockfile nor the catalog below governs them, and this root's `vp` has none of their tasks.
 
-# Mirror of cloudflare-os/pnpm-workspace.yaml's catalog. Required, not merely tidy: the two
-# submodule packages above are members of THIS workspace, and both declare `catalog:` specifiers
-# that resolve here rather than in the submodule -- without these entries `pnpm install` fails
-# outright.
+# The toolchain versions this repository's own packages share. Declared once here so a bump is one
+# edit rather than a hand edit of every package.json.
 #
-# Keep every shared entry byte-identical to the submodule's when bumping the gitlink. Drift is
-# silent: the starter and the submodule install separately, so a different capnweb range gives the
-# tree two copies, and a stub minted by one is unserialisable by the other's session
-# (`TypeError: Cannot serialize value: [object RpcStub]`). A deduped dev machine hides it; the
-# split installs in CI and on a fresh checkout do not. See
-# cloudflare-os/docs/integration-testing.md.
+# Only three entries actually have to agree with cloudflare-os/pnpm-workspace.yaml: capnweb,
+# typescript and @cloudflare/workers-types, the ones whose types cross the `link:` boundary. A
+# differing capnweb gives the tree two copies, and a stub minted by one is unserialisable by the
+# other's session (`TypeError: Cannot serialize value: [object RpcStub]`); a differing
+# workers-types or typescript makes the submodule's declarations fail to match this side's. Keep
+# those three in step by hand when bumping the gitlink. The rest follow upstream for convenience.
 catalog:
-  '@cloudflare/vitest-pool-workers': ^0.20.2
-  capnweb: ^0.11.1
+  '@cloudflare/vitest-pool-workers': ^0.22.0
+  '@cloudflare/workers-types': ^5.20261001.1
+  capnweb: ^0.12.0
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
-  capnweb-validate: 0.2.4
+  capnweb-validate: 0.3.0
+  # Exact: a prerelease, kept in step with the Wrangler/workerd stack the test pool runs on.
+  miniflare: 5.20261001.0-alpha
   # Exact: TypeScript 7 (tsgo). The submodule's tsconfig sets `singleThreaded`, which TS 5.9
   # rejects outright, so every package extending it has to be on 7.x. Nothing here uses the JS
   # compiler API, so the submodule's `typescript6` alias is not needed.
@@ -26,18 +28,39 @@ catalog:
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
   vite: 7.3.6
-  vite-plus: ^0.2.8
-  vitest: ^4.1.10
-  wrangler: ^4.119.0
+  vite-plus: ^1.0.0
+  vitest: ^4.1.11
+  wrangler: ^4.147.0
 
 overrides:
+  # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.
+  '@cloudflare/vitest-pool-workers>miniflare': "catalog:"
+  '@cloudflare/vitest-pool-workers>wrangler': "catalog:"
   # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
   # catalog so this and the manifests can't disagree: a catalog only covers what a workspace
   # manifest declares itself, and the override is what reaches vite as somebody else's peer.
-  vite: "catalog:"
+  # Selected by range, not bare `vite`: vite-plus 1.0 depends on `vite` as an alias for
+  # `npm:@voidzero-dev/vite-plus-core`, which a semver selector does not match, so `vp` keeps the
+  # core it was built against instead of having vite 7 substituted under it.
+  vite@*: "catalog:"
   # Arrives as an optional vite/vitest peer resolved to `latest`; pinned to the same release the
   # submodule pins so the two installs agree.
   '@types/node': 26.1.0
+
+# Otherwise a root install whose own lockfile is unchanged -- which is what a gitlink bump looks
+# like from here -- is "Already up to date" and runs no lifecycle script, so the postinstall that
+# installs the submodule's workspace would be skipped.
+optimisticRepeatInstall: false
+
+# Reject dependency versions published within this many minutes (24h), matching upstream's
+# supply-chain policy.
+minimumReleaseAge: 1440
+
+minimumReleaseAgeExclude:
+  - capnweb
+  - capnweb-validate
+  - workerd
+  - "@cloudflare/workerd-*"
 
 allowBuilds:
   '@google/genai': true

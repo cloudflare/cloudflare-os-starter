@@ -1,6 +1,6 @@
-// Base compiler options for this repository's own code. The two `packages/*` tsconfigs extend the
+// Base compiler options for this repository's own code. The Worker packages' tsconfigs extend the
 // submodule's root config instead, so upstream stays the single source of truth for the settings a
-// Worker package needs; this file exists for `scripts/`, which no package tsconfig includes.
+// Worker package needs; this file exists for `packages/cfos`, the Node CLI, which extends it.
 //
 // `singleThreaded` is deliberately absent: it is a TypeScript 7 option, and unlike the submodule's
 // root config nothing here type-checks capnweb's recursive type graphs, so the parallel default is

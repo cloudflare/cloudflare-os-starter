@@ -1,0 +1,19 @@
+// The compile for the packed tarball only (`prepack`): `dist/`, which a published `cfos` runs.
+// The repository never uses it -- there the bin is `src/main.ts`, run directly by `node`.
+//
+// `rewriteRelativeImportExtensions` turns the sources' `./x.ts` specifiers into `./x.js`, static and
+// dynamic alike, so the emitted modules resolve under plain Node. Tests and test support stay out.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "sourceMap": false,
+    "declaration": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts", "src/test-support.ts", "src/fake-cf.ts", "src/core/memory-client.ts"]
+}

@@ -7,6 +7,7 @@ import {
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import type {
   AccountDescription,
+  AgentCatalog,
   ApprovalQueue,
   Gatekeeper,
   GatekeeperConnectCallback,
@@ -98,6 +99,11 @@ export class CustomGatekeeper extends DurableObject<Cloudflare.Env> implements G
     return [];
   }
 
+  /** No catalog: the session's types say everything there is to know. */
+  async getAgentCatalog(): Promise<AgentCatalog | null> {
+    return null;
+  }
+
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<CustomSession> {
     return new CustomSessionImpl(approvalQueue.dup(), {
       name: this.env.CUSTOM_NAME,
@@ -149,6 +155,10 @@ export class CustomAccount extends WorkerEntrypoint<Cloudflare.Env> implements G
 
   reconnect(): Promise<{ url: string }> {
     throw new Error("Custom Gatekeeper has no credentials to reconnect.");
+  }
+
+  commitReconnect(_stageId: string): Promise<void> {
+    throw new Error("Custom Gatekeeper is auto-provisioned and has no connect flow.");
   }
 
   async getAuthenticatedEmail(): Promise<string | null> {

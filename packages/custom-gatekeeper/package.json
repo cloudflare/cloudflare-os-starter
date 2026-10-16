@@ -9,12 +9,13 @@
     "test:run": "vitest run"
   },
   "dependencies": {
-    "@gadgets/workshop-shared": "workspace:*",
+    "@gadgets/workshop-shared": "link:../../cloudflare-os/packages/workshop-shared",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
+    "@gadgets/scripts": "link:../../cloudflare-os/scripts",
     "@types/node": "26.1.0",
     "typescript": "catalog:",
     "vite": "catalog:",

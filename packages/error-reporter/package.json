@@ -9,10 +9,11 @@
     "test:run": "vitest run src/format.test.ts"
   },
   "dependencies": {
-    "@gadgets/error-reporting": "workspace:*"
+    "@gadgets/error-reporting": "link:../../cloudflare-os/packages/error-reporting"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260808.1",
+    "@cloudflare/workers-types": "catalog:",
+    "@gadgets/scripts": "link:../../cloudflare-os/scripts",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

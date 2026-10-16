@@ -32,13 +32,20 @@
     // the Context Gatekeeper
     "scheduler": { "name": "<SCHEDULER_WORKER_NAME>" },
 
+    // The Web Search Gatekeeper, which lets agents search the public web. Ambient too. It searches
+    // through the account's "default" AI Gateway -- fixed upstream, independent of aiGateway.name
+    // below -- which Cloudflare creates on first use, so there is nothing to set up.
+    "websearch": { "name": "<WEBSEARCH_WORKER_NAME>" },
+
     "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
     "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
   },
 
   // This starter deploys Cloudflare Access mode. Cloudflare OS also supports built-in password
   // accounts and auth Gatekeeper sign-in; see the reference below before switching. The audience
-  // comes from the self-hosted Access application protecting the public hostname.
+  // comes from the self-hosted Access application protecting the public hostname: `pnpm cfos init`
+  // sets it all up, or set "admins" and `pnpm cfos access` finds or creates that application and
+  // fills in issuer and audience.
   // "admins" gates /admin in every sign-in method.
   // Reference: docs/customization.md#sign-in-methods
   "access": {

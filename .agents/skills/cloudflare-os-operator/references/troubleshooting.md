@@ -54,7 +54,8 @@ Never use `git submodule update --remote` for setup or recovery.
 | --- | --- | --- |
 | Unsupported engine or syntax | Node major and repository `packageManager` | Install the documented Node/pnpm versions. Do not regenerate the lockfile with another manager. |
 | `pnpm` lockfile changes on install | pnpm version, checkout cleanliness, dependency provenance | Stop and review. A setup operation should not silently become a dependency update. |
-| Package missing under submodule | Separate root and `cloudflare-os` installs | Run both documented installs. |
+| Package missing under submodule, or `cfos install:` says the workspace is not installed or stale | Whether the root `postinstall` ran: `--ignore-scripts`, or a gitlink bump since the last install | Run `pnpm cfos install`, which installs `cloudflare-os/` from its own lockfile, frozen. The packages here `link:` into the submodule, so the root install alone never installs its dependencies. `pnpm cfos install --check` confirms it. |
+| `pnpm install` reports a `@cloudflare/*` 401/404 | A global npmrc routing the `@cloudflare` scope to a private registry | The repository `.npmrc` pins the scope to the public registry. Check that it is present and that no environment variable overrides it. |
 | Build fails after submodule move | Parent wrapper compatibility, base configs, APIs, dependencies | Treat it as an incomplete upgrade, not an ordinary build issue. |
 | `wrangler.prod.jsonc` remains | Active check/deploy process and original failure | Preserve the error, prove no active process, then remove only stale generated files. Never edit/deploy them. |
 | Concurrent writes to generated config | Multiple operations in one checkout | Stop both safely and use separate worktrees. |
@@ -127,9 +128,15 @@ Use an incognito session after config correction. Do not bypass Access to prove 
 
 `workersDev: true` creates a route; it does not configure Access. Protect the exact `workers.dev` hostname the Router answers on with its own Access application.
 
-`scripts/deploy.ts` writes `preview_urls: false` on all Workers other than the router worker, because a Preview URL is an unauthenticated path around the Access-protected origin. Verify that in the derived config rather than assuming it, check the current Wrangler docs for changed defaults, and never patch the generated config to alter one.
+`generateConfigs()` (`packages/cfos/src/core/deployment.ts`) writes `preview_urls: false` on all Workers other than the router worker, because a Preview URL is an unauthenticated path around the Access-protected origin. Verify that in the derived config rather than assuming it, check the current Wrangler docs for changed defaults, and never patch the generated config to alter one.
 
-If a Worker other than the Router is publicly reachable, that is an Access bypass, not a routing nicety: the derived config gives the other five `workers_dev: false` and no routes, so an unexpected route means something outside this deploy created it.
+If a Worker other than the Router is publicly reachable, that is an Access bypass, not a routing nicety: the derived config gives the other six `workers_dev: false` and no routes, so an unexpected route means something outside this deploy created it.
+
+### `pnpm cfos check` says `deployment.jsonc` does not match the account
+
+The checks ran through `cf` and found something the file names that the account lacks: no Access application with that audience, an application that does not cover the Router's hostname, an issuer from another team, or a KV namespace, R2 bucket or AI Gateway that is not there. Each line names the config path. Correct the value from the account (`pnpm cfos import <instance>` for a hosted instance, `pnpm cfos access --dry-run` for Access) rather than creating a resource to match a typo.
+
+If `pnpm cfos check` printed `Skipped Cloudflare-side checks`, none of that was verified. `cf` was not signed in, or its token lacks a permission the line names. Treat the run as offline-only.
 
 ## Storage And Missing Data
 
@@ -205,7 +212,7 @@ The Reporter must have no public route. Its events remain visible to authorized 
 
 ## Partial Deployment
 
-The baseline sequence is Error Reporter, Context, Scheduler, Custom Gatekeeper, Workshop, then Router. Re-read `scripts/deploy.ts` for the current sequence.
+The baseline sequence is Error Reporter, Context, Scheduler, Web Search, Custom Gatekeeper, Workshop, then Router. Re-read `deployOrder()` in `packages/cfos/src/core/deployment.ts` for the current sequence.
 
 The Router is last because it binds every other Worker, which shapes recovery: a failure before it leaves the previous Router version serving the public URL against a partly-updated set of backends, so the live site can look healthy while the stack is mixed. A failure *of* the Router leaves the site on its previous version with new backends behind it.
 
@@ -219,7 +226,7 @@ When deployment stops:
    - **Complete:** fix the blocker and deploy the remaining/full compatible stack.
    - **Roll back changed Workers:** only when current bindings, migrations, and data remain compatible.
    - **Contain:** restrict Access or disable an affected Gatekeeper while a safe plan is prepared.
-6. Re-run `pnpm check`, re-enter approval, and perform full verification.
+6. Re-run `pnpm cfos check`, re-enter approval, and perform full verification.
 
 For breaking contracts, do not alternate old/new code under the same service names. Use parallel service identities and a controlled binding switch.
 
@@ -227,7 +234,7 @@ For breaking contracts, do not alternate old/new code under the same service nam
 
 Likely causes after a gitlink update:
 
-- An upstream Wrangler base-config field is overwritten by `scripts/deploy.ts`.
+- An upstream Wrangler base-config field is overwritten by `generateConfigs()` (`packages/cfos/src/core/deployment.ts`).
 - Shared RPC or Gatekeeper interfaces changed.
 - Durable Object migrations/classes changed.
 - Storage schema changed.
