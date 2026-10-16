@@ -30,7 +30,9 @@ import {
   validateConfig,
   type PackageKey,
 } from "../core/deployment.ts";
+import { placeholderPaths } from "../core/edits.ts";
 import { verifyAccount } from "../core/verify-account.ts";
+import { parseDeployment } from "../deployment-file.ts";
 import { check as checkSubmoduleInstall } from "./install.ts";
 
 // `allowTrailingComma` because wrangler accepts them and upstream uses them: the Scheduler's base
@@ -172,18 +174,19 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
   try {
     config = await readDeployment(ctx, path, where);
   } catch (error) {
-    // An unconfigured file, at a terminal: offer the wizard instead of the bare error. Not a
-    // confirmation of anything; it only replaces a failure.
-    if ((error as Error).cause instanceof PlaceholderError && ctx.prompter) {
-      ctx.out.log((error as Error).message);
-      if (await ctx.prompter.confirm(`${where} still has placeholders. Run \`cfos init\` now?`)) {
-        const init = await import("./init.ts");
-        const code = await init.run({ command: "init", values: {}, positionals: [] }, ctx);
-        if (code === 0) ctx.out.log(`\nThen run \`pnpm cfos ${args.command}\` again.`);
-        return code;
-      }
-    }
-    throw error;
+    // An unconfigured file, at a terminal: offer the wizard instead of the bare error, then carry on
+    // with the file it wrote. Not a confirmation of anything; it only replaces a failure.
+    if (!((error as Error).cause instanceof PlaceholderError && ctx.prompter)) throw error;
+    ctx.out.log((error as Error).message);
+    if (!await ctx.prompter.confirm(`${where} still has placeholders. Run \`cfos init\` now?`)) throw error;
+    const init = await import("./init.ts");
+    const code = await init.configure({ command: "init", values: {}, positionals: [] }, ctx,
+      init.defaultDeps(), { offerDeploy: false });
+    if (code !== 0) return code;
+    // Still placeholders (Access left for later, say): init has just listed them and the fix.
+    if (placeholderPaths(parseDeployment(await readFile(path, "utf8"), where)).length) return 1;
+    ctx.out.log(`\nContinuing with \`cfos ${args.command}\`.`);
+    config = await readDeployment(ctx, path, where);
   }
   const generated = generateConfigs(config, await readBaseConfigs(root));
   reportAiGateway(ctx, config);

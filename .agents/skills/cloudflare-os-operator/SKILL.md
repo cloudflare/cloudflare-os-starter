@@ -57,9 +57,9 @@ Against the account, the commands split as follows:
 
 - **Read-only:** `pnpm cfos import`, `pnpm cfos check`, `pnpm cfos access --dry-run`, and `pnpm exec cf ... list`/`get`. They suit the inventory step.
 - **Local writes only:** `pnpm cfos import --out <path>` writes a local file (pointed at `deployment.jsonc`, it edits that in place), so treat it like any other edit to approved configuration.
-- **Mutating:** `pnpm cfos access` without `--dry-run` can create an Access application. `pnpm cfos init` reads the account and writes `deployment.jsonc`, but its Access step can create an Access application and a One-time PIN identity provider when the operator chooses to. `pnpm cfos deploy` deploys every Worker without asking for confirmation. Each needs approval like any other remote mutation.
+- **Mutating:** `pnpm cfos access` without `--dry-run` can create an Access application. `pnpm cfos init` reads the account and writes `deployment.jsonc`, but its Access step can create an Access application and a One-time PIN identity provider when the operator chooses to, and once the file is complete it offers to run `pnpm cfos deploy`. Outside a project, `cfos init <dir>` can also create a private GitHub repository and push to it. `pnpm cfos deploy` deploys every Worker without asking for confirmation. Each needs approval like any other remote mutation.
 
-`pnpm cfos init` is interactive and refuses without a terminal. Agents should use `import`, `access` and direct edits to `deployment.jsonc` instead, which take every answer as a flag or from the file.
+`pnpm cfos init` is interactive and refuses without a terminal. Agents should use `import`, `access`, direct edits to `deployment.jsonc` and an approved `pnpm cfos deploy` instead, which take every answer as a flag or from the file.
 
 ## Operating Rules
 

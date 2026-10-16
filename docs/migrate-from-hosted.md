@@ -39,11 +39,11 @@ leaving `resources.*` as `null` is the trap in section 3.
 ## 2. Find what the instance runs
 
 Find your hosted instance name — call it `N` — in the wizard, or read it off the worker list in the
-[dashboard](https://dash.cloudflare.com/). The hosted flow names everything after it. Then, signed
-in with `pnpm exec cf auth login`:
+[dashboard](https://dash.cloudflare.com/). The hosted flow names everything after it. Then, with
+`cf` signed in (`init` offers the sign-in if it is not):
 
 ```sh
-pnpm cfos init                 # choose "Take over a hosted instance"
+pnpm cfos init                 # choose "Take over a hosted instance"; answer no to "Deploy now?"
 git diff deployment.jsonc
 pnpm cfos check
 ```
@@ -57,8 +57,9 @@ providers to advertise, and the example custom Gatekeeper's name and message. It
 everything into `deployment.jsonc`, leaving the comments alone; `--out <path>` writes a copy
 instead. It never guesses: anything it did not find stays as it was in the file and is listed as
 missing. It also lists any other `N-gk-*` Worker, a Gatekeeper the wizard installed that this
-starter will not bind (section 8). It ends by listing anything still a placeholder, or with
-`pnpm cfos deploy` when nothing is. Choosing **A new deployment** with the instance's name switches
+starter will not bind (section 8). It ends by listing anything still a placeholder, or, when
+nothing is, by offering to deploy. Say no the first time: a takeover deploys over your data, so
+review the diff and run `pnpm cfos check` first, then `pnpm cfos deploy`. Choosing **A new deployment** with the instance's name switches
 to the takeover rather than overwriting it.
 
 The lookup on its own is `pnpm cfos import`. It never prompts outside a terminal, so it scripts:

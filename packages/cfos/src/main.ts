@@ -57,7 +57,7 @@ interface CommandSpec {
 
 const COMMANDS: Record<string, CommandSpec> = {
   init: {
-    summary: "create a project in <dir>, or configure the one you are in",
+    summary: "create a project in <dir>, or configure and deploy the one you are in",
     synopsis: "[<dir>] [--out <path>] [--template <git-url|path>] [--ref <branch|tag>]",
     help: [
       "  <dir>                  outside a project: where to create one (asked for when omitted)",

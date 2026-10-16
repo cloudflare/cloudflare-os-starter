@@ -5,6 +5,10 @@
 // account where `cf` can see it (zones, gateways, the signed-in email, the workers.dev subdomain),
 // and every step's logic is core/wizard.ts; this file asks and looks things up.
 //
+// Once the file is complete it offers to deploy, running `cfos deploy` itself, so a project goes
+// from clone to running in one command. It offers the `cf` sign-in up front and Wrangler's before
+// the deploy: a project cloned by hand never passed through scaffolding, which used to offer them.
+//
 // Interactive only. Without a terminal it refuses, pointing at `import` and `access`, which take
 // every answer as a flag or from the file. Signed out of `cf`, it still runs: the account-aware
 // steps become typed answers, and Access is left for `cfos access`.
@@ -43,6 +47,7 @@ import {
 } from "../core/wizard.ts";
 import { parseDeployment, updateDeployment } from "../deployment-file.ts";
 import type { Prompter } from "../prompt.ts";
+import { defaultSpawn, succeeded, type SpawnTool } from "../tools.ts";
 import { resolveAccount, type ResolvedAccount } from "./account.ts";
 import { formatReport, pickInstance } from "./import.ts";
 
@@ -53,6 +58,24 @@ export const NO_TERMINAL =
   "cfos init asks questions, and there is no terminal to ask them at. Without one, take over a " +
   "hosted instance with `pnpm cfos import <instance> --account <id> --out deployment.jsonc`, or " +
   "edit deployment.jsonc by hand; then `pnpm cfos access` sets up Access.";
+
+/** What init runs besides `cf` lookups, so tests can record it instead. */
+export interface InitDeps {
+  /** The sign-ins and Wrangler's status. */
+  spawn: SpawnTool;
+  /** `cfos deploy` against `ctx`. Resolves to its exit code. */
+  deploy(ctx: Context): Promise<number>;
+}
+
+export function defaultDeps(): InitDeps {
+  return {
+    spawn: defaultSpawn(),
+    deploy: async (ctx) => {
+      const { run: deploy } = await import("./deploy.ts");
+      return deploy({ command: "deploy", values: {}, positionals: [] }, ctx);
+    },
+  };
+}
 
 /** What init knows about the account, and how to ask about it. */
 interface Session {
@@ -342,8 +365,51 @@ export function nextStep(file: Record<string, unknown>, where: string, configFla
   ].join("\n");
 }
 
+/** The `cf` client when signed in, with the signed-in email; null when signed out or unreachable. */
+async function signedIn(ctx: Context): Promise<{ client: CloudflareClient | null; email?: string }> {
+  const client = await ctx.client();
+  try {
+    const who = await client.whoami();
+    return { client: who.authenticated ? client : null, email: who.email };
+  } catch (error) {
+    if (!(error instanceof CfError || error instanceof CfAuthError)) throw error;
+    return { client: null };
+  }
+}
+
+/** `cf auth login`, offered when signed out, for the lookups that supply every default. */
+async function offerCfSignIn(ctx: Context, deps: InitDeps): Promise<boolean> {
+  if (!await ctx.prompter!.confirm(
+    "Sign in to cf? It opens a browser. init uses it to look up your account; you can skip it and type answers instead.",
+    true)) return false;
+  const profile = ctx.flags.profile ? ["--profile", ctx.flags.profile] : [];
+  return succeeded(deps.spawn("pnpm", ["exec", "cf", "auth", "login", ...profile], { cwd: ctx.root, capture: false }));
+}
+
+/** `wrangler login`, offered when Wrangler, which does the deploying, is signed out. */
+async function offerWranglerSignIn(ctx: Context, deps: InitDeps): Promise<void> {
+  // `wrangler whoami --json` exits non-zero when signed out.
+  if (succeeded(deps.spawn("pnpm", ["exec", "wrangler", "whoami", "--json"], { cwd: ctx.root, capture: true }))) return;
+  if (await ctx.prompter!.confirm("Sign in to Wrangler? It opens a browser. Wrangler deploys the Workers.", true)) {
+    deps.spawn("pnpm", ["exec", "wrangler", "login"], { cwd: ctx.root, capture: false });
+  }
+}
+
 /** `cfos init`, inside a project. */
 export async function run(args: CommandArgs, ctx: Context): Promise<number> {
+  return configure(args, ctx, defaultDeps());
+}
+
+/**
+ * Configures the deployment file, resolving to the exit code. With `offerDeploy`, a complete file
+ * ends in the offer to deploy it; `cfos deploy` turns that off, as it carries on deploying itself.
+ */
+export async function configure(
+  args: CommandArgs,
+  ctx: Context,
+  deps: InitDeps,
+  { offerDeploy = true }: { offerDeploy?: boolean } = {},
+): Promise<number> {
   if (args.positionals[0]) {
     throw new UsageError(`You are inside a project already (${ctx.root}), so init configures it. To ` +
       "create another, run `cfos init <dir>` from outside this one.");
@@ -362,16 +428,8 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
   const outPath = out ? resolve(ctx.cwd, out) : inPath;
   const file = parseDeployment(await readFile(inPath, "utf8"), where);
 
-  let client: CloudflareClient | null = await ctx.client();
-  let email: string | undefined;
-  try {
-    const who = await client.whoami();
-    email = who.email;
-    if (!who.authenticated) client = null;
-  } catch (error) {
-    if (!(error instanceof CfError || error instanceof CfAuthError)) throw error;
-    client = null;
-  }
+  let { client, email } = await signedIn(ctx);
+  if (!client && await offerCfSignIn(ctx, deps)) ({ client, email } = await signedIn(ctx));
   if (!client) {
     ctx.out.log("cf is not signed in, so nothing can be looked up in your account: you will type the " +
       "values, and Access is left for later. To sign in first: `pnpm exec cf auth login`.\n");
@@ -411,7 +469,19 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
   ctx.out.log(`\n${outWhere} values:\n${JSON.stringify(editsAsFragment(edits), null, 2)}`);
   await updateDeployment(inPath, edits, outPath);
   ctx.out.log(`\nWrote ${edits.length} values to ${outWhere}, comments intact.`);
-  ctx.out.log(nextStep(parseDeployment(await readFile(outPath, "utf8"), outWhere),
-    outWhere, outPath === inPath ? "" : ` --config ${outWhere}`));
-  return 0;
+  if (outPath === inPath) ctx.out.log(`${outWhere} belongs in your repository: commit it.`);
+
+  const written = parseDeployment(await readFile(outPath, "utf8"), outWhere);
+  const next = nextStep(written, outWhere, outPath === inPath ? "" : ` --config ${outWhere}`);
+  if (placeholderPaths(written).length) {
+    ctx.out.log(next);
+    return 0;
+  }
+  if (!offerDeploy) return 0;
+  await offerWranglerSignIn(ctx, deps);
+  if (!await prompter.confirm("Deploy now?", true)) {
+    ctx.out.log(next);
+    return 0;
+  }
+  return deps.deploy({ ...ctx, flags: { ...ctx.flags, config: outPath } });
 }

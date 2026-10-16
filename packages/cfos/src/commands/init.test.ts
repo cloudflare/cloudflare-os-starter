@@ -14,7 +14,8 @@ import {
   testContext,
   type Step,
 } from "../test-support.ts";
-import { NO_TERMINAL, run } from "./init.ts";
+import type { Context } from "../context.ts";
+import { configure, NO_TERMINAL, run, type InitDeps } from "./init.ts";
 
 const ZONE = { id: "zone-1", name: "example.com", status: "active" };
 
@@ -36,16 +37,48 @@ function account(overrides: Record<string, FakeReply> = {}): Record<string, Fake
   };
 }
 
+/** What the recording tools report, by `<command> <args>` prefix: an exit status and output. */
+type ToolReplies = Record<string, { status?: number; stdout?: string }>;
+
+/** Deps that record every tool run and every deploy, instead of running them. */
+function recording(tools: ToolReplies = {}) {
+  const ran: string[] = [];
+  const deployed: Context[] = [];
+  const deps: InitDeps = {
+    spawn: (command, args) => {
+      const line = [command, ...args].join(" ");
+      ran.push(line);
+      const key = Object.keys(tools).filter((candidate) => line.startsWith(candidate))
+        .toSorted((a, b) => b.length - a.length)[0];
+      return { status: key ? tools[key].status ?? 0 : 0, stdout: key ? tools[key].stdout ?? "" : "" };
+    },
+    deploy: async (ctx) => {
+      deployed.push(ctx);
+      return 0;
+    },
+  };
+  return { deps, ran, deployed };
+}
+
 /** Runs `cfos init --out init.jsonc` in a scratch project, answering from `script`. */
-async function init(t: Parameters<typeof scratchProject>[0], script: Step[], replies = account(), flags = {}) {
+async function init(
+  t: Parameters<typeof scratchProject>[0],
+  script: Step[],
+  replies = account(),
+  { flags = {}, tools, values = { out: "init.jsonc" }, offerDeploy }:
+    { flags?: object; tools?: ToolReplies; values?: Record<string, string>; offerDeploy?: boolean } = {},
+) {
   const root = scratchProject(t, TEMPLATE);
   const cf = fakeCf(replies);
   const prompter = scriptedPrompter(script);
   const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter, flags });
-  const code = await run({ command: "init", values: { out: "init.jsonc" }, positionals: [] }, harness.ctx);
+  const recorded = recording(tools);
+  const code = await configure({ command: "init", values, positionals: [] }, harness.ctx, recorded.deps,
+    { offerDeploy });
   assert.deepEqual(prompter.remaining(), [], "the script was not used up");
-  const written = (): Record<string, unknown> => parseDeployment(readFileSync(join(root, "init.jsonc"), "utf8"));
-  return { code, root, prompter, written, calls: cf.calls, ...harness };
+  const out = values.out ?? "deployment.jsonc";
+  const written = (): Record<string, unknown> => parseDeployment(readFileSync(join(root, out), "utf8"));
+  return { code, root, prompter, written, calls: cf.calls, ...recorded, ...harness };
 }
 
 /** The steps from the AI Gateway question to the end of a new deployment, all defaults. */
@@ -69,6 +102,7 @@ test("configures a new deployment on a custom domain, steering around a taken ho
     ["Hostname", "cfos.example.com"],
     ...REST,
     ["No Access application covers cfos.example.com", "create"],
+    ["Deploy now?", false],
   ]);
   assert.equal(code, 0);
   // Defaults the account supplied.
@@ -107,6 +141,7 @@ test("derives the workers.dev subdomain, and reuses an Access application alread
     ["Base name", "acme-os"],
     ["Where will people reach it?", "workersDev"],
     ...REST,
+    ["Deploy now?", false],
   ], account({
     "zero-trust access applications list": (args) => flag(args, "--domain") === "acme-os.acme-sub.workers.dev"
       ? [{ name: "Existing", aud: "aud-existing", domain: "acme-os.acme-sub.workers.dev" }] : [],
@@ -174,6 +209,7 @@ test("switches to a takeover when the name is a hosted instance", async (t) => {
     ["Which model providers?", ["cloudflare", "anthropic"]],
     ["Organization name", DEFAULT],
     ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
   ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
   assert.equal(code, 0);
   assert.equal(prompter.asked.find((asked) => asked.message.startsWith("What are you setting up?"))!.hints!.takeover,
@@ -219,6 +255,7 @@ test("takes over a hosted instance chosen from the menu", async (t) => {
     ["Which model providers?", ["cloudflare"]],
     ["Organization name", "Acme Corp"],
     ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
   ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
   assert.equal(code, 0);
   const file = written();
@@ -239,8 +276,9 @@ test("skips Access, with the setup link, when the account has no Zero Trust orga
   assert.match(stderr(), /cloudflare-one\/setup/);
 });
 
-test("signed out, asks for everything it cannot look up", async (t) => {
-  const { code, written, stderr } = await init(t, [
+test("signed out and declining to sign in, asks for everything it cannot look up", async (t) => {
+  const { code, written, stderr, ran } = await init(t, [
+    ["Sign in to cf?", false],
     ["Cloudflare account ID", FAKE_ACCOUNT],
     ["Base name", "acme-os"],
     ["Where will people reach it?", "custom"],
@@ -252,6 +290,7 @@ test("signed out, asks for everything it cannot look up", async (t) => {
     ["What it tells agents", DEFAULT],
   ], { "auth whoami": { authenticated: false, error: "Not logged in" } });
   assert.equal(code, 0);
+  assert.deepEqual(ran, [], "signed in anyway");
   assert.match(stderr(), /cf is not signed in/);
   assert.match(stderr(), /pnpm cfos access/);
   const file = written();
@@ -268,4 +307,94 @@ test("refuses without a terminal, naming the commands that take flags instead", 
   assert.match(NO_TERMINAL, /cfos import <instance> --account <id> --out/);
   assert.match(NO_TERMINAL, /cfos access/);
   assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE);
+});
+
+/** A new deployment on workers.dev reusing an existing Access application: complete when written. */
+const COMPLETE: Step[] = [
+  ["What are you setting up?", "new"],
+  ["Base name", "acme-os"],
+  ["Where will people reach it?", "workersDev"],
+  ...REST,
+];
+
+/** {@link COMPLETE}'s account, with the Access application already there. */
+function completeAccount(overrides: Record<string, FakeReply> = {}): Record<string, FakeReply> {
+  return account({
+    "zero-trust access applications list": [{ name: "Existing", aud: "aud-existing", domain: "acme-os.acme-sub.workers.dev" }],
+    ...overrides,
+  });
+}
+
+test("deploys the file it just wrote, once asked, after checking Wrangler is signed in", async (t) => {
+  const { code, root, ran, deployed, stderr } = await init(t, [...COMPLETE, ["Deploy now?", true]], completeAccount());
+  assert.equal(code, 0);
+  assert.deepEqual(ran, ["pnpm exec wrangler whoami --json"]);
+  assert.equal(deployed.length, 1);
+  assert.equal(deployed[0].flags.config, join(root, "init.jsonc"));
+  assert.doesNotMatch(stderr(), /Next:/);
+});
+
+test("takes no for an answer, printing the deploy command instead", async (t) => {
+  const { code, deployed, stderr } = await init(t, [...COMPLETE, ["Deploy now?", false]], completeAccount());
+  assert.equal(code, 0);
+  assert.deepEqual(deployed, []);
+  assert.match(stderr(), /Next: `pnpm cfos deploy --config init\.jsonc`\./);
+});
+
+test("in place, says to commit the file, and the deploy reads it from the default path", async (t) => {
+  const { root, deployed, stderr } = await init(t, [...COMPLETE, ["Deploy now?", true]], completeAccount(),
+    { values: {} });
+  assert.match(stderr(), /deployment\.jsonc belongs in your repository: commit it\./);
+  assert.equal(deployed[0].flags.config, join(root, "deployment.jsonc"));
+});
+
+test("offers no deploy while placeholders are left", async (t) => {
+  const { code, ran, deployed } = await init(t, [
+    ...COMPLETE,
+    ["No Access application covers", "skip"],
+  ]);
+  assert.equal(code, 0);
+  assert.deepEqual(ran, [], "checked Wrangler for a deploy it did not offer");
+  assert.deepEqual(deployed, []);
+});
+
+test("offers the Wrangler sign-in before the deploy question", async (t) => {
+  const { ran, deployed } = await init(t, [
+    ...COMPLETE,
+    ["Sign in to Wrangler?", true],
+    ["Deploy now?", true],
+  ], completeAccount(), { tools: { "pnpm exec wrangler whoami": { status: 1 } } });
+  assert.deepEqual(ran, ["pnpm exec wrangler whoami --json", "pnpm exec wrangler login"]);
+  assert.equal(deployed.length, 1);
+});
+
+test("offers the cf sign-in when signed out, and looks the account up once signed in", async (t) => {
+  let signedIn = false;
+  const root = scratchProject(t, TEMPLATE);
+  const cf = fakeCf(completeAccount({
+    "auth whoami": () => signedIn
+      ? { authenticated: true, email: "me@example.com" } : { authenticated: false, error: "Not logged in" },
+  }));
+  const prompter = scriptedPrompter([["Sign in to cf?", true], ...COMPLETE, ["Deploy now?", false]]);
+  const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter, flags: { profile: "work" } });
+  const recorded = recording();
+  const spawn = recorded.deps.spawn;
+  recorded.deps.spawn = (command, args, options) => {
+    if (args.includes("login")) signedIn = true;
+    return spawn(command, args, options);
+  };
+  assert.equal(await configure({ command: "init", values: { out: "init.jsonc" }, positionals: [] }, harness.ctx,
+    recorded.deps), 0);
+  assert.deepEqual(prompter.remaining(), []);
+  assert.equal(recorded.ran[0], "pnpm exec cf auth login --profile work");
+  assert.ok(cf.calls.some((call) => call.args.join(" ").startsWith("workers list")), "no account lookups");
+  assert.doesNotMatch(harness.stderr(), /cf is not signed in/);
+});
+
+test("asks nothing about deploying when its caller deploys", async (t) => {
+  const { code, ran, deployed, stderr } = await init(t, COMPLETE, completeAccount(), { offerDeploy: false });
+  assert.equal(code, 0);
+  assert.deepEqual(ran, []);
+  assert.deepEqual(deployed, []);
+  assert.doesNotMatch(stderr(), /Next:/);
 });

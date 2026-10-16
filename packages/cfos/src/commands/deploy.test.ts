@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { CANCEL, scratchProject, scriptedPrompter, TEMPLATE, testContext } from "../test-support.ts";
+import { cfClient } from "../cf-client.ts";
+import { FAKE_ACCOUNT, fakeCf } from "../fake-cf.ts";
+import { CANCEL, DEFAULT, scratchProject, scriptedPrompter, TEMPLATE, testContext } from "../test-support.ts";
 import { run } from "./deploy.ts";
 import { INSTALL_MARKER } from "./install.ts";
 
@@ -43,6 +45,38 @@ test("on an unconfigured file at a terminal, offers init in place of the error",
   });
   await assert.rejects(run({ command: "deploy", values: {}, positionals: [] }, accepted.ctx), /Cancelled/);
   assert.deepEqual(prompter.remaining(), []);
+});
+
+test("once init has configured the file, carries on with the deploy", async (t) => {
+  const root = installedProject(t);
+  const cf = fakeCf({
+    "auth whoami": { authenticated: true, email: "me@example.com" },
+    "accounts list": [{ id: FAKE_ACCOUNT, name: "Acme" }],
+    "workers list": [{ name: "other", subdomain: { url: "https://other.acme-sub.workers.dev" } }],
+    "zones list": [],
+    "ai-gateway gateways list": [],
+    "zero-trust organization get": { auth_domain: "acme.cloudflareaccess.com" },
+    "zero-trust identity-providers list": [{ id: "idp", type: "github" }],
+    "zero-trust access applications list": [{ name: "Existing", aud: "aud-existing", domain: "acme-os.acme-sub.workers.dev" }],
+  });
+  const prompter = scriptedPrompter([
+    ["Run `cfos init` now?", true],
+    ["What are you setting up?", "new"],
+    ["Base name", "acme-os"],
+    ["Where will people reach it?", "workersDev"],
+    ["Admin emails", DEFAULT],
+    ["Which AI Gateway", "default"],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+  ]);
+  const harness = testContext({ root, prompter, client: cfClient({ spawn: cf.spawn }) });
+  // Past validation, the fixture has no Worker base configs to generate from: proof it carried on.
+  await assert.rejects(run({ command: "deploy", values: {}, positionals: [] }, harness.ctx),
+    /cloudflare-os\/packages\/[\w-]+\/wrangler\.jsonc/);
+  assert.deepEqual(prompter.remaining(), []);
+  assert.match(harness.stderr(), /Continuing with `cfos deploy`/);
+  assert.doesNotMatch(harness.stderr(), /Deploy now\?|Next:/);
 });
 
 test("refuses before reading the file when the submodule is not installed", async (t) => {

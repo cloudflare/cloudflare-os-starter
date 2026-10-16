@@ -21,9 +21,9 @@
 
 ## Four steps
 
-1. Create the project: `npx @maximoguk/cfos init my-os`. It clones this starter, installs, and offers the Wrangler and `cf` sign-ins. In a clone you already have, run `pnpm install` instead.
-2. Configure it: `pnpm cfos init` asks for the Worker names, hostname, admin emails and AI Gateway, with defaults read from your account, sets up the Access application, and writes `deployment.jsonc`. The first step runs it for you.
-3. Run `pnpm cfos check`, then `pnpm cfos deploy`.
+1. Get the project: fork or clone this repository, then run `pnpm install`. If you have not cloned it, `npx @maximoguk/cfos init my-os` does that for you: it clones this starter, installs, offers to create a private GitHub repository for it and push there, and carries on with step 2.
+2. Configure and deploy: `pnpm cfos init` offers the sign-ins, asks for the Worker names, hostname, admin emails and AI Gateway with defaults read from your account, sets up the Access application, writes `deployment.jsonc`, and offers to deploy. Commit `deployment.jsonc`: it belongs in your repository.
+3. Deploy later changes with `pnpm cfos deploy`. `pnpm cfos check` runs the same checks and dry-runs the deploy.
 4. Open `/admin` and set the site name, logo, and accent color; branding needs no redeploy.
 
 [Deploy](#deploy) and [Customization](#customization) expand each step. Everything else on this page is optional reading.
@@ -62,26 +62,28 @@ Anything past that needs your own code or settings, which is what this repositor
 
 ### 1. Prepare the workspace
 
-Install [Node.js 24.19 or newer](https://nodejs.org/) (the `cfos` CLI is TypeScript run directly by `node`) and [pnpm 11.17](https://pnpm.io/installation) (`corepack enable` provides it). Then create the project:
+Install [Node.js 24.19 or newer](https://nodejs.org/) (the `cfos` CLI is TypeScript run directly by `node`) and [pnpm 11.17](https://pnpm.io/installation) (`corepack enable` provides it). Then fork or clone this repository, install, and start step 2:
+
+```sh
+git clone --recurse-submodules https://github.com/cloudflare/cloudflare-os-starter my-os
+cd my-os
+pnpm install
+pnpm cfos init
+```
+
+`deployment.jsonc` belongs in your repository once it is filled in. A fork of this public repository has to stay public, so for a private one, create an empty private repository and push the clone there: `git remote rename origin starter`, `git remote add origin <url>`, `git push -u origin HEAD`. `git pull starter main` then brings in starter updates.
+
+If you have not cloned it yet, one command does all of that:
 
 ```sh
 npx @maximoguk/cfos init my-os
 ```
 
-That clones this starter with its history and its `cloudflare-os` submodule, renames the `origin` remote to `starter` (so `git pull starter main` brings in starter updates), runs `pnpm install`, offers both sign-ins, and starts the configuration in step 2. `--template <url|path>` and `--ref <branch>` clone a fork or a branch instead. The same by hand:
-
-```sh
-git clone --recurse-submodules https://github.com/cloudflare/cloudflare-os-starter my-os
-cd my-os
-git remote rename origin starter
-pnpm install
-pnpm exec wrangler login
-pnpm exec cf auth login
-```
+It clones this starter with its history and its `cloudflare-os` submodule, renames the `origin` remote to `starter`, runs `pnpm install`, offers to create a private GitHub repository with the [GitHub CLI](https://cli.github.com/) (`gh`) and push to it, and starts `pnpm cfos init`. Without `gh`, it prints the commands to add a repository by hand. `--template <url|path>` and `--ref <branch>` clone a fork or a branch instead.
 
 `pnpm install` installs the submodule's own workspace too, from a `postinstall` hook. If you install with `--ignore-scripts`, run `pnpm cfos install` afterwards; `pnpm cfos check` says so if you forget.
 
-Two sign-ins, because two tools talk to Cloudflare. [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/#login) deploys the Workers. The `cf` CLI looks things up and sets up Access: `pnpm cfos init` reads your zones, AI Gateways, email and workers.dev subdomain through it to offer defaults, `pnpm cfos access` and `pnpm cfos import` run on it, and `pnpm cfos check` uses it to confirm the Access application and storage IDs in `deployment.jsonc` exist in the account. `cf` is optional. Without it, `init` asks you to type those values, `check` skips the account checks with a one-line notice, and you do the Access steps below by hand. Instead of logging in, you can set `CLOUDFLARE_API_TOKEN` to a token with Access: Apps and Policies Edit, plus Read on Workers Scripts, Workers KV Storage, Workers R2 Storage, AI Gateway, Zone and DNS.
+Two sign-ins, because two tools talk to Cloudflare; `pnpm cfos init` offers each one when it is needed, or run `pnpm exec cf auth login` and `pnpm exec wrangler login` yourself. [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/#login) deploys the Workers. The `cf` CLI looks things up and sets up Access: `pnpm cfos init` reads your zones, AI Gateways, email and workers.dev subdomain through it to offer defaults, `pnpm cfos access` and `pnpm cfos import` run on it, and `pnpm cfos check` uses it to confirm the Access application and storage IDs in `deployment.jsonc` exist in the account. `cf` is optional. Without it, `init` asks you to type those values, `check` skips the account checks with a one-line notice, and you do the Access steps below by hand. Instead of logging in, you can set `CLOUDFLARE_API_TOKEN` to a token with Access: Apps and Policies Edit, plus Read on Workers Scripts, Workers KV Storage, Workers R2 Storage, AI Gateway, Zone and DNS.
 
 [`packages/cfos`](packages/cfos/README.md) lists every `cfos` command and flag. `pnpm check` and `pnpm deploy` still work as aliases.
 
@@ -98,7 +100,7 @@ Run `pnpm cfos init` and choose **A new deployment**. It asks, with defaults:
 3. The admin emails, defaulting to the one `cf` is signed in as, then the AI Gateway and model providers, then the example custom Gatekeeper's text.
 4. Access. It reuses the [self-hosted Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) that already covers the hostname, or offers to create one that admits exactly the admins. If the Zero Trust organization has no identity provider, nobody could sign in, so it offers to add a One-time PIN provider.
 
-It writes every answer into `deployment.jsonc` in place, comments intact (`--out <path>` writes a copy instead). Storage, error reporting and observability keep the template's defaults. Every control is annotated in the file, so editing it by hand afterwards is fine.
+It writes every answer into `deployment.jsonc` in place, comments intact (`--out <path>` writes a copy instead). Storage, error reporting and observability keep the template's defaults. Every control is annotated in the file, so editing it by hand afterwards is fine. When nothing is left as a placeholder, it offers the Wrangler sign-in if needed and then asks **Deploy now?**; yes runs `pnpm cfos deploy` (step 3) on the file it just wrote.
 
 Without a terminal, or to do it by hand, fill in [`deployment.jsonc`](deployment.jsonc)'s placeholders except `access.issuer` and `access.audience`, then run `pnpm cfos access`. It finds or creates the application the same way and writes the team's issuer and the application's audience into the file. Add `--dry-run` first to see the request without sending it. To admit more people than the admins (an email domain, an identity-provider group), widen the application's policy in the Zero Trust dashboard afterwards.
 
@@ -113,7 +115,7 @@ pnpm cfos check
 pnpm cfos deploy
 ```
 
-Both validate `deployment.jsonc`, then confirm with `cf` that the account has the Access application, team domain, and any KV namespace, R2 bucket or AI Gateway it names. A mismatch stops them before anything builds. `check` then builds everything and dry-runs every deploy; `deploy` deploys for real, without asking for confirmation. Run on the unconfigured template at a terminal, either offers to start `pnpm cfos init` instead of failing.
+Both validate `deployment.jsonc`, then confirm with `cf` that the account has the Access application, team domain, and any KV namespace, R2 bucket or AI Gateway it names. A mismatch stops them before anything builds. `check` then builds everything and dry-runs every deploy; `deploy` deploys for real, without asking for confirmation. Run on the unconfigured template at a terminal, either offers to start `pnpm cfos init` instead of failing, then carries on with the file it writes.
 
 With resource values left as `null`, Wrangler creates the three KV namespaces and R2 bucket automatically and reconnects them on later deploys. Set explicit IDs or a bucket name when the deployment must reuse existing resources.
 

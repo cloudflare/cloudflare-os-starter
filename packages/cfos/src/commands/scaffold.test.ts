@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { scriptedPrompter, testContext, type Step } from "../test-support.ts";
+import { DEFAULT, scriptedPrompter, testContext, type Step } from "../test-support.ts";
 import { DEFAULT_TEMPLATE, scaffold, type ScaffoldDeps } from "./scaffold.ts";
 
 /** One recorded external command. */
@@ -83,7 +83,8 @@ test("clones with the submodule, renames origin, installs, and stops without a t
   assert.deepEqual(ran.slice(3).map((entry) => entry.cwd), [target, target]);
   assert.deepEqual(configured, [], "configured without a terminal to ask at");
   assert.match(stderr(), /git pull starter main/);
-  assert.match(stderr(), /Next:\n {2}cd my-os\n.*\n.*\n {2}pnpm cfos init$/);
+  assert.match(stderr(), /\n {2}cd my-os\n {2}gh repo create <owner>\/my-os --private --source \. --remote origin --push\n {2}pnpm cfos init$/);
+  assert.ok(!commands().some((command) => command.startsWith("gh ")), "ran gh without a terminal");
 });
 
 test("clones the given template and ref", async (t) => {
@@ -127,22 +128,23 @@ test("clones again without --shallow-submodules when nothing was cloned", async 
   ]);
 });
 
-test("at a terminal, offers both sign-ins, then hands over to the new project's init", async (t) => {
-  const { code, target, commands, configured } = await scaffolding(t, {
-    replies: {
-      "pnpm exec cf auth whoami": { stdout: '{"authenticated":false,"error":"Not logged in"}' },
-      "pnpm exec wrangler whoami --json": { status: 1 },
-    },
-    script: [["Sign in to cf?", true], ["Sign in to Wrangler?", true]],
+/** `gh`, signed in as "me". */
+const GH: Replies = { "gh api user": { stdout: "me\n" } };
+
+test("at a terminal, creates a private repository, then hands over to the new project's init", async (t) => {
+  const { code, target, commands, ran, configured, stderr } = await scaffolding(t, {
+    replies: GH,
+    script: [["Create a private GitHub repository", true], ["Repository (owner/name)", DEFAULT]],
     flags: { profile: "work" },
   });
   assert.equal(code, 0);
   assert.deepEqual(commands().slice(5), [
-    "pnpm exec cf auth whoami",
-    "pnpm exec cf auth login",
-    "pnpm exec wrangler whoami --json",
-    "pnpm exec wrangler login",
+    "gh auth status",
+    "gh api user -q .login",
+    "gh repo create me/my-os --private --source . --remote origin --push",
   ]);
+  assert.ok(ran.slice(5).every((entry) => entry.cwd === target));
+  assert.match(stderr(), /https:\/\/github\.com\/me\/my-os/);
   assert.deepEqual(configured, [{
     entry: join(target, "packages", "cfos", "src", "main.ts"),
     argv: ["init", "--profile", "work"],
@@ -150,28 +152,43 @@ test("at a terminal, offers both sign-ins, then hands over to the new project's 
   }]);
 });
 
-test("offers no sign-in that is not needed, and takes no for an answer", async (t) => {
-  const signedIn = await scaffolding(t, {
-    replies: { "pnpm exec cf auth whoami": { stdout: '{"authenticated":true}' } },
-    script: [],
+test("without gh, says how to add a repository by hand, and asks nothing", async (t) => {
+  const { commands, configured, stderr } = await scaffolding(t, { replies: { "gh auth status": { error: true } }, script: [] });
+  assert.deepEqual(commands().slice(5), ["gh auth status"]);
+  assert.match(stderr(), /git remote add origin <url>/);
+  assert.equal(configured.length, 1);
+});
+
+test("with gh signed out, suggests signing in, and asks nothing", async (t) => {
+  const { commands, stderr } = await scaffolding(t, { replies: { "gh auth status": { status: 1 } }, script: [] });
+  assert.deepEqual(commands().slice(5), ["gh auth status"]);
+  assert.match(stderr(), /gh auth login/);
+});
+
+test("takes no for an answer", async (t) => {
+  const { commands, configured, stderr } = await scaffolding(t, {
+    replies: GH,
+    script: [["Create a private GitHub repository", false]],
   });
-  assert.deepEqual(signedIn.commands().slice(5), ["pnpm exec cf auth whoami", "pnpm exec wrangler whoami --json"]);
-  const declined = await scaffolding(t, {
-    replies: {
-      "pnpm exec cf auth whoami": { stdout: '{"authenticated":false}' },
-      "pnpm exec wrangler whoami --json": { status: 1 },
-    },
-    script: [["Sign in to cf?", false], ["Sign in to Wrangler?", false]],
+  assert.ok(!commands().some((command) => command.startsWith("gh repo create")));
+  assert.match(stderr(), /git remote add origin <url>/);
+  assert.equal(configured.length, 1);
+});
+
+test("carries on to init when the repository cannot be created", async (t) => {
+  const { code, configured, stderr } = await scaffolding(t, {
+    replies: { ...GH, "gh repo create": { status: 1 } },
+    script: [["Create a private GitHub repository", true], ["Repository (owner/name)", "me/taken"]],
   });
-  assert.ok(!declined.commands().some((command) => command.endsWith("login")));
-  assert.equal(declined.configured.length, 1);
+  assert.equal(code, 0);
+  assert.match(stderr(), /Could not create me\/taken; gh's output is above/);
+  assert.equal(configured.length, 1);
 });
 
 test("asks where to create the project at a terminal", async (t) => {
   const { code, cwd, commands } = await scaffolding(t, {
     dir: "",
-    // Wrangler reads as signed in: its whoami exits 0 here.
-    script: [["Where should the project go?", "chosen"], ["Sign in to cf?", false]],
+    script: [["Where should the project go?", "chosen"], ["Create a private GitHub repository", false]],
   });
   assert.equal(code, 0);
   assert.ok(commands().some((command) => command.endsWith(join(cwd, "chosen"))));
