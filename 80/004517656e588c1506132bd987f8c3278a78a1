@@ -1,0 +1,19 @@
+packages/cfos/package.json
+  s_06682c84bddbb7::t_bde3af0d2cf1c3 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "80004517656e588c1506132bd987f8c3278a78a1",
+  "prompts": {},
+  "sessions": {
+    "s_06682c84bddbb7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f964fd19-850b-4915-8cac-685cde8314fa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
