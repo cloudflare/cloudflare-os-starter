@@ -163,8 +163,9 @@ test("the packed path never reaches @gadgets/scripts", () => {
   const { files, packages } = staticClosure([MAIN, join(SRC, "commands", "scaffold.ts")]);
   const reached = [...packages].filter((name) => name.startsWith("@gadgets/"));
   assert.deepEqual(reached, [], `reachable from ${[...files].map((file) => relative(SRC, file)).join(", ")}`);
-  // And it really is lazy: no command module is pulled in statically.
-  assert.deepEqual([...files].map((file) => relative(SRC, file)).filter((file) => file.startsWith("commands/")),
+  // And it really is lazy: no command module is pulled in statically. Slashes, for Windows paths.
+  assert.deepEqual([...files].map((file) => relative(SRC, file).replaceAll("\\", "/"))
+    .filter((file) => file.startsWith("commands/")),
     ["commands/scaffold.ts"]);
   assert.deepEqual([...packages].filter((name) => !name.startsWith("node:")), ["@clack/prompts"]);
 });

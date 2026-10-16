@@ -72,6 +72,18 @@ test("the root postinstall installs the submodule's workspace through this comma
   assert.equal(root.scripts["install:submodule"], "cfos install");
 });
 
+test("no workspace script single-quotes an argument", () => {
+  // pnpm runs scripts through cmd.exe on Windows, which keeps single quotes as part of the word:
+  // `--filter '!cloudflare-os-starter'` reached vp quotes and all, and matched no package. Double
+  // quotes, escaped in the JSON, mean the same to sh and cmd.exe.
+  for (const [dir, manifest] of memberManifests()) {
+    if (!isRecord(manifest.scripts)) continue;
+    for (const [name, script] of Object.entries(manifest.scripts)) {
+      assert.doesNotMatch(String(script), /'/, `${join(dir, "package.json")} scripts.${name}`);
+    }
+  }
+});
+
 test("the fix every message names runs this command through a root script", async (t) => {
   const root = readJson("package.json");
   assert.ok(isRecord(root) && isRecord(root.scripts));

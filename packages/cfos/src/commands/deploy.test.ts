@@ -73,7 +73,7 @@ test("once init has configured the file, carries on with the deploy", async (t) 
   const harness = testContext({ root, prompter, client: cfClient({ spawn: cf.spawn }) });
   // Past validation, the fixture has no Worker base configs to generate from: proof it carried on.
   await assert.rejects(run({ command: "deploy", values: {}, positionals: [] }, harness.ctx),
-    /cloudflare-os\/packages\/[\w-]+\/wrangler\.jsonc/);
+    /cloudflare-os[\\/]packages[\\/][\w-]+[\\/]wrangler\.jsonc/);
   assert.deepEqual(prompter.remaining(), []);
   assert.match(harness.stderr(), /Continuing with `cfos deploy`/);
   assert.doesNotMatch(harness.stderr(), /Deploy now\?|Next:/);
