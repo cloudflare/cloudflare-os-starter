@@ -1,0 +1,27 @@
+README.md
+  s_8fe4ce38d76cc5::t_0c41019a592e04 24,68
+package.json
+  s_8fe4ce38d76cc5::t_61cb47e28a2048 23
+packages/cfos/README.md
+  s_8fe4ce38d76cc5::t_105b3dd8708f7c 3-4,8-11,14,37
+packages/cfos/package.json
+  s_8fe4ce38d76cc5::t_04131f7c9e83ce 2
+pnpm-lock.yaml
+  s_8fe4ce38d76cc5::t_39de7f42eae8f2 50-52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "84508c73b1e765f34a419253117c1e05112b13a2",
+  "prompts": {},
+  "sessions": {
+    "s_8fe4ce38d76cc5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "83870561-8063-4478-88f3-9e1ce3c14153",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
