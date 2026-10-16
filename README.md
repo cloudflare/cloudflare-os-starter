@@ -115,7 +115,7 @@ pnpm cfos check
 pnpm cfos deploy
 ```
 
-Both validate `deployment.jsonc`, then confirm with `cf` that the account has the Access application, team domain, and any KV namespace, R2 bucket or AI Gateway it names. A mismatch stops them before anything builds. `check` then builds everything and dry-runs every deploy; `deploy` deploys for real, without asking for confirmation. Run on the unconfigured template at a terminal, either offers to start `pnpm cfos init` instead of failing, then carries on with the file it writes.
+Both validate `deployment.jsonc`, then confirm with `cf` that the account has the Access application, team domain, and any KV namespace, R2 bucket or AI Gateway it names. A mismatch stops them before anything builds. `check` then builds everything and dry-runs every deploy; `deploy` deploys for real, without asking for confirmation. The packages build in parallel, and every build has to pass before anything deploys; the Workers then deploy in dependency waves (Gatekeepers and the Error Reporter, then the Workshop, then the router), with each command's output printed as one block when it finishes. Run on the unconfigured template at a terminal, either offers to start `pnpm cfos init` instead of failing, then carries on with the file it writes.
 
 With resource values left as `null`, Wrangler creates the three KV namespaces and R2 bucket automatically and reconnects them on later deploys. Set explicit IDs or a bucket name when the deployment must reuse existing resources.
 

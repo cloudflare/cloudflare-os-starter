@@ -291,17 +291,13 @@ When `cf` is signed in, `pnpm cfos check` also confirms the following exist in t
 
 ### 10. Approve And Deploy
 
-Before requesting approval, inventory current deployed version IDs for all affected Workers and verify downstream RPC changes remain compatible with both the old and new Workshop. The deployment is not atomic. The expected baseline order is:
+Before requesting approval, inventory current deployed version IDs for all affected Workers and verify downstream RPC changes remain compatible with both the old and new Workshop. The deployment is not atomic. Every build has to pass before anything deploys; the Workers then deploy in three waves, each starting only once the one before has finished:
 
-1. Error Reporter, when enabled.
-2. Context.
-3. Scheduler.
-4. Web Search.
-5. Custom Gatekeeper.
-6. Workshop.
-7. Router, which binds every one of the above.
+1. Error Reporter (when enabled), Context, Scheduler, Web Search and Custom Gatekeeper, concurrently.
+2. Workshop, which binds every one of them.
+3. Router, which binds the Workshop and every Gatekeeper.
 
-If `deployOrder()` in the current `packages/cfos/src/core/deployment.ts` differs, use its order. The Router going last means a failure before it leaves the previous Router version still serving the public URL over partly-updated backends, so a healthy-looking site is not evidence the deploy completed. Breaking cross-Worker contracts need parallel identities and a controlled binding switch, not an in-place sequential deploy.
+If `deployWaves()` in the current `packages/cfos/src/core/deployment.ts` differs, use its waves. A failure inside a wave lets that wave's other deploys finish, then stops before the next wave, so several Workers of one wave can be updated while one is not. The Router going last means a failure before it leaves the previous Router version still serving the public URL over partly-updated backends, so a healthy-looking site is not evidence the deploy completed. Breaking cross-Worker contracts need parallel identities and a controlled binding switch, not an in-place deploy.
 
 Present the production mutation summary from the hard stop. After explicit approval, run:
 
@@ -309,7 +305,7 @@ Present the production mutation summary from the hard stop. After explicit appro
 pnpm cfos deploy
 ```
 
-Record each successful stage and resulting deployment/version ID. On the first failure, stop and inventory actual remote state before deciding to resume or roll back. Never assume the script is transactional or retry-safe.
+Each Worker's Wrangler output is printed as one block when it finishes, so read every block in a wave, not just the last. Record each successful stage and resulting deployment/version ID. On the first failure, stop and inventory actual remote state before deciding to resume or roll back. Never assume the script is transactional or retry-safe.
 
 ### 11. Verify The Live Deployment
 

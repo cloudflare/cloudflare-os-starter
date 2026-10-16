@@ -212,7 +212,7 @@ The Reporter must have no public route. Its events remain visible to authorized 
 
 ## Partial Deployment
 
-The baseline sequence is Error Reporter, Context, Scheduler, Web Search, Custom Gatekeeper, Workshop, then Router. Re-read `deployOrder()` in `packages/cfos/src/core/deployment.ts` for the current sequence.
+The baseline sequence is three waves: Error Reporter, Context, Scheduler, Web Search and Custom Gatekeeper together; then the Workshop; then the Router. Re-read `deployWaves()` in `packages/cfos/src/core/deployment.ts` for the current waves. A failure inside a wave does not cancel that wave's other deploys -- they finish, and the next wave never starts -- so a failed stage can sit beside completed siblings from the same wave.
 
 The Router is last because it binds every other Worker, which shapes recovery: a failure before it leaves the previous Router version serving the public URL against a partly-updated set of backends, so the live site can look healthy while the stack is mixed. A failure *of* the Router leaves the site on its previous version with new backends behind it.
 

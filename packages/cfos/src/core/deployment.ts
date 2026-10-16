@@ -1,7 +1,8 @@
 // The deployment as pure data: `validateConfig` checks a parsed `deployment.jsonc`, then
 // `generateConfigs` derives each Worker's `wrangler.prod.jsonc` from its upstream base config, and
-// `buildCommands`/`deployOrder` say what a check or deploy runs, in order. No I/O: the base configs
-// come in parsed and the commands go out as arguments, for `commands/deploy.ts` to read and run.
+// `buildCommands`/`deployWaves` say what a check or deploy runs and what of it can run together. No
+// I/O: the base configs come in parsed and the commands go out as arguments, for
+// `commands/deploy.ts` to read and run.
 
 import { AI_GATEWAY_PROVIDERS } from "./deployment-config.ts";
 import type {
@@ -607,7 +608,9 @@ function ownBuild(pkg: string, task = "build"): string[] {
 }
 
 /**
- * The build steps `cfos check` and `cfos deploy` run, in order, from the project root.
+ * The build steps `cfos check` and `cfos deploy` run, from the project root, as chains: the steps
+ * inside one chain run in order, and the chains are independent of each other, so they can run
+ * concurrently.
  *
  * Every one goes through `vp run` rather than `pnpm --filter <pkg> build`. Two of the three
  * submodule targets have no `build` *script* at all any more -- they have a Vite+ *task*, which
@@ -620,41 +623,58 @@ function ownBuild(pkg: string, task = "build"): string[] {
  * `vp` run only declared patterns survive, and an undeclared variable is dropped from the command
  * and from the fingerprint both.
  *
- * The ordering matters at the end: the frontend has to build before the router deploy picks up
- * `../workshop-frontend/dist` as its assets.
+ * The frontend and the router are separate chains even though the router serves
+ * `../workshop-frontend/dist`: it is the router's *deploy* that reads those assets, not its build,
+ * and every build finishes before anything deploys.
  */
-export function buildCommands(config: DeploymentConfig): BuildCommand[] {
+export function buildCommands(config: DeploymentConfig): BuildCommand[][] {
   return [
     // `build:app` first, and separately. `gatekeeper-context`'s `build` is a package.json script
     // that spawns `vp run --cache build:app` itself, and the outer `--no-cache` does not reach a
     // nested invocation carrying its own flag -- measured: the configurator app replayed from
     // cache. Rebuilding it here from source is what upstream's own `deploy` script does; the
     // `build` step below then type-checks and replays the bytes this step just wrote.
-    { args: submoduleBuild("@gadgets/gatekeeper-context", "build:app") },
-    { args: submoduleBuild("@gadgets/gatekeeper-context") },
+    [
+      { args: submoduleBuild("@gadgets/gatekeeper-context", "build:app") },
+      { args: submoduleBuild("@gadgets/gatekeeper-context") },
+    ],
     // The Scheduler's `build` nests the same cached `vp run build:app`, so it needs the same pair.
-    { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
-    { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
+    [
+      { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
+      { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
+    ],
     // A type-check only: wrangler's own build command runs capnweb-validate at deploy time.
-    { args: submoduleBuild("@gadgets/gatekeeper-websearch") },
-    { args: ownBuild("custom-gatekeeper") },
-    ...(config.errorReporting.enabled ? [{ args: ownBuild("error-reporter") }] : []),
+    [{ args: submoduleBuild("@gadgets/gatekeeper-websearch") }],
+    [{ args: ownBuild("custom-gatekeeper") }],
+    ...(config.errorReporting.enabled ? [[{ args: ownBuild("error-reporter") }]] : []),
     // Access mode is a build-time constant in the frontend bundle (`src/useAuth.ts`), so it is set
     // here rather than inherited: a bundle built under a different value is wrong, not just stale.
-    { args: submoduleBuild("@gadgets/workshop-frontend"), env: { VITE_CF_ACCESS_MODE: "true" } },
-    { args: submoduleBuild("@gadgets/router") },
-    { args: submoduleBuild("@gadgets/workshop-backend") },
+    [{ args: submoduleBuild("@gadgets/workshop-frontend"), env: { VITE_CF_ACCESS_MODE: "true" } }],
+    [{ args: submoduleBuild("@gadgets/router") }],
+    [{ args: submoduleBuild("@gadgets/workshop-backend") }],
   ];
 }
 
 /**
- * The order the Workers deploy in. Each one's bindings must already exist when it deploys, so the
- * Workshop follows every Gatekeeper it binds, and the router -- which binds all of them -- goes last.
- * A failure before the router leaves the previous router version serving.
+ * The Workers in deploy waves: those inside one wave can deploy concurrently, and each wave starts
+ * only once the one before has deployed. A service binding must name a Worker that already exists
+ * -- the Workers API rejects one to a script that does not -- so the Workshop, which binds every
+ * Gatekeeper and the Error Reporter, follows all of them, and the router, which binds the Workshop
+ * and every Gatekeeper, goes last. A failure before the router leaves the previous router version
+ * serving.
  */
-export function deployOrder(config: DeploymentConfig): PackageKey[] {
+export function deployWaves(config: DeploymentConfig): PackageKey[][] {
   return [
-    ...(config.errorReporting.enabled ? ["errorReporter" as const] : []),
-    "context", "scheduler", "websearch", "customGatekeeper", "workshop", "router",
+    [
+      ...(config.errorReporting.enabled ? ["errorReporter" as const] : []),
+      "context", "scheduler", "websearch", "customGatekeeper",
+    ],
+    ["workshop"],
+    ["router"],
   ];
+}
+
+/** {@link deployWaves}, flattened: one order the Workers can deploy in, one at a time. */
+export function deployOrder(config: DeploymentConfig): PackageKey[] {
+  return deployWaves(config).flat();
 }

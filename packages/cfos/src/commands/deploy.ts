@@ -2,9 +2,19 @@
 //
 // Both validate the deployment file, generate every Worker's `wrangler.prod.jsonc`
 // (core/deployment.ts), confirm against the account that what the file names exists
-// (core/verify-account.ts), and build. `check` then runs the test suites and dry-runs each deploy;
+// (core/verify-account.ts), and build. `check` runs the test suites first and dry-runs each deploy;
 // `deploy` deploys for real, with no confirmation. The generated configs are removed afterwards
 // either way.
+//
+// The builds run concurrently (run-tasks.ts), each command's output printed as one block when it
+// finishes, and the first failure cancels the rest: the deploy is doomed either way, so there is no
+// point waiting out the others. Every build has to pass before anything deploys, so a type error
+// cannot leave new Gatekeepers in front of an old Workshop. The Workers then deploy in the waves
+// `deployWaves` gives -- every Gatekeeper and the Error Reporter together, then the Workshop, then
+// the router -- because a service binding has to name a Worker that already exists. A failed
+// deploy cancels nothing: a half-cancelled upload is worse than a slow one, so its siblings finish,
+// and only the next wave is held back. With the router last, any failure leaves the previous router
+// serving.
 //
 // Wrangler deploys, not `cf deploy`: `cf deploy` takes no `--config` and works one project per
 // directory, so it cannot deploy seven Workers from generated configs.
@@ -17,11 +27,12 @@ import { resolveBinEntry } from "@gadgets/scripts/bin-entry";
 import { pnpmCommand } from "@gadgets/scripts/pnpm-command";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { configPath, displayPath, type CommandArgs, type Context } from "../context.ts";
-import type { BaseConfigs, DeploymentConfig } from "../core/deployment-config.ts";
+import type { BaseConfigs, BuildCommand, DeploymentConfig } from "../core/deployment-config.ts";
 import {
   aiGatewayPlan,
   buildCommands,
   deployOrder,
+  deployWaves,
   GENERATED_NAME,
   generateConfigs,
   PACKAGE_DIRS,
@@ -33,6 +44,7 @@ import {
 import { placeholderPaths } from "../core/edits.ts";
 import { verifyAccount } from "../core/verify-account.ts";
 import { parseDeployment } from "../deployment-file.ts";
+import { CancelledError, concurrencyLimit, mapConcurrent, runCaptured } from "../run-tasks.ts";
 import { check as checkSubmoduleInstall } from "./install.ts";
 
 // `allowTrailingComma` because wrangler accepts them and upstream uses them: the Scheduler's base
@@ -57,28 +69,23 @@ async function readBaseConfigs(root: string): Promise<BaseConfigs> {
   return Object.fromEntries(entries) as unknown as BaseConfigs;
 }
 
-function runCommand(
-  root: string,
-  command: string,
-  argv: string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  label: string,
-): void {
-  const result = spawnSync(command, argv, { cwd, env, stdio: "inherit" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const where = relative(root, cwd) || ".";
-    throw new Error(`${where}: ${label} failed. Its output is above.`);
-  }
-}
-
 // Spawned through pnpmCommand rather than as a bare "pnpm": on Windows the pnpm on PATH is a `.cmd`
 // shim Node refuses to spawn without a shell, and `shell: true` would re-split argv and break any
-// checkout path containing a space.
-function pnpm(root: string, args: string[], cwd = root, env: NodeJS.ProcessEnv = process.env): void {
-  const [command, argv] = pnpmCommand(args, env);
-  runCommand(root, command, argv, cwd, env, `pnpm ${args.join(" ")}`);
+// checkout path containing a space. The same goes for the builds below.
+
+/** `pnpm <args>` from the root, with the terminal: the one step that runs alone (`pnpm test`). */
+function pnpm(root: string, args: string[]): void {
+  const [command, argv] = pnpmCommand(args, process.env);
+  const result = spawnSync(command, argv, { cwd: root, stdio: "inherit" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`pnpm ${args.join(" ")} failed. Its output is above.`);
+}
+
+/** One build step, from the root, its output captured. */
+function build(ctx: Context, { args, env }: BuildCommand, signal: AbortSignal): Promise<void> {
+  const fullEnv = env ? { ...process.env, ...env } : process.env;
+  const [command, argv] = pnpmCommand(args, fullEnv);
+  return runCaptured(`pnpm ${args.join(" ")}`, command, argv, { cwd: ctx.root, env: fullEnv, signal, log: ctx.out.log });
 }
 
 /**
@@ -86,14 +93,58 @@ function pnpm(root: string, args: string[], cwd = root, env: NodeJS.ProcessEnv =
  * `.bin` shim can be found. That saves the ~0.33s `pnpm exec` costs per call and sidesteps the
  * Windows `.cmd` shim entirely; when it cannot be resolved, the pnpm path is still there.
  */
-function deployWorker(root: string, dir: string, extraArgs: string[]): void {
-  const cwd = join(root, dir);
+function deployWorker(ctx: Context, dir: string, extraArgs: string[]): Promise<void> {
+  const cwd = join(ctx.root, dir);
   const args = ["deploy", "--config", GENERATED_NAME, ...extraArgs];
+  const label = `${dir}: wrangler ${args.join(" ")}`;
   const entry = resolveBinEntry(cwd, "wrangler");
-  if (entry) {
-    runCommand(root, process.execPath, [entry, ...args], cwd, process.env, `wrangler ${args.join(" ")}`);
-  } else {
-    pnpm(root, ["exec", "wrangler", ...args], cwd);
+  const [command, argv]: [string, string[]] = entry
+    ? [process.execPath, [entry, ...args]]
+    : pnpmCommand(["exec", "wrangler", ...args], process.env);
+  return runCaptured(label, command, argv, { cwd, log: ctx.out.log });
+}
+
+/**
+ * Awaits a {@link mapConcurrent} run and, when it failed, throws one error naming every command that
+ * failed by itself; those it cancelled are only fallout. Each failure's output is already printed.
+ */
+async function settle(tasks: Promise<unknown>): Promise<void> {
+  try {
+    await tasks;
+  } catch (error) {
+    const failures = (error instanceof AggregateError ? error.errors : [error])
+      .filter((failure) => !(failure instanceof CancelledError));
+    if (failures.length === 1) throw failures[0];
+    throw new Error((failures as Error[]).map((failure) => failure.message).join("\n"), { cause: error });
+  }
+}
+
+/** Every chain from `buildCommands`, concurrently. The first failure cancels the rest. */
+async function buildAll(ctx: Context, config: DeploymentConfig): Promise<void> {
+  const chains = buildCommands(config);
+  const limit = concurrencyLimit();
+  ctx.out.log(`\nBuilding ${chains.length} packages, ${Math.min(limit, chains.length)} at a time.`);
+  const abort = new AbortController();
+  await settle(mapConcurrent(chains, limit, async (chain) => {
+    try {
+      for (const step of chain) await build(ctx, step, abort.signal);
+    } catch (error) {
+      abort.abort();
+      throw error;
+    }
+  }, abort.signal));
+}
+
+/**
+ * Each wave concurrently, the next only once the whole wave has deployed. A failure cancels nothing
+ * already running. `--dry-run` uploads nothing for a binding to name, so a check is one wave.
+ */
+async function deployAll(ctx: Context, config: DeploymentConfig, check: boolean): Promise<void> {
+  const waves = check ? [deployOrder(config)] : deployWaves(config);
+  for (const wave of waves) {
+    ctx.out.log(`\n${check ? "Dry-running the deploys of" : "Deploying"} ${wave.map((key) => config.workers[key]!.name).join(", ")}.`);
+    await settle(mapConcurrent(wave, concurrencyLimit(),
+      (key) => deployWorker(ctx, PACKAGE_DIRS[key], check ? ["--dry-run"] : [])));
   }
 }
 
@@ -199,12 +250,10 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
       await writeFile(generatedPaths[key as PackageKey], `${JSON.stringify(generatedConfig, null, 2)}\n`);
     }
     if (check) pnpm(root, ["test"]);
-    for (const { args: buildArgs, env } of buildCommands(config)) {
-      pnpm(root, buildArgs, root, env ? { ...process.env, ...env } : process.env);
-    }
-    const deployArgs = check ? ["--dry-run"] : [];
-    for (const key of deployOrder(config)) deployWorker(root, PACKAGE_DIRS[key], deployArgs);
+    await buildAll(ctx, config);
+    await deployAll(ctx, config, check);
   } finally {
+    // Only once every command has settled: mapConcurrent awaits all it started, failed or not.
     await Promise.all(Object.values(generatedPaths).map((generatedPath) => rm(generatedPath, { force: true })));
   }
   return 0;
