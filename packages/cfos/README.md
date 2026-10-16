@@ -9,7 +9,7 @@ pnpm cfos check          # validate, check the account, test, build, dry-run eve
 pnpm cfos deploy         # the same, then deploy for real
 ```
 
-Not published yet. Inside the starter it is the `cfos` workspace package, and `pnpm cfos <command>` runs it.
+Inside the starter it is the `cfos` workspace package, and `pnpm cfos <command>` runs it. `npx cfos init` clones the starter's `main` branch; `--ref <branch>` and `--template <url|path>` pick another branch or a fork.
 
 ## Commands
 

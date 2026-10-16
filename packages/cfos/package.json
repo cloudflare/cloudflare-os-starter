@@ -1,8 +1,20 @@
 {
   "name": "cfos",
   "version": "0.1.0",
-  "private": true,
   "description": "Scaffold, configure and deploy a self-hosted Cloudflare OS.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudflare/cloudflare-os-starter.git",
+    "directory": "packages/cfos"
+  },
+  "homepage": "https://github.com/cloudflare/cloudflare-os-starter/tree/main/packages/cfos#readme",
+  "keywords": [
+    "cloudflare",
+    "cloudflare-os",
+    "workers",
+    "cli"
+  ],
   "type": "module",
   "engines": {
     "node": ">=24.19.0"
