@@ -125,9 +125,11 @@ function repositoryCommand(target: string): string {
  */
 async function offerRepository(ctx: Context, deps: ScaffoldDeps, target: string): Promise<void> {
   const prompter = ctx.prompter!;
-  const signedIn = () => succeeded(deps.spawn("gh", ["auth", "status"], { cwd: target, capture: true }));
-  const status = deps.spawn("gh", ["auth", "status"], { cwd: target, capture: true });
-  if (status.error) {
+  // The active account's login, or "" when it cannot be used. Not `gh auth status`: that fails when
+  // any stored account's token is stale, even with a working active one.
+  const whoami = () => deps.spawn("gh", ["api", "user", "-q", ".login"], { cwd: target, capture: true });
+  const user = whoami();
+  if (user.error) {
     ctx.out.log(`\n${MANUAL_REPOSITORY}`);
     return;
   }
@@ -135,20 +137,21 @@ async function offerRepository(ctx: Context, deps: ScaffoldDeps, target: string)
     ctx.out.log(`\n${MANUAL_REPOSITORY}`);
     return;
   }
+  let login = succeeded(user) ? user.stdout.trim() : "";
   // Signed out, `gh auth login` asks its own questions and opens a browser; then check it took.
-  if (status.status !== 0) {
+  if (!login) {
     ctx.out.log("\nThe GitHub CLI is not signed in. Signing in with `gh auth login`.\n");
     deps.spawn("gh", ["auth", "login"], { cwd: target, capture: false });
-    if (!signedIn()) {
-      ctx.out.log(`\nThe GitHub CLI is still not signed in, so no repository was created. Later, run ` +
-        `\`gh auth login\` and \`${repositoryCommand(target)}\` in the project. Or: ${MANUAL_REPOSITORY}`);
+    const after = whoami();
+    login = succeeded(after) ? after.stdout.trim() : "";
+    if (!login) {
+      ctx.out.log(`\nThe GitHub CLI still cannot reach your account, so no repository was created. Later, ` +
+        `run \`gh auth login\` and \`${repositoryCommand(target)}\` in the project. Or: ${MANUAL_REPOSITORY}`);
       return;
     }
   }
-  const user = deps.spawn("gh", ["api", "user", "-q", ".login"], { cwd: target, capture: true });
-  const login = succeeded(user) ? user.stdout.trim() : "";
   const name = await prompter.text("Repository (owner/name)", {
-    initial: login ? `${login}/${basename(target)}` : undefined,
+    initial: `${login}/${basename(target)}`,
     validate: (value) => REPOSITORY.test(value) ? undefined : "Use owner/name, such as octocat/my-os.",
   });
   const created = deps.spawn("gh",
