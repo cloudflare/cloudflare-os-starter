@@ -21,7 +21,7 @@
 
 ## Four steps
 
-1. Create the project: `npx cfos init my-os`. It clones this starter, installs, and offers the Wrangler and `cf` sign-ins. In a clone you already have, run `pnpm install` instead.
+1. Create the project: `npx @maximoguk/cfos init my-os`. It clones this starter, installs, and offers the Wrangler and `cf` sign-ins. In a clone you already have, run `pnpm install` instead.
 2. Configure it: `pnpm cfos init` asks for the Worker names, hostname, admin emails and AI Gateway, with defaults read from your account, sets up the Access application, and writes `deployment.jsonc`. The first step runs it for you.
 3. Run `pnpm cfos check`, then `pnpm cfos deploy`.
 4. Open `/admin` and set the site name, logo, and accent color; branding needs no redeploy.
@@ -65,7 +65,7 @@ Anything past that needs your own code or settings, which is what this repositor
 Install [Node.js 24.19 or newer](https://nodejs.org/) (the `cfos` CLI is TypeScript run directly by `node`) and [pnpm 11.17](https://pnpm.io/installation) (`corepack enable` provides it). Then create the project:
 
 ```sh
-npx cfos init my-os
+npx @maximoguk/cfos init my-os
 ```
 
 That clones this starter with its history and its `cloudflare-os` submodule, renames the `origin` remote to `starter` (so `git pull starter main` brings in starter updates), runs `pnpm install`, offers both sign-ins, and starts the configuration in step 2. `--template <url|path>` and `--ref <branch>` clone a fork or a branch instead. The same by hand:

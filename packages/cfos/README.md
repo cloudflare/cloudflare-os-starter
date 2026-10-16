@@ -1,15 +1,17 @@
 # cfos
 
+Published as [`@maximoguk/cfos`](https://www.npmjs.com/package/@maximoguk/cfos) for now; the command it installs is `cfos`.
+
 The command line for a self-hosted [Cloudflare OS](https://github.com/cloudflare/cloudflare-os): it scaffolds a project from the [starter](https://github.com/cloudflare/cloudflare-os-starter), configures its `deployment.jsonc`, and checks and deploys it.
 
 ```sh
-npx cfos init my-os      # a new project in ./my-os, then configure it
-pnpm cfos init           # inside a project: configure it
-pnpm cfos check          # validate, check the account, test, build, dry-run every deploy
-pnpm cfos deploy         # the same, then deploy for real
+npx @maximoguk/cfos init my-os   # a new project in ./my-os, then configure it
+pnpm cfos init                   # inside a project: configure it
+pnpm cfos check                  # validate, check the account, test, build, dry-run every deploy
+pnpm cfos deploy                 # the same, then deploy for real
 ```
 
-Inside the starter it is the `cfos` workspace package, and `pnpm cfos <command>` runs it. `npx cfos init` clones the starter's `main` branch; `--ref <branch>` and `--template <url|path>` pick another branch or a fork.
+Inside the starter it is the `packages/cfos` workspace package, and `pnpm cfos <command>` runs it. `npx @maximoguk/cfos init` clones the starter's `main` branch; `--ref <branch>` and `--template <url|path>` pick another branch or a fork.
 
 ## Commands
 
@@ -32,4 +34,4 @@ Questions are asked only when stdin and stdout are both terminals and `CI` is un
 
 ## A global `cfos`
 
-Installed globally, `cfos` only scaffolds. Inside a project it hands every command to the project's own copy, so the deploy logic matches the `cloudflare-os` version the project pins, the way a global `cf` defers to a project-local one.
+Installed globally (`npm i -g @maximoguk/cfos`), `cfos` only scaffolds. Inside a project it hands every command to the project's own copy, so the deploy logic matches the `cloudflare-os` version the project pins, the way a global `cf` defers to a project-local one.
