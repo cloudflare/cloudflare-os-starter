@@ -84,14 +84,19 @@ test("offers the default gateway first, whether or not it exists yet", () => {
 });
 
 test("records a takeover's answers, websearch only when asked", () => {
+  const display = { name: "Acme", message: "Hello." };
   assert.deepEqual(editsAsFragment(takeoverEdits({
     admins: ["a@example.com"], customGatekeeper: "acme-gk-custom", errorReporter: "acme-errors",
+    providers: ["cloudflare", "anthropic"], display,
   })), {
     access: { admins: ["a@example.com"] },
     workers: { customGatekeeper: { name: "acme-gk-custom" }, errorReporter: { name: "acme-errors" } },
+    aiGateway: { providers: ["cloudflare", "anthropic"] },
+    customGatekeeper: display,
   });
   const withWebsearch = takeoverEdits({
     admins: ["a@example.com"], websearch: "acme-gk-websearch", customGatekeeper: "c", errorReporter: "e",
+    providers: ["cloudflare"], display,
   });
   assert.ok(withWebsearch.some((edit) => edit.path.join(".") === "workers.websearch.name"));
 });

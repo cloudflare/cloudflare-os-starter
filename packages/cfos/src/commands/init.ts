@@ -21,7 +21,8 @@ import {
 } from "../core/access.ts";
 import { CfAuthError, CfError, type CloudflareClient, type CfWorker } from "../core/client.ts";
 import { discover, fetchInventory } from "../core/discovery.ts";
-import { editsAsFragment, isPlaceholder, valueAtPath, type DeploymentEdit } from "../core/edits.ts";
+import { editsAsFragment, isPlaceholder, placeholderPaths, valueAtPath, type DeploymentEdit } from "../core/edits.ts";
+import type { AiGatewayProvider } from "../core/deployment-config.ts";
 import { baseNameProblem, findInstances, WORKER_NAME, workerNames } from "../core/naming.ts";
 import {
   adminsProblem,
@@ -247,22 +248,41 @@ async function newDeployment(session: Session, file: Record<string, unknown>): P
     gatewayChoices(gateways ?? []).map((id) => ({
       value: id, label: id, ...(id === "default" ? { hint: "created on first use" } : {}),
     })), "default");
-  const providers = await prompter.multiselect("Which model providers?",
-    PROVIDERS.map((provider) => ({ value: provider, label: provider, hint: PROVIDER_HINTS[provider] })),
-    ["cloudflare"]);
-
-  const accountName = account.name ?? (await lookup(session, "accounts",
-    (client) => client.listAccounts()))?.find((candidate) => candidate.id === account.id)?.name;
-  const display = defaultCustomGatekeeper(accountName);
-  const customGatekeeper = {
-    name: await prompter.text("Organization name the example custom Gatekeeper shows agents", { initial: display.name }),
-    message: await prompter.text("What it tells agents", { initial: display.message }),
-  };
+  const providers = await askProviders(session, file);
+  const customGatekeeper = await askDisplay(session, file);
 
   const answers = { accountId: account.id, name, route, admins, aiGateway: { name: gateway, providers }, customGatekeeper };
   const edits = newDeploymentEdits(answers);
   edits.push(...await setUpAccess(session, newDeploymentAccessTarget(answers)));
   return { edits };
+}
+
+/** The model providers to advertise; the file's own choice is the default when it has one. */
+async function askProviders(session: Session, file: Record<string, unknown>): Promise<AiGatewayProvider[]> {
+  const current = valueAtPath(file, ["aiGateway", "providers"]);
+  const initial = Array.isArray(current) && current.length &&
+      current.every((provider) => PROVIDERS.includes(provider as AiGatewayProvider))
+    ? current as AiGatewayProvider[] : ["cloudflare" as const];
+  return session.prompter.multiselect("Which model providers?",
+    PROVIDERS.map((provider) => ({ value: provider, label: provider, hint: PROVIDER_HINTS[provider] })),
+    initial);
+}
+
+/** The example custom Gatekeeper's text: the file's own when set, else defaulted from the account's name. */
+async function askDisplay(session: Session, file: Record<string, unknown>): Promise<{ name: string; message: string }> {
+  const { prompter, account } = session;
+  const accountName = account.name ?? (await lookup(session, "accounts",
+    (client) => client.listAccounts()))?.find((candidate) => candidate.id === account.id)?.name;
+  const fallback = defaultCustomGatekeeper(accountName);
+  const current = (key: "name" | "message") => {
+    const value = valueAtPath(file, ["customGatekeeper", key]);
+    return typeof value === "string" && value && !isPlaceholder(value) ? value : undefined;
+  };
+  const name = await prompter.text("Organization name the example custom Gatekeeper shows agents",
+    { initial: current("name") ?? fallback.name });
+  const message = await prompter.text("What it tells agents",
+    { initial: current("message") ?? defaultCustomGatekeeper(name).message });
+  return { name, message };
 }
 
 async function takeover(session: Session, file: Record<string, unknown>, chosen?: string): Promise<DeploymentEdit[] | null> {
@@ -293,6 +313,8 @@ async function takeover(session: Session, file: Record<string, unknown>, chosen?
       { initial: names.customGatekeeper, validate: workerNameProblem }),
     errorReporter: await prompter.text("Error Reporter Worker name",
       { initial: names.errorReporter, validate: workerNameProblem }),
+    providers: await askProviders(session, file),
+    display: await askDisplay(session, file),
   };
   const edits = [...discovery.edits, ...takeoverEdits(answers)];
   if (!discovery.edits.some((edit) => edit.path.join(".") === "access.audience")) {
@@ -300,6 +322,24 @@ async function takeover(session: Session, file: Record<string, unknown>, chosen?
       "finds or creates one for its hostname.");
   }
   return edits;
+}
+
+/**
+ * What to do after writing: deploy, or first fill in what is still a placeholder. `cfos deploy`
+ * runs every check `cfos check` does before it deploys anything, so it is the one next step.
+ */
+export function nextStep(file: Record<string, unknown>, where: string, configFlag: string): string {
+  const left = placeholderPaths(file);
+  if (!left.length) return `Next: \`pnpm cfos deploy${configFlag}\`.`;
+  const access = left.filter((path) => path.startsWith("access."));
+  const other = left.filter((path) => !path.startsWith("access."));
+  return [
+    `Still placeholders in ${where}:`,
+    ...left.map((path) => `  ${path}`),
+    ...access.length ? [`\`pnpm cfos access${configFlag}\` fills ${access.join(" and ")}.`] : [],
+    ...other.length ? [`Fill in ${other.length === 1 ? "that one" : "the rest"} by hand.`] : [],
+    `Then: \`pnpm cfos deploy${configFlag}\`.`,
+  ].join("\n");
 }
 
 /** `cfos init`, inside a project. */
@@ -370,7 +410,8 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
   const outWhere = displayPath(ctx, outPath);
   ctx.out.log(`\n${outWhere} values:\n${JSON.stringify(editsAsFragment(edits), null, 2)}`);
   await updateDeployment(inPath, edits, outPath);
-  ctx.out.log(`\nWrote ${edits.length} values to ${outWhere}, comments intact. Next: \`pnpm cfos check\`` +
-    (outPath === inPath ? "." : ` --config ${outWhere}.`));
+  ctx.out.log(`\nWrote ${edits.length} values to ${outWhere}, comments intact.`);
+  ctx.out.log(nextStep(parseDeployment(await readFile(outPath, "utf8"), outWhere),
+    outWhere, outPath === inPath ? "" : ` --config ${outWhere}`));
   return 0;
 }

@@ -144,8 +144,13 @@ export interface TakeoverAnswers {
   admins: string[];
   /** Asked only when the instance has no Web Search Worker yet. */
   websearch?: string;
+  /** The custom Gatekeeper's Worker name. */
   customGatekeeper: string;
   errorReporter: string;
+  /** The providers to advertise on the instance's gateway. */
+  providers: AiGatewayProvider[];
+  /** The example custom Gatekeeper's display text. */
+  display: { name: string; message: string };
 }
 
 /** The edits recording a takeover's answers. */
@@ -155,5 +160,8 @@ export function takeoverEdits(answers: TakeoverAnswers): DeploymentEdit[] {
     ...(answers.websearch ? [{ path: ["workers", "websearch", "name"], value: answers.websearch }] : []),
     { path: ["workers", "customGatekeeper", "name"], value: answers.customGatekeeper },
     { path: ["workers", "errorReporter", "name"], value: answers.errorReporter },
+    { path: ["aiGateway", "providers"], value: answers.providers },
+    { path: ["customGatekeeper", "name"], value: answers.display.name },
+    { path: ["customGatekeeper", "message"], value: answers.display.message },
   ];
 }

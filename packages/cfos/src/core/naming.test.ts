@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { placeholderPaths } from "./edits.ts";
 import { accessAppName, baseNameProblem, findInstances, matchers, workerNames } from "./naming.ts";
 
 test("names all seven Workers the hosted way", () => {
@@ -39,4 +40,19 @@ test("accepts a base name only if every derived name is a valid Worker name", ()
   assert.match(baseNameProblem("-acme")!, /lowercase/);
   // 63 is the Worker limit; "-context-collections" is the longest suffix.
   assert.match(baseNameProblem("a".repeat(50))!, /Too long/);
+});
+
+test("lists the placeholders a deploy would still refuse, and only those", () => {
+  const file = {
+    accountId: "0123456789abcdef0123456789abcdef",
+    workers: { router: { name: "acme" }, errorReporter: { name: "<ERROR_REPORTER_WORKER_NAME>" } },
+    access: { audience: "<ACCESS_AUDIENCE>", admins: ["<ADMIN_EMAIL>"] },
+    customGatekeeper: { name: "<ORGANIZATION_DISPLAY_NAME>", message: "Hi." },
+    errorReporting: { enabled: true },
+    aiGateway: { enabled: false, name: "<UNUSED>" },
+  };
+  assert.deepEqual(placeholderPaths(file),
+    ["workers.errorReporter.name", "access.audience", "access.admins.0", "customGatekeeper.name"]);
+  assert.deepEqual(placeholderPaths({ ...file, errorReporting: { enabled: false } }),
+    ["access.audience", "access.admins.0", "customGatekeeper.name"]);
 });

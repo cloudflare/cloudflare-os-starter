@@ -41,7 +41,7 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
     ctx.out.log(`Dry run: ${where} not written.`);
   } else {
     await updateDeployment(path, result.edits);
-    ctx.out.log(`Wrote access.issuer and access.audience to ${where}. Run \`pnpm cfos check\` next.`);
+    ctx.out.log(`Wrote access.issuer and access.audience to ${where}. Run \`pnpm cfos deploy\` next.`);
   }
   ctx.out.json({ issuer: result.edits[0].value, audience: result.edits[1].value });
   return 0;

@@ -136,6 +136,9 @@ test("asks for the subdomain when no Worker carries it, and can leave Access for
   const file = written();
   assert.equal(valueAtPath(file, ["publicBaseUrl"]), "https://acme-os.typed-sub.workers.dev");
   assert.equal(valueAtPath(file, ["access", "audience"]), "<ACCESS_AUDIENCE>");
+  assert.match(stderr(), /Still placeholders in init\.jsonc:\n {2}access\.issuer\n {2}access\.audience\n/);
+  assert.match(stderr(), /`pnpm cfos access --config init\.jsonc` fills access\.issuer and access\.audience\./);
+  assert.doesNotMatch(stderr(), /Fill in/);
 });
 
 test("adds a One-time PIN provider, validating it first", async (t) => {
@@ -160,7 +163,7 @@ test("adds a One-time PIN provider, validating it first", async (t) => {
 });
 
 test("switches to a takeover when the name is a hosted instance", async (t) => {
-  const { code, written, prompter } = await init(t, [
+  const { code, written, prompter, stderr } = await init(t, [
     ["What are you setting up?", "new"],
     ["Base name", "acme"],
     ['"acme" looks like a hosted instance', "takeover"],
@@ -168,6 +171,9 @@ test("switches to a takeover when the name is a hosted instance", async (t) => {
     ["Web Search Gatekeeper Worker name", DEFAULT],
     ["Custom Gatekeeper Worker name", DEFAULT],
     ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare", "anthropic"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
   ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
   assert.equal(code, 0);
   assert.equal(prompter.asked.find((asked) => asked.message.startsWith("What are you setting up?"))!.hints!.takeover,
@@ -181,6 +187,12 @@ test("switches to a takeover when the name is a hosted instance", async (t) => {
   assert.equal(valueAtPath(file, ["access", "audience"]), "aud-acme");
   assert.equal(valueAtPath(file, ["resources", "blueprintsKvNamespaceId"]), "kv-blueprints");
   assert.equal(valueAtPath(file, ["accountId"]), FAKE_ACCOUNT);
+  // What the hosted deploy never had is asked for too, so nothing is left as a placeholder.
+  assert.deepEqual(valueAtPath(file, ["aiGateway", "providers"]), ["cloudflare", "anthropic"]);
+  assert.deepEqual(valueAtPath(file, ["customGatekeeper"]), {
+    name: "Acme", message: "This is Acme's Cloudflare OS deployment.",
+  });
+  assert.match(stderr(), /Next: `pnpm cfos deploy --config init\.jsonc`\./);
 });
 
 test("refuses to overwrite a taken name that is not an instance", async (t) => {
@@ -204,10 +216,15 @@ test("takes over a hosted instance chosen from the menu", async (t) => {
     ["Web Search Gatekeeper Worker name", "acme-search"],
     ["Custom Gatekeeper Worker name", DEFAULT],
     ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", "Acme Corp"],
+    ["What it tells agents", DEFAULT],
   ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
   assert.equal(code, 0);
   const file = written();
   assert.equal(valueAtPath(file, ["workers", "websearch", "name"]), "acme-search");
+  // The message default follows the name just given.
+  assert.equal(valueAtPath(file, ["customGatekeeper", "message"]), "This is Acme Corp's Cloudflare OS deployment.");
   assert.deepEqual(valueAtPath(file, ["access", "admins"]), ["ops@example.com", "me@example.com"]);
 });
 

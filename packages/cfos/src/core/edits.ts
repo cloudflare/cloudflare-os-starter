@@ -22,6 +22,32 @@ export function isPlaceholder(value: unknown): boolean {
   return typeof value === "string" && /<[^>]+>/.test(value);
 }
 
+/**
+ * Config paths still holding a template placeholder, in file order. Sections a deploy ignores are
+ * skipped: the Error Reporter's while error reporting is off, and AI Gateway's beyond `enabled` while
+ * it is off -- the same scope `validateConfig` checks placeholders in.
+ */
+export function placeholderPaths(file: Record<string, unknown>): string[] {
+  const skip = new Set<string>();
+  if (valueAtPath(file, ["errorReporting", "enabled"]) === false) {
+    skip.add("workers.errorReporter");
+    skip.add("errorReporting");
+  }
+  if (valueAtPath(file, ["aiGateway", "enabled"]) === false) skip.add("aiGateway");
+  const found: string[] = [];
+  const walk = (value: unknown, path: string[]) => {
+    const key = path.join(".");
+    if (skip.has(key) || [...skip].some((prefix) => key.startsWith(`${prefix}.`))) return;
+    if (isPlaceholder(value)) found.push(key);
+    else if (Array.isArray(value)) value.forEach((item, index) => walk(item, [...path, String(index)]));
+    else if (value && typeof value === "object") {
+      for (const [child, nested] of Object.entries(value)) walk(nested, [...path, child]);
+    }
+  };
+  walk(file, []);
+  return found;
+}
+
 /** The edits as the nested `deployment.jsonc` fragment they produce. */
 export function editsAsFragment(edits: DeploymentEdit[]): Record<string, unknown> {
   const fragment: Record<string, unknown> = {};

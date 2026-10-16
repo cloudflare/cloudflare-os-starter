@@ -176,7 +176,7 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
     // confirmation of anything; it only replaces a failure.
     if ((error as Error).cause instanceof PlaceholderError && ctx.prompter) {
       ctx.out.log((error as Error).message);
-      if (await ctx.prompter.confirm(`${where} is not configured yet. Run \`cfos init\` now?`)) {
+      if (await ctx.prompter.confirm(`${where} still has placeholders. Run \`cfos init\` now?`)) {
         const init = await import("./init.ts");
         const code = await init.run({ command: "init", values: {}, positionals: [] }, ctx);
         if (code === 0) ctx.out.log(`\nThen run \`pnpm cfos ${args.command}\` again.`);

@@ -14,8 +14,20 @@ export default {
     tasks: {
       build: {
         command: 'tsc -p tsconfig.json',
-        // Reads only: `noEmit`, so the automatic inputs are the whole fingerprint.
-        cache: { input: [{ auto: true }], output: [] },
+        cache: {
+          // Listed, not left to `{ auto: true }` alone: vp's automatic tracking does not see what tsc
+          // (tsgo) reads, so with auto alone a type error replays the last cached pass. The types it
+          // reads from elsewhere are upstream's scripts (the type-only `manifest-lib` import) and
+          // dependencies, whose versions the lockfile pins.
+          input: [
+            { auto: true },
+            { pattern: 'src/**/*.ts', base: 'package' },
+            { pattern: '{package.json,tsconfig*.json,vite.config.ts}', base: 'package' },
+            { pattern: '{tsconfig.json,pnpm-lock.yaml}', base: 'workspace' },
+            { pattern: 'cloudflare-os/scripts/**/*.ts', base: 'workspace' },
+          ],
+          output: [],
+        },
       },
       test: {
         command: withTestTimeout("node --test 'packages/cfos/src/**/*.test.ts'"),

@@ -52,11 +52,13 @@ pnpm cfos check
 the Workers, storage, AI Gateway and Access values in sections 3–7 under the hosted flow's names. It
 prints a found/missing table, then asks for the values no lookup can supply, with defaults:
 `access.admins` (the email `cf` is signed in as), a Web Search Worker name if the instance has none,
-and names for the two Workers the hosted flow does not have (`N-gk-custom`, `N-errors`). It writes
+names for the two Workers the hosted flow does not have (`N-gk-custom`, `N-errors`), the model
+providers to advertise, and the example custom Gatekeeper's name and message. It writes
 everything into `deployment.jsonc`, leaving the comments alone; `--out <path>` writes a copy
 instead. It never guesses: anything it did not find stays as it was in the file and is listed as
 missing. It also lists any other `N-gk-*` Worker, a Gatekeeper the wizard installed that this
-starter will not bind (section 8). Choosing **A new deployment** with the instance's name switches
+starter will not bind (section 8). It ends by listing anything still a placeholder, or with
+`pnpm cfos deploy` when nothing is. Choosing **A new deployment** with the instance's name switches
 to the takeover rather than overwriting it.
 
 The lookup on its own is `pnpm cfos import`. It never prompts outside a terminal, so it scripts:
@@ -70,7 +72,7 @@ It only reads from the account. With no `--account` and no `accountId` in the fi
 of the accounts `cf` can reach to search, and with no `N`, which instance; outside a terminal, or
 in CI, it lists them and stops instead. Without `--out` it prints the values as JSON on stdout (the
 report goes to stderr) and ends with the full command to re-run with `--out`. It leaves
-`access.admins` and the two new Worker names for you to fill in.
+`access.admins`, the two new Worker names and the custom Gatekeeper's text for you to fill in.
 
 `pnpm cfos check` then confirms, against the account, the AUD tag, the team domain, and every KV
 namespace, R2 bucket and AI Gateway the file now names. That catches a wrong value before anything

@@ -34,6 +34,7 @@ export function formatReport(n: string, discovery: Discovery): string {
     `  workers.customGatekeeper   a new name, e.g. "${n}-gk-custom"`,
     `  workers.errorReporter      a new name, e.g. "${n}-errors"`,
     "  aiGateway.providers        add anthropic/openai if you stored keys on the gateway",
+    "  customGatekeeper.*         the name and message the example custom Gatekeeper shows agents",
   );
   if (discovery.orphanedGatekeepers.length) {
     lines.push(
@@ -116,7 +117,7 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
     await updateDeployment(inPath, discovery.edits, outPath);
     ctx.out.log(`\nWrote ${discovery.edits.length} values to ${outWhere} (local file only; nothing in ` +
       `the account changed). Review it${outPath === inPath ? ` with \`git diff ${outWhere}\`` : ""}, ` +
-      "fill in what is listed above, then run `pnpm cfos check`.");
+      "fill in what is listed above, then run `pnpm cfos deploy`.");
   } else {
     // The whole command, so a choice made at a prompt does not have to be made again.
     const rerun = ["pnpm cfos import", instance, accountFlag,
