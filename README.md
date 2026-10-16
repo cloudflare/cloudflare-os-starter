@@ -79,7 +79,7 @@ If you have not cloned it yet, one command does all of that:
 npx @maximoguk/cfos init my-os
 ```
 
-It clones this starter with its history and its `cloudflare-os` submodule, renames the `origin` remote to `starter`, runs `pnpm install`, offers to create a private GitHub repository with the [GitHub CLI](https://cli.github.com/) (`gh`) and push to it, and starts `pnpm cfos init`. Without `gh`, it prints the commands to add a repository by hand. `--template <url|path>` and `--ref <branch>` clone a fork or a branch instead.
+It clones this starter with its history and its `cloudflare-os` submodule, renames the `origin` remote to `starter`, runs `pnpm install`, offers to create a private GitHub repository with the [GitHub CLI](https://cli.github.com/) (`gh`) and push to it, signing you in to `gh` first if needed, and starts `pnpm cfos init`. Without `gh`, it prints the commands to add a repository by hand. `--template <url|path>` and `--ref <branch>` clone a fork or a branch instead.
 
 `pnpm install` installs the submodule's own workspace too, from a `postinstall` hook. If you install with `--ignore-scripts`, run `pnpm cfos install` afterwards; `pnpm cfos check` says so if you forget.
 

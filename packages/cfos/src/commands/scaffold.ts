@@ -125,19 +125,25 @@ function repositoryCommand(target: string): string {
  */
 async function offerRepository(ctx: Context, deps: ScaffoldDeps, target: string): Promise<void> {
   const prompter = ctx.prompter!;
+  const signedIn = () => succeeded(deps.spawn("gh", ["auth", "status"], { cwd: target, capture: true }));
   const status = deps.spawn("gh", ["auth", "status"], { cwd: target, capture: true });
   if (status.error) {
     ctx.out.log(`\n${MANUAL_REPOSITORY}`);
     return;
   }
-  if (status.status !== 0) {
-    ctx.out.log("\nThe GitHub CLI is not signed in, so it cannot create a repository for the project. " +
-      `Run \`gh auth login\`, then \`${repositoryCommand(target)}\` in the project. Or: ${MANUAL_REPOSITORY}`);
-    return;
-  }
   if (!await prompter.confirm("Create a private GitHub repository for this project and push it?", true)) {
     ctx.out.log(`\n${MANUAL_REPOSITORY}`);
     return;
+  }
+  // Signed out, `gh auth login` asks its own questions and opens a browser; then check it took.
+  if (status.status !== 0) {
+    ctx.out.log("\nThe GitHub CLI is not signed in. Signing in with `gh auth login`.\n");
+    deps.spawn("gh", ["auth", "login"], { cwd: target, capture: false });
+    if (!signedIn()) {
+      ctx.out.log(`\nThe GitHub CLI is still not signed in, so no repository was created. Later, run ` +
+        `\`gh auth login\` and \`${repositoryCommand(target)}\` in the project. Or: ${MANUAL_REPOSITORY}`);
+      return;
+    }
   }
   const user = deps.spawn("gh", ["api", "user", "-q", ".login"], { cwd: target, capture: true });
   const login = succeeded(user) ? user.stdout.trim() : "";

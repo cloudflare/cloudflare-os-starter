@@ -159,10 +159,46 @@ test("without gh, says how to add a repository by hand, and asks nothing", async
   assert.equal(configured.length, 1);
 });
 
-test("with gh signed out, suggests signing in, and asks nothing", async (t) => {
-  const { commands, stderr } = await scaffolding(t, { replies: { "gh auth status": { status: 1 } }, script: [] });
+test("with gh signed out, signs in once asked, then creates the repository", async (t) => {
+  const cwd = workdir(t);
+  const tools = recording(GH);
+  const inner = tools.deps.spawn;
+  let signedIn = false;
+  tools.deps.spawn = (command, args, options) => {
+    const result = inner(command, args, options);
+    if (command === "gh" && args.join(" ") === "auth login") signedIn = true;
+    if (command === "gh" && args.join(" ") === "auth status" && !signedIn) return { ...result, status: 1 };
+    return result;
+  };
+  const prompter = scriptedPrompter([["Create a private GitHub repository", true], ["Repository (owner/name)", DEFAULT]]);
+  const harness = testContext({ root: cwd, prompter });
+  assert.equal(await scaffold({ command: "init", values: {}, positionals: ["my-os"] }, harness.ctx, tools.deps), 0);
+  assert.deepEqual(prompter.remaining(), []);
+  assert.deepEqual(tools.commands().slice(5), [
+    "gh auth status",
+    "gh auth login",
+    "gh auth status",
+    "gh api user -q .login",
+    "gh repo create me/my-os --private --source . --remote origin --push",
+  ]);
+});
+
+test("when the gh sign-in does not take, says how to finish later, and carries on to init", async (t) => {
+  const { commands, configured, stderr } = await scaffolding(t, {
+    replies: { "gh auth status": { status: 1 } },
+    script: [["Create a private GitHub repository", true]],
+  });
+  assert.deepEqual(commands().slice(5), ["gh auth status", "gh auth login", "gh auth status"]);
+  assert.match(stderr(), /still not signed in[\s\S]*gh repo create <owner>\/my-os/);
+  assert.equal(configured.length, 1);
+});
+
+test("declined, signs nobody in to gh", async (t) => {
+  const { commands } = await scaffolding(t, {
+    replies: { "gh auth status": { status: 1 } },
+    script: [["Create a private GitHub repository", false]],
+  });
   assert.deepEqual(commands().slice(5), ["gh auth status"]);
-  assert.match(stderr(), /gh auth login/);
 });
 
 test("takes no for an answer", async (t) => {
