@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBinEntry } from "@gadgets/scripts/bin-entry";
-import { pnpmCommand } from "@gadgets/scripts/pnpm-command";
+import { pnpmCommand } from "./pnpm-command.ts";
 import {
   CfAuthError,
   CfError,

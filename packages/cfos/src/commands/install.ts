@@ -12,7 +12,7 @@
 // `--check` compares that record with the lockfile, catching a skipped hook after a gitlink bump.
 //
 // Imports only node builtins statically: it runs before the submodule is checked out, and imports
-// the submodule's `pnpmCommand()` only once the submodule is known to be there.
+// `pnpmCommand()` (../pnpm-command.ts, over the submodule's) only once the submodule is there.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -74,7 +74,7 @@ export async function install(
   console.error(`cfos install: installing cloudflare-os/'s workspace too (pnpm ${SUBMODULE_INSTALL_ARGS.join(" ")})`);
   clearWorkspaceState(join(submoduleDir, "node_modules"));
   rmSync(join(submoduleDir, INSTALL_MARKER), { force: true });
-  const { pnpmCommand } = await import("@gadgets/scripts/pnpm-command");
+  const { pnpmCommand } = await import("../pnpm-command.ts");
   const [command, args] = pnpmCommand(SUBMODULE_INSTALL_ARGS);
   const result = spawn(command, args, { cwd: root, stdio: "inherit" });
   if (result.error) {

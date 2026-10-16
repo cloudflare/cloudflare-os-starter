@@ -24,7 +24,7 @@ import { existsSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { resolveBinEntry } from "@gadgets/scripts/bin-entry";
-import { pnpmCommand } from "@gadgets/scripts/pnpm-command";
+import { pnpmCommand } from "../pnpm-command.ts";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { configPath, displayPath, type CommandArgs, type Context } from "../context.ts";
 import type { BaseConfigs, BuildCommand, DeploymentConfig } from "../core/deployment-config.ts";
