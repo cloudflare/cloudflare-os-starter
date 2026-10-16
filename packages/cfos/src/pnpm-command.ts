@@ -4,8 +4,8 @@
 // found through `npm_execpath`, because Node will not spawn the `pnpm.cmd` shim on PATH without a
 // shell. Only `pnpm run` sets that variable to pnpm: under `npx @maximoguk/cfos init` it names
 // npm's CLI, so upstream falls back to a bare `pnpm` and every build failed with `spawn pnpm
-// ENOENT`. This then looks for the entry where the shim itself runs it from, beside the first
-// `pnpm.cmd` on PATH: npm's global layout or Corepack's.
+// ENOENT`. This then looks for the entry where the shim itself runs it from, beside the `pnpm.cmd`
+// on PATH: npm's global layout or Corepack's.
 
 import { existsSync } from "node:fs";
 import { win32 } from "node:path";
@@ -37,12 +37,22 @@ export function pnpmCommand(
   return entry ? [process.execPath, [entry, ...args]] : command;
 }
 
-/** The JS entry beside the first `pnpm.cmd` on PATH, if it is in a known place. */
+/**
+ * The JS entry beside the `pnpm.cmd` a shell would run, if it is in a known place. PATH is walked
+ * in order, and the first directory holding any pnpm decides: a bare `pnpm` already resolves to a
+ * `pnpm.com` or `pnpm.exe` without a shell, so one of those there stands, and only a `pnpm.cmd`
+ * reached first needs its entry found. Skipping past an executable to a later shim could run a
+ * different pnpm.
+ */
 function shimEntry(env: NodeJS.ProcessEnv, exists: (path: string) => boolean): string | undefined {
   // Windows environment names are case-insensitive, and Node keeps whichever case it found: `Path`.
   const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH");
   const dirs = (pathKey ? env[pathKey] ?? "" : "").split(win32.delimiter).filter(Boolean);
-  const dir = dirs.find((candidate) => exists(win32.join(candidate, "pnpm.cmd")));
-  if (dir === undefined) return undefined;
-  return SHIM_ENTRIES.map((parts) => win32.join(dir, ...parts)).find((entry) => exists(entry));
+  for (const dir of dirs) {
+    if (exists(win32.join(dir, "pnpm.com")) || exists(win32.join(dir, "pnpm.exe"))) return undefined;
+    if (exists(win32.join(dir, "pnpm.cmd"))) {
+      return SHIM_ENTRIES.map((parts) => win32.join(dir, ...parts)).find((entry) => exists(entry));
+    }
+  }
+  return undefined;
 }
