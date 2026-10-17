@@ -1,0 +1,45 @@
+packages/cf-os/src/main.test.ts
+  s_c205e2de444ff0::t_8d015c746984d5 73,86,116-124,138,180-182,187-188
+README.md
+  s_c205e2de444ff0::t_a426e74270d095 74,156-157
+packages/cf-os/src/commands/scaffold.ts
+  s_c205e2de444ff0::t_b172fa64acf019 4,26-28,170,201
+packages/cf-os/package.json
+  s_c205e2de444ff0::t_ac665eaaf6d5d2 3
+.agents/skills/cloudflare-os-operator/references/upgrade-and-rollback.md
+  s_c205e2de444ff0::t_b1c2797a3c57d8 15-16
+packages/cf-os/src/commands/scaffold.test.ts
+  s_c205e2de444ff0::t_f9a63dd7cef252 85
+packages/cf-os/src/commands/update.test.ts
+  s_c205e2de444ff0::t_e063d9c646b91f 1-234
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_c205e2de444ff0::t_34ee974642fccd 59,85,377
+packages/cf-os/src/main.ts
+  s_c205e2de444ff0::t_0866ae169b98a2 5-10,14-15,57-61,121-137,248,253-254
+packages/cf-os/src/commands/update.ts
+  s_c205e2de444ff0::t_2275fb58c23bca 1-420
+.agents/skills/cloudflare-os-operator/references/updating.md
+  s_c205e2de444ff0::t_7022766ff522eb 1-72
+packages/cf-os/README.md
+  s_c205e2de444ff0::t_9d9c988775305f 10,24,37-39
+docs/customization.md
+  s_c205e2de444ff0::t_f64ebf69785386 210-213
+.gitignore
+  s_c205e2de444ff0::t_9a6e7b42235ae7 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ab1790d2e2df4e85e364b612f00c1f611285f575",
+  "prompts": {},
+  "sessions": {
+    "s_c205e2de444ff0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "18e4761e-90ef-4663-9e89-173084f37cc4",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
