@@ -16,7 +16,7 @@ test("under pnpm run, uses the entry npm_execpath names", () => {
 });
 
 test("under npx on Windows, finds the entry beside the pnpm.cmd shim on PATH", () => {
-  // As `npx @maximoguk/cfos init` runs it: npm_execpath is npm's, and Node keeps `Path`'s case.
+  // As `npx cf-os init` runs it: npm_execpath is npm's, and Node keeps `Path`'s case.
   const env = { npm_execpath: NPM_CLI, Path: "C:\\Windows\\system32;C:\\nvm4w\\nodejs" };
   const exists = only("C:\\nvm4w\\nodejs\\pnpm.cmd", PNPM_MJS);
   assert.deepEqual(pnpmCommand(["exec", "vp"], env, "win32", exists), [process.execPath, [PNPM_MJS, "exec", "vp"]]);

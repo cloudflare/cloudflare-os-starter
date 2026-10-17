@@ -2,7 +2,7 @@
 //
 // Upstream's pnpmCommand (cloudflare-os/scripts/pnpm-command.ts) runs pnpm's JS entry with node,
 // found through `npm_execpath`, because Node will not spawn the `pnpm.cmd` shim on PATH without a
-// shell. Only `pnpm run` sets that variable to pnpm: under `npx @maximoguk/cfos init` it names
+// shell. Only `pnpm run` sets that variable to pnpm: under `npx cf-os init` it names
 // npm's CLI, so upstream falls back to a bare `pnpm` and every build failed with `spawn pnpm
 // ENOENT`. This then looks for the entry where the shim itself runs it from, beside the `pnpm.cmd`
 // on PATH: npm's global layout or Corepack's.

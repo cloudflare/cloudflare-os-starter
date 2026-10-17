@@ -21,7 +21,7 @@
 
 ## Four steps
 
-1. Get the project: fork or clone this repository, then run `pnpm install`. If you have not cloned it, `npx @maximoguk/cfos init my-os` does that for you: it clones this starter, installs, offers to create a private GitHub repository for it and push there, and carries on with step 2.
+1. Get the project: fork or clone this repository, then run `pnpm install`. If you have not cloned it, `npx cf-os init my-os` does that for you: it clones this starter, installs, offers to create a private GitHub repository for it and push there, and carries on with step 2.
 2. Configure and deploy: `pnpm cfos init` offers the sign-ins, asks for the Worker names, hostname, admin emails and AI Gateway with defaults read from your account, sets up the Access application, writes `deployment.jsonc`, and offers to deploy. Commit `deployment.jsonc`: it belongs in your repository.
 3. Deploy later changes with `pnpm cfos deploy`. `pnpm cfos check` runs the same checks and dry-runs the deploy.
 4. Open `/admin` and set the site name, logo, and accent color; branding needs no redeploy.
@@ -76,7 +76,7 @@ pnpm cfos init
 If you have not cloned it yet, one command does all of that:
 
 ```sh
-npx @maximoguk/cfos init my-os
+npx cf-os init my-os
 ```
 
 It clones this starter with its history and its `cloudflare-os` submodule, renames the `origin` remote to `starter`, runs `pnpm install`, offers to create a private GitHub repository with the [GitHub CLI](https://cli.github.com/) (`gh`) and push to it, signing you in to `gh` first if needed, and starts `pnpm cfos init`. Without `gh`, it prints the commands to add a repository by hand. `--template <url|path>` and `--ref <branch>` clone a fork or a branch instead.

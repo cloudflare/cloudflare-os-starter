@@ -1,6 +1,6 @@
 # cfos
 
-Published as [`@maximoguk/cfos`](https://www.npmjs.com/package/@maximoguk/cfos) for now; the command it installs is `cfos`.
+Published as [`cf-os`](https://www.npmjs.com/package/cf-os); the command it installs is `cfos`. (npm refuses the name `cfos` itself as too close to existing packages.)
 
 The command line for a self-hosted [Cloudflare OS](https://github.com/cloudflare/cloudflare-os): it scaffolds a project from the [starter](https://github.com/cloudflare/cloudflare-os-starter), configures its `deployment.jsonc`, and checks and deploys it.
 
@@ -8,10 +8,10 @@ The command line for a self-hosted [Cloudflare OS](https://github.com/cloudflare
 pnpm cfos init                   # inside a project: configure it, then offer to deploy
 pnpm cfos check                  # validate, check the account, test, build, dry-run every deploy
 pnpm cfos deploy                 # the same, then deploy for real
-npx @maximoguk/cfos init my-os   # no clone yet: create one in ./my-os, then the same init
+npx cf-os init my-os             # no clone yet: create one in ./my-os, then the same init
 ```
 
-Inside the starter it is the `packages/cfos` workspace package, and `pnpm cfos <command>` runs it: fork or clone the starter, `pnpm install`, then `pnpm cfos init`. `npx @maximoguk/cfos init` is for when you have not cloned it yet. It clones the starter's `main` branch (`--ref <branch>` and `--template <url|path>` pick another branch or a fork), installs, offers to create a private GitHub repository for it, and runs the project's own `pnpm cfos init`.
+Inside the starter it is the `packages/cfos` workspace package, and `pnpm cfos <command>` runs it: fork or clone the starter, `pnpm install`, then `pnpm cfos init`. `npx cf-os init` is for when you have not cloned it yet. It clones the starter's `main` branch (`--ref <branch>` and `--template <url|path>` pick another branch or a fork), installs, offers to create a private GitHub repository for it, and runs the project's own `pnpm cfos init`.
 
 ## Commands
 
@@ -34,4 +34,4 @@ Questions are asked only when stdin and stdout are both terminals and `CI` is un
 
 ## A global `cfos`
 
-Installed globally (`npm i -g @maximoguk/cfos`), `cfos` only scaffolds. Inside a project it hands every command to the project's own copy, so the deploy logic matches the `cloudflare-os` version the project pins, the way a global `cf` defers to a project-local one.
+Installed globally (`npm i -g cf-os`), `cfos` only scaffolds. Inside a project it hands every command to the project's own copy, so the deploy logic matches the `cloudflare-os` version the project pins, the way a global `cf` defers to a project-local one.

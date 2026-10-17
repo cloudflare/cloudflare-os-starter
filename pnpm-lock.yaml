@@ -47,15 +47,15 @@ importers:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'
         version: 0.22.0(@cloudflare/workers-types@5.20261015.1)(@types/node@26.1.0)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@types/node@26.1.0)(@vitest/browser-preview@5.0.4)(vite@7.3.6(@types/node@26.1.0)(lightningcss@1.33.0)))
-      '@maximoguk/cfos':
-        specifier: workspace:*
-        version: link:packages/cfos
       '@types/node':
         specifier: 26.1.0
         version: 26.1.0
       cf:
         specifier: 1.0.0-beta.17
         version: 1.0.0-beta.17(@types/node@26.1.0)
+      cf-os:
+        specifier: workspace:*
+        version: link:packages/cfos
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

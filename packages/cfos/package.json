@@ -1,5 +1,5 @@
 {
-  "name": "@maximoguk/cfos",
+  "name": "cf-os",
   "version": "0.1.7",
   "description": "Scaffold, configure and deploy a self-hosted Cloudflare OS.",
   "license": "Apache-2.0",
