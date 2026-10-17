@@ -1,0 +1,101 @@
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_c205e2de444ff0::t_423937f2efdd16 18,32,45,47-51,54,58-60,62,72,119,128,201,203,208,250,285,290,300,305,364
+.agents/skills/cloudflare-os-operator/references/troubleshooting.md
+  s_c205e2de444ff0::t_7a36e204c58af9 57,131,135,137,139,215,229,237
+.agents/skills/cloudflare-os-operator/references/upgrade-and-rollback.md
+  s_c205e2de444ff0::t_7c0ed8fe3bdf25 24,31,36,38
+README.md
+  s_c205e2de444ff0::t_bf90ecd8cb7090 25-26,65,71,82,84,86,88,96,103,105,107,114-115,118,161
+deployment.jsonc
+  s_c205e2de444ff0::t_8ed7cdd26b3a66 46-47
+docs/customization.md
+  s_c205e2de444ff0::t_3b0851859c61fd 75,87,171,191,212,214
+docs/migrate-from-hosted.md
+  s_c205e2de444ff0::t_db93ec55c3a10b 9-10,46,48,62,65,68-69,78,96,177,206,242,244-245,263,280
+package.json
+  s_c205e2de444ff0::t_e898c361e7f6fa 10-14,18-19
+packages/cf-os/README.md
+  s_c205e2de444ff0::t_f2354dda67090d 1,6-8,12,33,35
+packages/cf-os/package.json
+  s_c205e2de444ff0::t_c498d6534224fc 9,11,23,31
+packages/cf-os/src/commands/access.test.ts
+  s_c205e2de444ff0::t_b704067b70146c 12
+packages/cf-os/src/commands/access.ts
+  s_c205e2de444ff0::t_015ef6f9ac089e 1,15,44
+packages/cf-os/src/commands/deploy.test.ts
+  s_c205e2de444ff0::t_81ae9760aae72d 32,36,63,78
+packages/cf-os/src/commands/deploy.ts
+  s_c205e2de444ff0::t_c3161e12fbd694 1,217,232,239
+packages/cf-os/src/commands/import.test.ts
+  s_c205e2de444ff0::t_7d79b589c02278 11,34,68,87,101
+packages/cf-os/src/commands/import.ts
+  s_c205e2de444ff0::t_902dc7d719a699 1,32,82,94,101,120,123
+packages/cf-os/src/commands/init.test.ts
+  s_c205e2de444ff0::t_77628c054cead4 63,102,104,119,135,175,231,295,307-308,341
+packages/cf-os/src/commands/init.ts
+  s_c205e2de444ff0::t_3f4839ff7e4fb6 1,8,14,58-60,66,121,198,203,225,314,344,351-352,356,362,364,398,405,415
+packages/cf-os/src/commands/install.test.ts
+  s_c205e2de444ff0::t_7afd18fba31066 51,60-61,70,72,90-92,97,121,132,164,211,213,222,237,250,257-259,263,266-269
+packages/cf-os/src/commands/install.ts
+  s_c205e2de444ff0::t_9d39780291f244 1,6,40,44,74,81,109,121,128
+packages/cf-os/src/commands/scaffold.test.ts
+  s_c205e2de444ff0::t_f9c61c29c50f97 39,41,54,86,148,265
+packages/cf-os/src/commands/scaffold.ts
+  s_c205e2de444ff0::t_db741ebd76fa15 1,6,11,40,58,177,203,213,219,227
+packages/cf-os/src/context.ts
+  s_c205e2de444ff0::t_4e9a23e1611653 6
+packages/cf-os/src/core/deployment-config.ts
+  s_c205e2de444ff0::t_40ba13b528dd28 6
+packages/cf-os/src/core/deployment.test.ts
+  s_c205e2de444ff0::t_8bbe1b690aaec2 88
+packages/cf-os/src/core/deployment.ts
+  s_c205e2de444ff0::t_7c434dd678e2da 379,611
+packages/cf-os/src/core/verify-account.test.ts
+  s_c205e2de444ff0::t_568c4cb74432d3 43,47
+packages/cf-os/src/core/verify-account.ts
+  s_c205e2de444ff0::t_0939d5b27e3918 1,68
+packages/cf-os/src/core/wizard.ts
+  s_c205e2de444ff0::t_7586c37d124dbf 1
+packages/cf-os/src/main.ts
+  s_c205e2de444ff0::t_7a979782f75613 3,5-6,46,127,135,142,185,228,236
+packages/cf-os/src/project.ts
+  s_c205e2de444ff0::t_2591aaa7c45991 29-32,34-36,52
+packages/cf-os/src/run-tasks.ts
+  s_c205e2de444ff0::t_327310929edcb5 1
+packages/cf-os/src/test-support.ts
+  s_c205e2de444ff0::t_6283fcaed776ec 110,119
+packages/cf-os/tsconfig.build.json
+  s_c205e2de444ff0::t_f3b2ed39ee4055 1
+packages/cf-os/tsconfig.json
+  s_c205e2de444ff0::t_1b1b393e902d93 1
+packages/cf-os/vite.config.ts
+  s_c205e2de444ff0::t_f2037130d26ac3 1,33
+packages/custom-gatekeeper/README.md
+  s_c205e2de444ff0::t_b3e76e43d10f20 14
+pnpm-lock.yaml
+  s_c205e2de444ff0::t_f77446aa5f6f73 58,72
+pnpm-workspace.yaml
+  s_c205e2de444ff0::t_14c96adaf8d92c 4
+tsconfig.json
+  s_c205e2de444ff0::t_6d13659e0cdfdb 3
+vite.config.ts
+  s_c205e2de444ff0::t_bd1b675e64af9f 28,83,108,110,121
+packages/cf-os/src/main.test.ts
+  s_c205e2de444ff0::t_5a294523c97812 15,44,52,62,68,76,89,94,107-115,129,140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9e519060f98cd271c339a4f3bcb47b2bdf298610",
+  "prompts": {},
+  "sessions": {
+    "s_c205e2de444ff0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "18e4761e-90ef-4663-9e89-173084f37cc4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
