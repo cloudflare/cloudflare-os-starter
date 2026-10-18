@@ -336,7 +336,7 @@ test("search prints the best matches as JSON, whole command lines, and connects 
   assert.equal(await h.api("search", "--help"), 0);
   assert.match(h.stdout(), /^Usage: cf-os api search "<describe the task>"/);
   await assert.rejects(h.api("search"), /search needs a task/);
-  await assert.rejects(h.api("search", "x", "--nope"), /Unknown option '--nope'.* Run `cf-os api search --help`\./);
+  await assert.rejects(h.api("search", "x", "--nope"), /Unknown option '--nope'\..*[.!?] Run `cf-os api search --help` for its options\.$/);
   // `search` is a word only in a command's first place.
   await assert.rejects(h.api("open-notebook", "n", "search"), /Notebook has no command "search"/);
   assert.equal(h.server.opened, 0);

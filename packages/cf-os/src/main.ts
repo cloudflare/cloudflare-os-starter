@@ -174,7 +174,8 @@ const COMMANDS: Record<string, CommandSpec> = {
     load: () => import("./commands/update.ts"),
   },
   api: {
-    summary: "call a running instance's API, with the commands generated from the pinned cloudflare-os",
+    summary: "call a running instance's API, with the commands generated from the pinned cloudflare-os " +
+      "(`cf-os api search \"<task>\"` finds one)",
     synopsis: "[public] <command> [arguments] [<command> [arguments]]... [--url <origin>] [--auth <mode>] " +
       "[--username <name>] [--dry-run] [--timeout <seconds>] [--out <file|->]",
     help: [],

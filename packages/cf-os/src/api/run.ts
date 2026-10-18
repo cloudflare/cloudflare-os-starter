@@ -118,6 +118,11 @@ interface Segment {
 
 type Position = { kind: "node"; node: string } | { kind: "untyped" } | { kind: "result"; after: string; returns: ApiReturn };
 
+/** `message` as one sentence, then where to read the options: `node:util`'s messages lack both. */
+function withHelpPointer(message: string, path: string[]): string {
+  return `${message.replace(/[^.!?]$/, "$&.")} Run \`cf-os api ${[...path, "--help"].join(" ")}\` for its options.`;
+}
+
 function isFlag(token: string): boolean {
   return (token.startsWith("--") && token.length > 2) || token === "-h";
 }
@@ -211,7 +216,7 @@ export function parseInvocation(table: ApiTable, tokens: string[]): Invocation {
         throw new UsageError(`Unknown option --${name}${on}. Run \`cf-os api ${[...path, "--help"].join(" ")}\` for its options.`);
       }
       if (option.type === "string" && !token.includes("=")) {
-        if (i + 1 >= tokens.length) throw new UsageError(`--${name} needs a value.`);
+        if (i + 1 >= tokens.length) throw new UsageError(withHelpPointer(`--${name} needs a value.`, path));
         // Joined, so parseArgs takes a value that starts with a dash (`--limit -1`) as the value.
         current.flagTokens.push(`--${name}=${tokens[++i]}`);
       } else {
@@ -278,7 +283,7 @@ export function parseInvocation(table: ApiTable, tokens: string[]): Invocation {
     try {
       ({ values } = parseArgs({ args: segment.flagTokens, options: segment.options, strict: true, allowPositionals: false, allowNegative: true }));
     } catch (error) {
-      throw new UsageError((error as Error).message);
+      throw new UsageError(withHelpPointer((error as Error).message, path));
     }
     for (const [key, value] of Object.entries(values)) {
       if (Object.hasOwn(RUNTIME_OPTIONS, key)) runtime[key] = value as string | boolean;
@@ -326,9 +331,15 @@ function wrap(text: string, indent: string, width = 100): string[] {
   return lines;
 }
 
-function summary(doc: string): string {
+/** The first sentence of `doc`, whole: one that `e.g.` or `i.e.` does not end. */
+function firstSentence(doc: string): string {
   const first = doc.split(/\n\s*\n/)[0].replace(/\s+/g, " ").trim();
-  const sentence = /^(.*?[.!?])(\s|$)/.exec(first)?.[1] ?? first;
+  return /^(.*?(?<!\b(?:e\.g|i\.e))[.!?])(\s|$)/.exec(first)?.[1] ?? first;
+}
+
+/** {@link firstSentence}, cut to fit a help listing. */
+function summary(doc: string): string {
+  const sentence = firstSentence(doc);
   return sentence.length > 90 ? `${sentence.slice(0, 87)}...` : sentence;
 }
 
@@ -504,7 +515,7 @@ export function untypedHelp(path: string[]): string {
 export interface SearchMatch {
   /** The whole command line, from `cf-os api`, a placeholder for each positional along the way. */
   command: string;
-  /** The first sentence of its doc. */
+  /** The first sentence of its doc, whole. */
   summary: string;
 }
 
@@ -512,19 +523,26 @@ export interface SearchMatch {
 const STOP_WORDS = new Set(["a", "an", "and", "all", "by", "for", "from", "i", "in", "into", "it", "its", "me",
   "my", "of", "on", "or", "the", "this", "to", "with"]);
 
-/** `text`'s words, lowercased and crudely stemmed, so `chats` meets `chat` and `starts` `start`. */
+/** Stems that mean the same to a search: the API's verbs for creating something all say `new`. */
+const SAME_TERM: Record<string, string> = { add: "new", creat: "new", mak: "new" };
+
+/**
+ * `text`'s words, lowercased and crudely stemmed, so `chats` meets `chat` and `starts` `start`, and
+ * folded by {@link SAME_TERM}, so `add` meets `new-gatekeeper`.
+ */
 function searchTerms(text: string): string[] {
-  return text.toLowerCase().replace(/'s\b/g, "").split(/[^a-z0-9]+/).filter(Boolean).map((word) => {
+  return text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().replace(/'s\b/g, "").split(/[^a-z0-9]+/).filter(Boolean).map((word) => {
     let stem = word.endsWith("ies") ? `${word.slice(0, -3)}y` : word.endsWith("ss") ? word : word.replace(/s$/, "");
     if (stem.length > 5 && stem.endsWith("ing")) stem = stem.slice(0, -3);
     else if (stem.length > 4 && stem.endsWith("ed")) stem = stem.slice(0, -2);
-    return stem.length > 3 ? stem.replace(/e$/, "") : stem;
+    if (stem.length > 3) stem = stem.replace(/e$/, "");
+    return SAME_TERM[stem] ?? stem;
   });
 }
 
 /**
  * The commands that best match `query`, best first, at most `limit`. A query word scores where it
- * best matches: 3 in the command's own name, 2 in its summary, 1 in the hops that lead to it or the
+ * best matches: 3 in the command's own name, 2 in its doc's first sentence, 1 in the hops that lead to it or the
  * first sentence of the capability it is on. Ties go to the shorter command line. Local and
  * deterministic: it reads the table, nothing else.
  */
@@ -544,15 +562,15 @@ export function searchCommands(table: ApiTable, query: string, limit = 5): Searc
       segments.push(...positionalArgs(hop).map((arg) => `<${arg.name}>`));
       at = (hop.returns as { node: string }).node;
     }
-    const around = new Set(searchTerms(`${prefix.join(" ")} ${node} ${summary(table.nodes[node].doc)}`));
+    const around = new Set(searchTerms(`${prefix.join(" ")} ${node} ${firstSentence(table.nodes[node].doc)}`));
     for (const [name, command] of Object.entries(table.nodes[node].commands)) {
       const own = new Set(searchTerms(`${name} ${command.method}`));
-      const said = new Set(searchTerms(summary(command.doc)));
+      const said = new Set(searchTerms(firstSentence(command.doc)));
       const score = terms.reduce((total, term) =>
         total + (own.has(term) ? 3 : said.has(term) ? 2 : around.has(term) ? 1 : 0), 0);
       if (score === 0) continue;
       const line = ["cf-os", "api", ...segments, name, ...positionalArgs(command).map((arg) => `<${arg.name}>`)].join(" ");
-      matches.push({ command: line, summary: summary(command.doc), score });
+      matches.push({ command: line, summary: firstSentence(command.doc), score });
     }
   }
   return matches.toSorted((a, b) => b.score - a.score || a.command.length - b.command.length)
@@ -582,7 +600,7 @@ export function parseSearch(tokens: string[]): { query: string; help: boolean } 
     const { values, positionals } = parseArgs({ args: tokens, options: RUNTIME_OPTIONS, strict: true, allowPositionals: true });
     return { query: positionals.slice(1).join(" "), help: values.help === true };
   } catch (error) {
-    throw new UsageError(`${(error as Error).message} Run \`cf-os api search --help\`.`);
+    throw new UsageError(withHelpPointer((error as Error).message, ["search"]));
   }
 }
 

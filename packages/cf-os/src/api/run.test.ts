@@ -64,10 +64,11 @@ test("what the table does not allow is a usage error that says what to run", () 
   usage(["find-notes"], /find-notes needs <query>/);
   usage(["find-notes", "q", "--bogus"], /Unknown option --bogus for find-notes/);
   usage(["--bogus"], /Unknown option --bogus\./);
-  usage(["find-notes", "q", "--limit"], /--limit needs a value/);
   usage(["set-mood", "calm", "lock"], /set-mood returns nothing, which ends the chain/);
   usage(["find-notes", "q", "--timeout", "0"], /--timeout must be a positive number/);
-  usage(["find-notes", "q", "--dry-run=yes"], /--dry-run/);
+  // node:util's own messages become one sentence, with where to read the options after it.
+  usage(["find-notes", "q", "--dry-run=yes"], /^Option '--dry-run' does not take an argument\. Run `cf-os api find-notes q --help` for its options\.$/);
+  usage(["find-notes", "q", "--limit"], /^--limit needs a value\. Run `cf-os api find-notes q --help` for its options\.$/);
 });
 
 test("--help stops the walk at the segment it is in", () => {
@@ -155,6 +156,16 @@ test("search ranks commands by the task's words, as whole command lines, best fi
   assert.equal(searchCommands(table, "set banner")[0].command, "cf-os api get-admin set-banner <text>");
   assert.equal(searchCommands(table, "download")[0].command, "cf-os api public download <id>");
   assert.equal(searchCommands(table, "file into a notebook")[0].command, "cf-os api open-notebook <id> file <note> <destination>");
+  // Creation verbs are one word: "add" finds new-gatekeeper.
+  assert.ok(searchCommands(realTable, "add a gatekeeper connection to a workspace")
+    .some((match) => match.command === "cf-os api open-gadget <id> new-gatekeeper <accountId> <resourceUrl>"));
+  // A capability's CamelCase name is words: "client" meets GadgetClient's commands.
+  assert.ok(searchCommands(realTable, "gadget client title").some((match) => match.command.endsWith(" get-gadget <id> get-title")));
+  // Summaries are whole first sentences, not cut for a listing or at "e.g.".
+  const login = searchCommands(realTable, "begin a sign-in via an authentication gatekeeper")[0];
+  assert.equal(login.command, "cf-os api public start-gatekeeper-login <vendorId>");
+  assert.match(login.summary, /^Begin a sign-in via an authentication gatekeeper \(e\.g\. .*\)\.$/);
+  assert.ok(searchCommands(realTable, "add-gateway-model").every((match) => !match.summary.endsWith("...")));
   // Words that pick out nothing match nothing; the output is plain JSON.
   assert.deepEqual(searchCommands(table, "the of a"), []);
   assert.deepEqual(JSON.parse(JSON.stringify(matches)), matches);
@@ -166,5 +177,6 @@ test("`search` is a search only as the first word that is not an option", () => 
   assert.deepEqual(parseSearch(["search", "-h"]), { query: "", help: true });
   assert.equal(parseSearch(["open-notebook", "search"]), undefined);
   assert.equal(parseSearch([]), undefined);
-  assert.throws(() => parseSearch(["search", "x", "--limit", "3"]), (error: Error) => error instanceof UsageError);
+  assert.throws(() => parseSearch(["search", "x", "--timeout"]), (error: Error) => error instanceof UsageError &&
+    /^Option '--timeout <value>' argument missing\. Run `cf-os api search --help` for its options\.$/.test(error.message));
 });

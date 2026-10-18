@@ -160,36 +160,42 @@ export function buildTable(schema: Schema): ApiTable {
 
 /** Rewrites every doc in `nodes` and `callbacks` with {@link cliDoc}, against `nodes`' commands. */
 function inCliWords(nodes: Record<string, ApiNode>, callbacks: Record<string, ApiCallback>): void {
-  const commandOf = new Map<string, string>();
+  const commands: CommandsByNode = new Map(Object.entries(nodes).map(([name, node]) =>
+    [name, new Map(Object.entries(node.commands).map(([command, { method }]) => [method, command]))]));
   for (const [name, node] of Object.entries(nodes)) {
-    for (const [command, { method }] of Object.entries(node.commands)) {
-      commandOf.set(method, command);
-      commandOf.set(`${name}.${method}`, command);
-    }
-  }
-  for (const node of Object.values(nodes)) {
-    node.doc = cliDoc(node.doc, commandOf);
+    node.doc = cliDoc(node.doc, commands, name);
     for (const command of Object.values(node.commands)) {
-      command.doc = cliDoc(command.doc, commandOf);
-      for (const arg of command.args) arg.doc = cliDoc(arg.doc, commandOf);
+      command.doc = cliDoc(command.doc, commands, name);
+      for (const arg of command.args) arg.doc = cliDoc(arg.doc, commands, name);
     }
   }
   for (const callback of Object.values(callbacks)) {
-    callback.doc = cliDoc(callback.doc, commandOf);
-    for (const method of callback.methods) method.doc = cliDoc(method.doc, commandOf);
+    callback.doc = cliDoc(callback.doc, commands);
+    for (const method of callback.methods) method.doc = cliDoc(method.doc, commands);
   }
 }
 
+/** Each node's commands, by the method they call. */
+export type CommandsByNode = Map<string, Map<string, string>>;
+
 /**
  * `doc` in the CLI's words: a method named as `method()` or `Interface.method()` becomes the command
- * that calls it, `` `kebab-name` ``, when `commandOf` has it (by method, or by `Interface.method`),
- * and paragraphs that start with `TODO`, notes for upstream's maintainers, are left out.
+ * that calls it, `` `kebab-name` ``, and paragraphs that start with `TODO`, notes for upstream's
+ * maintainers, are left out. A command on another node than `on`, the one the doc describes, keeps
+ * its node (`` GadgetClient's `bind` ``), as does an unqualified one only another node has.
  */
-export function cliDoc(doc: string, commandOf: Map<string, string>): string {
+export function cliDoc(doc: string, commands: CommandsByNode, on?: string): string {
   return doc.split(/\n[ \t]*\n/).filter((paragraph) => !/^\s*TODO\b/.test(paragraph)).join("\n\n")
-    .replace(/(`?)(?<![\w.])(?:([A-Z]\w*)\.)?([a-z]\w*)\(\)\1/g, (match, _quote, owner?: string, method?: string) => {
-      const command = commandOf.get(owner ? `${owner}.${method}` : method!);
-      return command ? `\`${command}\`` : match;
+    // A call alone in a code span, or one outside any; one inside a longer span is left as it is.
+    .replace(/`(?:([A-Z]\w*)\.)?([a-z]\w*)\(\)`|(?<![\w.`])(?:([A-Z]\w*)\.)?([a-z]\w*)\(\)(?!`)/g, (match,
+      quotedOwner: string | undefined, quoted: string | undefined, bareOwner: string | undefined, bare: string | undefined) => {
+      const owner = quotedOwner ?? bareOwner;
+      const method = (quoted ?? bare)!;
+      const owners = owner ? [owner] : on && commands.get(on)?.has(method) ? [on]
+        : [...commands].filter(([, methods]) => methods.has(method)).map(([name]) => name);
+      const command = owners.length > 0 ? commands.get(owners[0]!)?.get(method) : undefined;
+      if (!command) return match;
+      return owners.length === 1 && owners[0] !== on ? `${owners[0]}'s \`${command}\`` : `\`${command}\``;
     });
 }
 

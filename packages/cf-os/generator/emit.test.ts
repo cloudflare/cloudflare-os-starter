@@ -160,17 +160,28 @@ test("fails on names that collide after kebab-casing, naming both", () => {
 });
 
 test("docs are in the CLI's words: methods named as their commands, TODO paragraphs left out", () => {
-  const commandOf = new Map([["getAdmin", "get-admin"], ["FixtureAuthedApi.getAdmin", "get-admin"], ["lock", "lock"]]);
-  assert.equal(cliDoc("Via FixtureAuthedApi.getAdmin(), or `getAdmin()`; then lock().", commandOf),
-    "Via `get-admin`, or `get-admin`; then `lock`.");
+  const commands = new Map([
+    ["FixtureAuthedApi", new Map([["getAdmin", "get-admin"]])],
+    ["Notebook", new Map([["lock", "lock"], ["outline", "outline"]])],
+    ["FixtureAdmin", new Map([["outline", "outline"]])],
+  ]);
+  assert.equal(cliDoc("Via FixtureAuthedApi.getAdmin(), or `getAdmin()`; then lock().", commands, "FixtureAuthedApi"),
+    "Via `get-admin`, or `get-admin`; then Notebook's `lock`.");
+  // A command elsewhere keeps its node, qualified or not; one on the node described, or on several, does not.
+  assert.equal(cliDoc("Notebook.lock(), lock(), outline(), Notebook.outline().", commands, "Notebook"),
+    "`lock`, `lock`, `outline`, `outline`.");
+  assert.equal(cliDoc("outline() and lock().", commands), "`outline` and Notebook's `lock`.");
   // Only what names a command: not a method on something else, a callback's, or one with arguments.
-  assert.equal(cliDoc("Not this.lock(), Other.lock(), added() or lock(x).", commandOf), "Not this.lock(), Other.lock(), added() or lock(x).");
-  assert.equal(cliDoc("Kept.\n\nTODO: pagination.\nMore of it.\n\nTODO(x): later.\n\nAlso kept.", commandOf), "Kept.\n\nAlso kept.");
+  assert.equal(cliDoc("Not this.lock(), Other.lock(), added() or lock(x).", commands, "Notebook"),
+    "Not this.lock(), Other.lock(), added() or lock(x).");
+  // A call inside a longer code span is left alone, rather than given a second pair of backticks.
+  assert.equal(cliDoc("Call `lock() first`, or lock()`.", commands, "Notebook"), "Call `lock() first`, or lock()`.");
+  assert.equal(cliDoc("Kept.\n\nTODO: pagination.\nMore of it.\n\nTODO(x): later.\n\nAlso kept.", commands), "Kept.\n\nAlso kept.");
 
   const table = buildTable(edited((schema) => {
-    schema.services.Notebook!.methods.find((m) => m.name === "lock")!.doc = "See outline().\n\nTODO: unlock.";
+    schema.services.Notebook!.methods.find((m) => m.name === "lock")!.doc = "See outline(); or getAdmin().\n\nTODO: unlock.";
   }));
-  assert.equal(table.nodes.Notebook!.commands.lock!.doc, "See `outline`.");
+  assert.equal(table.nodes.Notebook!.commands.lock!.doc, "See `outline`; or FixtureAuthedApi's `get-admin`.");
 });
 
 test("renders types for help", () => {
