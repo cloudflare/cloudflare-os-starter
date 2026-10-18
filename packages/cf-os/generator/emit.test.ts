@@ -71,9 +71,12 @@ test("encodes each parameter by its type", () => {
   assert.equal(arg("Notebook", "upload").encoding, "bytes");
   assert.equal(arg("Notebook", "upload", 1).encoding, "boolean");
   assert.deepEqual(arg("Notebook", "file"), {
-    name: "note", index: 0, encoding: "json", shape: { kind: "ref", name: "Note" }, type: "Note", doc: "",
+    name: "note", index: 0, encoding: "json", shape: { kind: "ref", name: "Note" },
+    // A named type is spelled out in help, so its fields are there to read.
+    type: "Note = { body: Uint8Array; created: Date; id: number; size: bigint; tags?: string[]; title: string }", doc: "",
   });
   assert.equal(arg("Notebook", "file", 1).encoding, "json");
+  assert.equal(arg("Notebook", "move").type, 'Destination = { kind: "folder"; path: string } | { kind: "inbox" }');
   assert.equal(arg("Notebook", "subscribe", 1).encoding, "date");
   assert.deepEqual(arg("Notebook", "subscribe"), {
     name: "subscriber", index: 0, encoding: "callback", callback: "NotesSubscriber",
@@ -166,22 +169,25 @@ test("docs are in the CLI's words: methods named as their commands, TODO paragra
     ["FixtureAdmin", new Map([["outline", "outline"]])],
   ]);
   assert.equal(cliDoc("Via FixtureAuthedApi.getAdmin(), or `getAdmin()`; then lock().", commands, "FixtureAuthedApi"),
-    "Via `get-admin`, or `get-admin`; then Notebook's `lock`.");
+    "Via `get-admin`, or `get-admin`; then `lock` (on Notebook).");
   // A command elsewhere keeps its node, qualified or not; one on the node described, or on several, does not.
   assert.equal(cliDoc("Notebook.lock(), lock(), outline(), Notebook.outline().", commands, "Notebook"),
     "`lock`, `lock`, `outline`, `outline`.");
-  assert.equal(cliDoc("outline() and lock().", commands), "`outline` and Notebook's `lock`.");
+  assert.equal(cliDoc("outline() and lock().", commands), "`outline` and `lock` (on Notebook).");
   // Only what names a command: not a method on something else, a callback's, or one with arguments.
   assert.equal(cliDoc("Not this.lock(), Other.lock(), added() or lock(x).", commands, "Notebook"),
     "Not this.lock(), Other.lock(), added() or lock(x).");
-  // A call inside a longer code span is left alone, rather than given a second pair of backticks.
-  assert.equal(cliDoc("Call `lock() first`, or lock()`.", commands, "Notebook"), "Call `lock() first`, or lock()`.");
+  // A call inside a longer code span, wherever it sits in it, is code: left alone.
+  for (const text of ["Call `lock() first`, or lock()`.", "Call `then lock() first` now.", "`(lock())`", "`x = lock()\n?? y`"]) {
+    assert.equal(cliDoc(text, commands, "Notebook"), text);
+  }
+  assert.equal(cliDoc("`lock()` and `Notebook.lock()`, then (lock()).", commands, "Notebook"), "`lock` and `lock`, then (`lock`).");
   assert.equal(cliDoc("Kept.\n\nTODO: pagination.\nMore of it.\n\nTODO(x): later.\n\nAlso kept.", commands), "Kept.\n\nAlso kept.");
 
   const table = buildTable(edited((schema) => {
     schema.services.Notebook!.methods.find((m) => m.name === "lock")!.doc = "See outline(); or getAdmin().\n\nTODO: unlock.";
   }));
-  assert.equal(table.nodes.Notebook!.commands.lock!.doc, "See `outline`; or FixtureAuthedApi's `get-admin`.");
+  assert.equal(table.nodes.Notebook!.commands.lock!.doc, "See `outline`; or `get-admin` (on FixtureAuthedApi).");
 });
 
 test("renders types for help", () => {

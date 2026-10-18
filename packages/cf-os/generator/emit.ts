@@ -181,22 +181,25 @@ export type CommandsByNode = Map<string, Map<string, string>>;
 /**
  * `doc` in the CLI's words: a method named as `method()` or `Interface.method()` becomes the command
  * that calls it, `` `kebab-name` ``, and paragraphs that start with `TODO`, notes for upstream's
- * maintainers, are left out. A command on another node than `on`, the one the doc describes, keeps
- * its node (`` GadgetClient's `bind` ``), as does an unqualified one only another node has.
+ * maintainers, are left out. A command on another node than `on`, the one the doc describes, says
+ * which (`` `bind` (on GadgetClient) ``), as does an unqualified one only another node has. A code
+ * span is rewritten only when it is the call alone: one holding more is code, left as it is.
  */
 export function cliDoc(doc: string, commands: CommandsByNode, on?: string): string {
+  const named = (match: string, owner: string | undefined, method: string): string => {
+    const owners = owner ? [owner] : on && commands.get(on)?.has(method) ? [on]
+      : [...commands].filter(([, methods]) => methods.has(method)).map(([name]) => name);
+    const command = owners.length > 0 ? commands.get(owners[0]!)?.get(method) : undefined;
+    if (!command) return match;
+    return owners.length === 1 && owners[0] !== on ? `\`${command}\` (on ${owners[0]})` : `\`${command}\``;
+  };
+  const call = "(?:([A-Z]\\w*)\\.)?([a-z]\\w*)\\(\\)";
   return doc.split(/\n[ \t]*\n/).filter((paragraph) => !/^\s*TODO\b/.test(paragraph)).join("\n\n")
-    // A call alone in a code span, or one outside any; one inside a longer span is left as it is.
-    .replace(/`(?:([A-Z]\w*)\.)?([a-z]\w*)\(\)`|(?<![\w.`])(?:([A-Z]\w*)\.)?([a-z]\w*)\(\)(?!`)/g, (match,
-      quotedOwner: string | undefined, quoted: string | undefined, bareOwner: string | undefined, bare: string | undefined) => {
-      const owner = quotedOwner ?? bareOwner;
-      const method = (quoted ?? bare)!;
-      const owners = owner ? [owner] : on && commands.get(on)?.has(method) ? [on]
-        : [...commands].filter(([, methods]) => methods.has(method)).map(([name]) => name);
-      const command = owners.length > 0 ? commands.get(owners[0]!)?.get(method) : undefined;
-      if (!command) return match;
-      return owners.length === 1 && owners[0] !== on ? `${owners[0]}'s \`${command}\`` : `\`${command}\``;
-    });
+    // Code spans land on the odd indices.
+    .split(/(`[^`]*`)/).map((part, index) => index % 2 === 1
+      ? part.replace(new RegExp(`^\`${call}\`$`), named)
+      : part.replace(new RegExp(`(?<![\\w.\`])${call}(?!\`)`, "g"), named))
+    .join("");
 }
 
 function service(schema: Schema, name: string, what: string) {
@@ -269,7 +272,21 @@ function buildArg(schema: Schema, where: string, param: SchemaParam, index: numb
       };
     }
   }
-  return { ...base, ...flag, encoding: "json", shape: param.type, ...tail };
+  return { ...base, ...flag, encoding: "json", shape: param.type, ...tail, type: jsonTypeText(schema, param.type) };
+}
+
+/**
+ * A JSON parameter's type for help: as declared, with each named object or union it is made of (the
+ * type itself, a union's branch, an array's element) spelled out once, so its fields are in the help.
+ */
+function jsonTypeText(schema: Schema, shape: ApiShape): string {
+  const parts = shape.kind === "union" ? shape.branches : [shape];
+  const names = [...new Set(parts.map((part) => part.kind === "array" ? part.element : part)
+    .flatMap((part) => part.kind === "ref" ? [part.name] : []))]
+    .filter((name) => ["object", "union"].includes(schema.shapes[name]?.kind ?? ""));
+  const spelled = names.map((name) => `${name} = ${typeText(schema.shapes[name]!)}`);
+  if (shape.kind === "ref" && spelled.length === 1) return spelled[0]!;
+  return spelled.length === 0 ? typeText(shape) : `${typeText(shape)}, where ${spelled.join(", ")}`;
 }
 
 function flagFor(name: string): string {

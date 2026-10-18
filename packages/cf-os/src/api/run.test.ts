@@ -66,9 +66,12 @@ test("what the table does not allow is a usage error that says what to run", () 
   usage(["--bogus"], /Unknown option --bogus\./);
   usage(["set-mood", "calm", "lock"], /set-mood returns nothing, which ends the chain/);
   usage(["find-notes", "q", "--timeout", "0"], /--timeout must be a positive number/);
-  // node:util's own messages become one sentence, with where to read the options after it.
-  usage(["find-notes", "q", "--dry-run=yes"], /^Option '--dry-run' does not take an argument\. Run `cf-os api find-notes q --help` for its options\.$/);
-  usage(["find-notes", "q", "--limit"], /^--limit needs a value\. Run `cf-os api find-notes q --help` for its options\.$/);
+  // node:util's own messages become one sentence, with where to read about the option after it: the
+  // root's help for a runtime option, the segment's own for a command's, typed as a shell needs it.
+  usage(["find-notes", "q", "--dry-run=yes"], /^Option '--dry-run' does not take an argument\. Run `cf-os api --help` for the API options\.$/);
+  usage(["find-notes", "q", "--limit"], /^--limit needs a value\. Run `cf-os api find-notes --help` for its options\.$/);
+  usage(["open-notebook", "my notes", "outline", "--bogus"], /^Unknown option --bogus for outline\. Run `cf-os api open-notebook 'my notes' outline --help` for its options\.$/);
+  usage(["open-notebook", "my notes", "nope"], /run `cf-os api open-notebook 'my notes' --help` for Notebook's\.$/);
 });
 
 test("--help stops the walk at the segment it is in", () => {
@@ -118,7 +121,9 @@ test("help lists a capability's commands and a command's arguments, events and r
 
   const file = commandHelp(table, "Notebook", "file", ["open-notebook", "n", "file"]);
   assert.match(file, /^Usage: cf-os api open-notebook n file <note> <destination>\n/);
-  assert.match(file, /<note> +<json\|@file\|->: Note/);
+  assert.match(file, /<note> +<json\|@file\|->: Note = \{ body: Uint8Array; /);
+  assert.match(commandHelp(realTable, "AuthenticatedApi", "subscribe-connected-accounts", ["subscribe-connected-accounts"]),
+    /--filter <json\|@file\|-> +ConnectedAccountsFilter = \{ [^}]*resourceUrl\?: string/);
   assert.match(file, /Returns nothing \(prints null\)\./);
   const findNotes = commandHelp(table, "FixtureAuthedApi", "find-notes", ["find-notes"]);
   assert.match(findNotes, /\[--limit <number>\] \[--arg-url <string>\]/);
@@ -156,7 +161,8 @@ test("search ranks commands by the task's words, as whole command lines, best fi
   assert.equal(searchCommands(table, "set banner")[0].command, "cf-os api get-admin set-banner <text>");
   assert.equal(searchCommands(table, "download")[0].command, "cf-os api public download <id>");
   assert.equal(searchCommands(table, "file into a notebook")[0].command, "cf-os api open-notebook <id> file <note> <destination>");
-  // Creation verbs are one word: "add" finds new-gatekeeper.
+  // Creation verbs are one word, "add" finding new-gatekeeper, but the verb a task names comes first.
+  assert.equal(searchCommands(realTable, "create a blueprint")[0].command, "cf-os api open-gadget <id> get-gadget <id> create-blueprint");
   assert.ok(searchCommands(realTable, "add a gatekeeper connection to a workspace")
     .some((match) => match.command === "cf-os api open-gadget <id> new-gatekeeper <accountId> <resourceUrl>"));
   // A capability's CamelCase name is words: "client" meets GadgetClient's commands.
@@ -178,5 +184,5 @@ test("`search` is a search only as the first word that is not an option", () => 
   assert.equal(parseSearch(["open-notebook", "search"]), undefined);
   assert.equal(parseSearch([]), undefined);
   assert.throws(() => parseSearch(["search", "x", "--timeout"]), (error: Error) => error instanceof UsageError &&
-    /^Option '--timeout <value>' argument missing\. Run `cf-os api search --help` for its options\.$/.test(error.message));
+    /^Option '--timeout <value>' argument missing\. Run `cf-os api --help` for the API options\.$/.test(error.message));
 });

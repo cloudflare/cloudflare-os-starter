@@ -114,13 +114,26 @@ interface Segment {
   positionals: string[];
   /** Positional arguments it takes; `Infinity` for `call`. */
   needed: number;
+  /** How many tokens of the walked path reach it: those of its own help line. */
+  at: number;
 }
 
 type Position = { kind: "node"; node: string } | { kind: "untyped" } | { kind: "result"; after: string; returns: ApiReturn };
 
-/** `message` as one sentence, then where to read the options: `node:util`'s messages lack both. */
+/** The help command for what `path` reaches, as it would be typed. */
+function helpCommand(path: string[]): string {
+  return `\`cf-os api ${shellLine([...path, "--help"])}\``;
+}
+
+/**
+ * `message` as one sentence, then where to read about the option it names (`node:util`'s messages
+ * lack both): the root's help for a runtime option, the help `path` reaches for any other.
+ */
 function withHelpPointer(message: string, path: string[]): string {
-  return `${message.replace(/[^.!?]$/, "$&.")} Run \`cf-os api ${[...path, "--help"].join(" ")}\` for its options.`;
+  const option = /--(?:no-)?([\w-]+)/.exec(message)?.[1];
+  const help = option !== undefined && Object.hasOwn(RUNTIME_OPTIONS, option)
+    ? "`cf-os api --help` for the API options" : `${helpCommand(path)} for its options`;
+  return `${message.replace(/[^.!?]$/, "$&.")} Run ${help}.`;
 }
 
 function isFlag(token: string): boolean {
@@ -188,7 +201,7 @@ function describeReturn(returns: ApiReturn): string {
  */
 export function parseInvocation(table: ApiTable, tokens: string[]): Invocation {
   const segments: Segment[] = [];
-  let current: Segment = { kind: "prefix", options: { ...RUNTIME_OPTIONS }, flagTokens: [], positionals: [], needed: 0 };
+  let current: Segment = { kind: "prefix", options: { ...RUNTIME_OPTIONS }, flagTokens: [], positionals: [], needed: 0, at: 0 };
   let position: Position = { kind: "node", node: table.root };
   let isPublic = false;
   let escaped = false;
@@ -213,10 +226,10 @@ export function parseInvocation(table: ApiTable, tokens: string[]): Invocation {
       const option = optionFor(current.options, name);
       if (!option) {
         const on = current.kind === "command" ? ` for ${current.hop!.name}` : "";
-        throw new UsageError(`Unknown option --${name}${on}. Run \`cf-os api ${[...path, "--help"].join(" ")}\` for its options.`);
+        throw new UsageError(`Unknown option --${name}${on}. Run ${helpCommand(path.slice(0, current.at))} for its options.`);
       }
       if (option.type === "string" && !token.includes("=")) {
-        if (i + 1 >= tokens.length) throw new UsageError(withHelpPointer(`--${name} needs a value.`, path));
+        if (i + 1 >= tokens.length) throw new UsageError(withHelpPointer(`--${name} needs a value.`, path.slice(0, current.at)));
         // Joined, so parseArgs takes a value that starts with a dash (`--limit -1`) as the value.
         current.flagTokens.push(`--${name}=${tokens[++i]}`);
       } else {
@@ -235,7 +248,7 @@ export function parseInvocation(table: ApiTable, tokens: string[]): Invocation {
     if (current.kind === "prefix" && !isPublic && hops.length === 0 && token === "public") {
       isPublic = true;
       position = { kind: "node", node: table.public };
-      current = { kind: "prefix", options: { ...RUNTIME_OPTIONS }, flagTokens: [], positionals: [], needed: 0 };
+      current = { kind: "prefix", options: { ...RUNTIME_OPTIONS }, flagTokens: [], positionals: [], needed: 0, at: path.length };
       continue;
     }
     if (current.kind === "call" && current.positionals.length === 0) {
@@ -248,17 +261,19 @@ export function parseInvocation(table: ApiTable, tokens: string[]): Invocation {
       if (token !== "call") {
         throw new UsageError(`The previous command returns an untyped capability: continue with \`call <method> [json-args...]\`, not "${token}".`);
       }
-      current = { kind: "call", options: { ...RUNTIME_OPTIONS }, flagTokens: [], positionals: [], needed: Infinity };
+      current = { kind: "call", options: { ...RUNTIME_OPTIONS }, flagTokens: [], positionals: [], needed: Infinity, at: path.length };
       continue;
     }
     const node: ApiNode = table.nodes[position.node];
     const command: ApiCommand | undefined = Object.hasOwn(node.commands, token) ? node.commands[token] : undefined;
     if (!command) {
-      const at = path.length > 1 ? `cf-os api ${path.slice(0, -1).join(" ")}` : `cf-os api${isPublic ? " public" : ""}`;
-      throw new UsageError(`${position.node} has no command "${token}". Find one with ${SEARCH}, or run \`${at} --help\` for ${position.node}'s.`);
+      throw new UsageError(`${position.node} has no command "${token}". Find one with ${SEARCH}, or run ${helpCommand(path.slice(0, -1))} for ${position.node}'s.`);
     }
     const hop: Extract<Hop, { kind: "command" }> = { kind: "command", name: token, node: position.node, command, positionals: [], flags: {} };
-    current = { kind: "command", hop, options: commandOptions(command), flagTokens: [], positionals: hop.positionals, needed: positionalArgs(command).length };
+    current = {
+      kind: "command", hop, options: commandOptions(command), flagTokens: [], positionals: hop.positionals,
+      needed: positionalArgs(command).length, at: path.length,
+    };
     hops.push(hop);
     const returns: ApiReturn = command.returns;
     position = returns.kind === "stub" ? { kind: "node", node: returns.node }
@@ -269,7 +284,7 @@ export function parseInvocation(table: ApiTable, tokens: string[]): Invocation {
 
   if (current.kind === "command" && current.positionals.length < current.needed) {
     const missing = positionalArgs(current.hop!.command).slice(current.positionals.length).map((arg) => `<${arg.name}>`);
-    throw new UsageError(`${current.hop!.name} needs ${missing.join(" ")}. Run \`cf-os api ${[...path, "--help"].join(" ")}\` for its arguments.`);
+    throw new UsageError(`${current.hop!.name} needs ${missing.join(" ")}. Run ${helpCommand(path)} for its arguments.`);
   }
   if (current.kind === "call" && current.positionals.length === 0) {
     throw new UsageError("call needs a method name: `call <method> [json-args...]`.");
@@ -283,7 +298,7 @@ export function parseInvocation(table: ApiTable, tokens: string[]): Invocation {
     try {
       ({ values } = parseArgs({ args: segment.flagTokens, options: segment.options, strict: true, allowPositionals: false, allowNegative: true }));
     } catch (error) {
-      throw new UsageError(withHelpPointer((error as Error).message, path));
+      throw new UsageError(withHelpPointer((error as Error).message, path.slice(0, segment.at)));
     }
     for (const [key, value] of Object.entries(values)) {
       if (Object.hasOwn(RUNTIME_OPTIONS, key)) runtime[key] = value as string | boolean;
@@ -526,23 +541,31 @@ const STOP_WORDS = new Set(["a", "an", "and", "all", "by", "for", "from", "i", "
 /** Stems that mean the same to a search: the API's verbs for creating something all say `new`. */
 const SAME_TERM: Record<string, string> = { add: "new", creat: "new", mak: "new" };
 
-/**
- * `text`'s words, lowercased and crudely stemmed, so `chats` meets `chat` and `starts` `start`, and
- * folded by {@link SAME_TERM}, so `add` meets `new-gatekeeper`.
- */
+/** `text`'s words, lowercased and crudely stemmed, so `chats` meets `chat` and `starts` `start`. */
 function searchTerms(text: string): string[] {
   return text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().replace(/'s\b/g, "").split(/[^a-z0-9]+/).filter(Boolean).map((word) => {
     let stem = word.endsWith("ies") ? `${word.slice(0, -3)}y` : word.endsWith("ss") ? word : word.replace(/s$/, "");
     if (stem.length > 5 && stem.endsWith("ing")) stem = stem.slice(0, -3);
     else if (stem.length > 4 && stem.endsWith("ed")) stem = stem.slice(0, -2);
     if (stem.length > 3) stem = stem.replace(/e$/, "");
-    return SAME_TERM[stem] ?? stem;
+    return stem;
   });
 }
 
 /**
+ * How well `term` matches `words`: 1 when they hold it, a little less when they hold a word
+ * {@link SAME_TERM} folds together with it (`add` and `new-gatekeeper`), so the verb a task names
+ * outranks its synonyms.
+ */
+function termMatch(term: string, words: Set<string>): number {
+  if (words.has(term)) return 1;
+  const folded = SAME_TERM[term] ?? term;
+  return [...words].some((word) => (SAME_TERM[word] ?? word) === folded) ? 0.75 : 0;
+}
+
+/**
  * The commands that best match `query`, best first, at most `limit`. A query word scores where it
- * best matches: 3 in the command's own name, 2 in its doc's first sentence, 1 in the hops that lead to it or the
+ * best matches (three quarters as well for a synonym): 3 in the command's own name, 2 in its doc's first sentence, 1 in the hops that lead to it or the
  * first sentence of the capability it is on. Ties go to the shorter command line. Local and
  * deterministic: it reads the table, nothing else.
  */
@@ -567,7 +590,7 @@ export function searchCommands(table: ApiTable, query: string, limit = 5): Searc
       const own = new Set(searchTerms(`${name} ${command.method}`));
       const said = new Set(searchTerms(firstSentence(command.doc)));
       const score = terms.reduce((total, term) =>
-        total + (own.has(term) ? 3 : said.has(term) ? 2 : around.has(term) ? 1 : 0), 0);
+        total + Math.max(3 * termMatch(term, own), 2 * termMatch(term, said), termMatch(term, around)), 0);
       if (score === 0) continue;
       const line = ["cf-os", "api", ...segments, name, ...positionalArgs(command).map((arg) => `<${arg.name}>`)].join(" ");
       matches.push({ command: line, summary: firstSentence(command.doc), score });

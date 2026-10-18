@@ -11,7 +11,7 @@ export const table: ApiTable = {
     AdminApi: {
       doc:
         "Capability for managing deployment-wide admin settings, obtained via\n" +
-        "AuthenticatedApi's `get-admin-api` (which is null for non-admins). The access check happens when the\n" +
+        "`get-admin-api` (on AuthenticatedApi) (which is null for non-admins). The access check happens when the\n" +
         "capability is minted, so these methods don't re-check. Covers branding, agent instructions,\n" +
         "which gatekeeper connectors/resources are offered, and the models an AI Gateway deployment\n" +
         "provides — NOT authentication config (that's env-var driven). Each setter throws on invalid\n" +
@@ -33,7 +33,7 @@ export const table: ApiTable = {
               index: 0,
               encoding: "json",
               shape: { kind: "ref", name: "GatewayModel" },
-              type: "GatewayModel",
+              type: "GatewayModel = { behavesLike?: string; capabilities?: GatewayModelCapabilities; contextWindow: number; id: string; name: string; outputLimit?: number; provider: AiModelProvider }",
               doc: "",
             },
           ],
@@ -225,7 +225,7 @@ export const table: ApiTable = {
               index: 1,
               encoding: "json",
               shape: { kind: "ref", name: "GatewayModelSettings" },
-              type: "GatewayModelSettings",
+              type: "GatewayModelSettings = { compactionInputBudget?: number; reasoning?: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" }",
               doc: "",
             },
           ],
@@ -398,7 +398,7 @@ export const table: ApiTable = {
               index: 0,
               encoding: "json",
               shape: { kind: "ref", name: "GatewayModel" },
-              type: "GatewayModel",
+              type: "GatewayModel = { behavesLike?: string; capabilities?: GatewayModelCapabilities; contextWindow: number; id: string; name: string; outputLimit?: number; provider: AiModelProvider }",
               doc: "",
             },
           ],
@@ -416,7 +416,7 @@ export const table: ApiTable = {
               index: 1,
               encoding: "json",
               shape: { kind: "ref", name: "AdminFormatPatch" },
-              type: "AdminFormatPatch",
+              type: "AdminFormatPatch = { agentHint?: string; enabled?: boolean; overrides?: { icon?: \"appWindow\" | \"chartBar\" | \"fileText\" | \"flowArrow\" | \"gridNine\" | \"kanban\" | \"listChecks\" | \"notebook\" | \"presentation\" | \"table\" | null; id?: string | null; noun?: string | null; plural?: string | null } }",
               doc: "",
             },
           ],
@@ -455,7 +455,7 @@ export const table: ApiTable = {
               index: 0,
               encoding: "json",
               shape: { kind: "ref", name: "AiChatAuthorInfo" },
-              type: "AiChatAuthorInfo",
+              type: "AiChatAuthorInfo = { commitEmail?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
               doc: "",
             },
             {
@@ -463,7 +463,7 @@ export const table: ApiTable = {
               index: 1,
               encoding: "json",
               shape: { kind: "ref", name: "RedactedAiModelConfig" },
-              type: "RedactedAiModelConfig",
+              type: "RedactedAiModelConfig = { accountId?: string; apiToken: string | null; apiUrl?: string; contextWindow?: number; extraHeaders?: Record<string, string | null>; model: string; outputLimit?: number; provider: AiModelProvider }",
               doc: "",
             },
             {
@@ -785,7 +785,7 @@ export const table: ApiTable = {
               flag: "filter",
               encoding: "json",
               shape: { kind: "ref", name: "GatekeeperVendorFilter" },
-              type: "GatekeeperVendorFilter",
+              type: "GatekeeperVendorFilter = { resourceUrl?: string }",
               doc: "",
             },
           ],
@@ -968,7 +968,7 @@ export const table: ApiTable = {
             "\n" +
             "Returns no records while the admin has user search turned off\n" +
             "(`ServerConfig.userSearchEnabled`); inviting by exact username/email via\n" +
-            "Overseer's `add-collaborator` still works then.",
+            "`add-collaborator` (on Overseer) still works then.",
           args: [
             { name: "query", index: 0, encoding: "string", type: "string", doc: "" },
             {
@@ -1059,7 +1059,7 @@ export const table: ApiTable = {
                 kind: "union",
                 branches: [{ kind: "null" }, { kind: "ref", name: "NotificationMute" }],
               },
-              type: "NotificationMute | null",
+              type: "NotificationMute | null, where NotificationMute = { indefinite: true; until?: undefined } | { indefinite?: undefined; until: Date }",
               doc: "",
             },
           ],
@@ -1124,7 +1124,7 @@ export const table: ApiTable = {
               flag: "filter",
               encoding: "json",
               shape: { kind: "ref", name: "ConnectedAccountsFilter" },
-              type: "ConnectedAccountsFilter",
+              type: "ConnectedAccountsFilter = { includeForcedAutoProvisionedAccounts?: boolean; resourceUrl?: string }",
               doc: "",
             },
           ],
@@ -1163,7 +1163,7 @@ export const table: ApiTable = {
               index: 0,
               encoding: "json",
               shape: { kind: "ref", name: "AiChatAuthorInfo" },
-              type: "AiChatAuthorInfo",
+              type: "AiChatAuthorInfo = { commitEmail?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
               doc: "",
             },
             {
@@ -1171,7 +1171,7 @@ export const table: ApiTable = {
               index: 1,
               encoding: "json",
               shape: { kind: "ref", name: "RedactedAiModelConfig" },
-              type: "RedactedAiModelConfig",
+              type: "RedactedAiModelConfig = { accountId?: string; apiToken: string | null; apiUrl?: string; contextWindow?: number; extraHeaders?: Record<string, string | null>; model: string; outputLimit?: number; provider: AiModelProvider }",
               doc: "",
             },
           ],
@@ -1188,7 +1188,7 @@ export const table: ApiTable = {
     GadgetClient: {
       doc:
         "Capability representing one gadget workpiece within a workspace. Obtained from\n" +
-        "Overseer's `create-gadget` or Overseer's `get-gadget`. Workspace-level concerns (code sync, chats,\n" +
+        "`create-gadget` (on Overseer) or `get-gadget` (on Overseer). Workspace-level concerns (code sync, chats,\n" +
         "sharing, actions, blueprint listing) stay on Overseer; this covers the per-gadget surface.",
       commands: {
         "apply-blueprint": {
@@ -1207,7 +1207,7 @@ export const table: ApiTable = {
             "\n" +
             "A proposal of kind \"merge\" starts an agent turn in the new chat, to resolve what conflicted\n" +
             "and to check that the two sets of changes work together. `modelId` is the model that runs\n" +
-            "it: as for Overseer's `new-chat`, one of the IDs in the result of `list-models`, or null for\n" +
+            "it: as for `new-chat` (on Overseer), one of the IDs in the result of `list-models`, or null for\n" +
             "no agent. No other proposal starts a turn.\n" +
             "\n" +
             "Throws if the blueprint does not exist, or if the gadget is still pending in a chat and so\n" +
@@ -1242,7 +1242,7 @@ export const table: ApiTable = {
             "(including bound provisionally by another chat).\n" +
             "\n" +
             "If `chatId` is provided, the binding is treated like an edit made in the given chat -- it is\n" +
-            "proposed, but someone needs to click \"accept changes\" (call Overseer's `merge-changes`) to make it\n" +
+            "proposed, but someone needs to click \"accept changes\" (call `merge-changes` (on Overseer)) to make it\n" +
             "final. Until then it exists only in the given chat.",
           args: [
             { name: "name", index: 0, encoding: "string", type: "string", doc: "" },
@@ -1279,7 +1279,7 @@ export const table: ApiTable = {
             "\n" +
             "Steps: generate ID, snapshot code, collect binding metadata, store locally, propagate\n" +
             "to User DO + KV + R2. Maintenance of existing blueprints stays on Overseer (see\n" +
-            "Overseer's `update-blueprint` etc.).",
+            "`update-blueprint` (on Overseer) etc.).",
           args: [
             { name: "title", index: 0, flag: "title", encoding: "string", type: "string", doc: "" },
             {
@@ -1296,7 +1296,7 @@ export const table: ApiTable = {
               flag: "screenshot",
               encoding: "json",
               shape: { kind: "ref", name: "BlueprintScreenshotUpload" },
-              type: "BlueprintScreenshotUpload",
+              type: "BlueprintScreenshotUpload = { content: Uint8Array; mimeType: \"image/jpeg\" | \"image/png\" }",
               doc: "",
             },
           ],
@@ -1402,7 +1402,7 @@ export const table: ApiTable = {
               index: 1,
               encoding: "json",
               shape: { kind: "ref", name: "BlueprintBindingAnnotation" },
-              type: "BlueprintBindingAnnotation",
+              type: "BlueprintBindingAnnotation = { description: string; suggestValue?: boolean; title: string }",
               doc: "",
             },
           ],
@@ -1424,7 +1424,7 @@ export const table: ApiTable = {
           doc:
             "Remove the binding with the given name. This only removes the edge from this gadget -- the\n" +
             "target gatekeeper itself survives (possibly no longer bound by any gadget); use\n" +
-            "GatekeeperClient's `remove` to destroy the connection itself.",
+            "`remove` (on GatekeeperClient) to destroy the connection itself.",
           args: [{ name: "name", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -1478,7 +1478,7 @@ export const table: ApiTable = {
             "For a gadget, this deletes its registry entry (including its binding map) and hooks and\n" +
             "clears its files; gatekeepers it bound survive, possibly no longer bound by any gadget. For\n" +
             "a gatekeeper, this destroys the connection itself -- distinct from merely unbinding it from\n" +
-            "one gadget (GadgetClient's `unbind`).",
+            "one gadget (`unbind` (on GadgetClient)).",
           args: [],
           returns: { kind: "value", type: "void" },
         },
@@ -1562,7 +1562,7 @@ export const table: ApiTable = {
               flag: "creation",
               encoding: "json",
               shape: { kind: "ref", name: "CreationApproval" },
-              type: "CreationApproval",
+              type: "CreationApproval = { accountId: number; configuration?: string }",
               doc: "",
             },
           ],
@@ -1969,7 +1969,7 @@ export const table: ApiTable = {
               index: 0,
               encoding: "json",
               shape: { kind: "ref", name: "AgentSpawnerConfig" },
-              type: "AgentSpawnerConfig",
+              type: "AgentSpawnerConfig = { displayName: string; env: Record<string, number>; modelId: string | null }",
               doc: "",
             },
           ],
@@ -1979,7 +1979,7 @@ export const table: ApiTable = {
           method: "newAiModelGatekeeper",
           doc:
             "Create a new gatekeeper for an AI model binding. The model can be any returned by\n" +
-            "AuthenticatedApi's `list-models`. A language model's gatekeeper provides a\n" +
+            "`list-models` (on AuthenticatedApi). A language model's gatekeeper provides a\n" +
             "`LanguageModelBinding`, a decision model's a `DecisionModelBinding`.",
           args: [{ name: "modelId", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "stub", node: "GatekeeperClient", nullable: false },
@@ -2006,7 +2006,7 @@ export const table: ApiTable = {
                 kind: "union",
                 branches: [{ kind: "ref", name: "SlashCommandRequest" }, { kind: "string" }],
               },
-              type: "SlashCommandRequest | string",
+              type: "SlashCommandRequest | string, where SlashCommandRequest = { args: string; commandPosition?: number; id: SlashCommandId }",
               doc: "",
             },
             { name: "modelId", index: 1, encoding: "string", nullable: true, type: "string | null", doc: "" },
@@ -2016,7 +2016,7 @@ export const table: ApiTable = {
               flag: "capsules",
               encoding: "json",
               shape: { kind: "array", element: { kind: "ref", name: "CapsuleSpecifier" } },
-              type: "CapsuleSpecifier[]",
+              type: "CapsuleSpecifier[], where CapsuleSpecifier = { bindingName?: string; description: ResourceDescription; gatekeeperId: number; length: number; position: number; vendorId?: string }",
               doc: "",
             },
             {
@@ -2025,7 +2025,7 @@ export const table: ApiTable = {
               flag: "attachments",
               encoding: "json",
               shape: { kind: "array", element: { kind: "ref", name: "ChatAttachmentHandle" } },
-              type: "ChatAttachmentHandle[]",
+              type: "ChatAttachmentHandle[], where ChatAttachmentHandle = { id: string } | { mimeType: string; name?: string; oid: string }",
               doc: "",
             },
             {
@@ -2034,7 +2034,7 @@ export const table: ApiTable = {
               flag: "formats",
               encoding: "json",
               shape: { kind: "array", element: { kind: "ref", name: "MessageFormatRef" } },
-              type: "MessageFormatRef[]",
+              type: "MessageFormatRef[], where MessageFormatRef = { icon: \"appWindow\" | \"chartBar\" | \"fileText\" | \"flowArrow\" | \"gridNine\" | \"kanban\" | \"listChecks\" | \"notebook\" | \"presentation\" | \"table\"; length: number; noun: string; position: number }",
               doc: "",
             },
           ],
@@ -2046,11 +2046,11 @@ export const table: ApiTable = {
             "Try to create a new gatekeeper for this URL.\n" +
             "\n" +
             "`accountId` is the user's connected account to use to access this resource. To determine an\n" +
-            "appropriate account, use AuthenticatedApi's `subscribe-connected-accounts` with a `filter` for this URL, then\n" +
+            "appropriate account, use `subscribe-connected-accounts` (on AuthenticatedApi) with a `filter` for this URL, then\n" +
             "let the user choose one.\n" +
             "\n" +
             "The new gatekeeper is a workspace-level workpiece; it is not bound into any gadget's `env` by\n" +
-            "default. Use GadgetClient's `bind` / GadgetClient's `bind-with-suggested-name` to expose it to a gadget.",
+            "default. Use `bind` (on GadgetClient) / `bind-with-suggested-name` (on GadgetClient) to expose it to a gadget.",
           args: [
             { name: "accountId", index: 0, encoding: "number", type: "number", doc: "" },
             { name: "resourceUrl", index: 1, encoding: "string", type: "string", doc: "" },
@@ -2252,7 +2252,7 @@ export const table: ApiTable = {
                 kind: "union",
                 branches: [{ kind: "ref", name: "SlashCommandRequest" }, { kind: "string" }],
               },
-              type: "SlashCommandRequest | string",
+              type: "SlashCommandRequest | string, where SlashCommandRequest = { args: string; commandPosition?: number; id: SlashCommandId }",
               doc: "",
             },
             { name: "modelId", index: 2, encoding: "string", nullable: true, type: "string | null", doc: "" },
@@ -2262,7 +2262,7 @@ export const table: ApiTable = {
               flag: "capsules",
               encoding: "json",
               shape: { kind: "array", element: { kind: "ref", name: "CapsuleSpecifier" } },
-              type: "CapsuleSpecifier[]",
+              type: "CapsuleSpecifier[], where CapsuleSpecifier = { bindingName?: string; description: ResourceDescription; gatekeeperId: number; length: number; position: number; vendorId?: string }",
               doc: "",
             },
             {
@@ -2271,7 +2271,7 @@ export const table: ApiTable = {
               flag: "attachments",
               encoding: "json",
               shape: { kind: "array", element: { kind: "ref", name: "ChatAttachmentHandle" } },
-              type: "ChatAttachmentHandle[]",
+              type: "ChatAttachmentHandle[], where ChatAttachmentHandle = { id: string } | { mimeType: string; name?: string; oid: string }",
               doc: "",
             },
             {
@@ -2280,7 +2280,7 @@ export const table: ApiTable = {
               flag: "formats",
               encoding: "json",
               shape: { kind: "array", element: { kind: "ref", name: "MessageFormatRef" } },
-              type: "MessageFormatRef[]",
+              type: "MessageFormatRef[], where MessageFormatRef = { icon: \"appWindow\" | \"chartBar\" | \"fileText\" | \"flowArrow\" | \"gridNine\" | \"kanban\" | \"listChecks\" | \"notebook\" | \"presentation\" | \"table\"; length: number; noun: string; position: number }",
               doc: "",
             },
           ],
@@ -2306,7 +2306,7 @@ export const table: ApiTable = {
               index: 1,
               encoding: "json",
               shape: { kind: "ref", name: "ActionKind" },
-              type: "ActionKind",
+              type: "ActionKind = { label: string; tag: string }",
               doc: "",
             },
           ],
@@ -2402,7 +2402,7 @@ export const table: ApiTable = {
               index: 1,
               encoding: "json",
               shape: { kind: "ref", name: "CodeChangeSubmission" },
-              type: "CodeChangeSubmission",
+              type: "CodeChangeSubmission = { change: CodeChange; clientId: string; generation: number; pins?: ChatGadgetPin[]; revision: number; seq: number }",
               doc: "",
             },
           ],
@@ -2516,7 +2516,7 @@ export const table: ApiTable = {
           method: "subscribeToPresence",
           doc:
             "Receive the current viewer roster, then incremental updates as viewers come and go.\n" +
-            "A viewer is present for the lifetime of the AuthenticatedApi's `open-gadget` session.",
+            "A viewer is present for the lifetime of the `open-gadget` (on AuthenticatedApi) session.",
           args: [
             {
               name: "subscriber",
@@ -2732,21 +2732,21 @@ export const table: ApiTable = {
           doc:
             "@deprecated Fires after the subscription has caught up to the current time. However, this is\n" +
             "only a useful signal when a subscription is being used to enumerate past actions using a\n" +
-            "distant-past `startAfter`. This is not the correct way to use Overseer's `subscribe-to-actions`; use\n" +
-            "Overseer's `list-actions` instead.",
+            "distant-past `startAfter`. This is not the correct way to use `subscribe-to-actions` (on Overseer); use\n" +
+            "`list-actions` (on Overseer) instead.",
         },
       ],
     },
     AiChatSubscriber: {
       doc:
         "Interface implemented by the client to receive callback notifications whenever there is new\n" +
-        "chat activity. Use Overseer's `subscribe-to-chat` to register a subscriber.",
+        "chat activity. Use `subscribe-to-chat` (on Overseer) to register a subscriber.",
       methods: [
         {
           name: "changeApplied",
           params: ["chatId", "generation", "revision", "author", "change", "submission"],
           doc:
-            "Delivers one accepted change of a chat's change stream: a human Overseer's `submit-code-change`, an agent\n" +
+            "Delivers one accepted change of a chat's change stream: a human `submit-code-change` (on Overseer), an agent\n" +
             "tool edit (broadcast when the tool call completes, superseding the provisional editPreview*\n" +
             "stream of its in-progress content -- see AiChatStreamEvent). Changes must be applied in\n" +
             "revision order within a generation; a gap means events were lost and the client should\n" +
@@ -2759,7 +2759,7 @@ export const table: ApiTable = {
             "absorbed are dropped via the message's `watermark` instead (there is no separate \"cleared\"\n" +
             "event).\n" +
             "\n" +
-            "Changes produced by Overseer's `submit-code-change` echo the submitter's identity as `submission` (the\n" +
+            "Changes produced by `submit-code-change` (on Overseer) echo the submitter's identity as `submission` (the\n" +
             "CodeChangeSubmission's clientId and seq), so the submitting client recognizes its own change\n" +
             "-- in the live feed and in subscribe-replay alike, without depending on ack/broadcast\n" +
             "ordering -- and drops its in-flight buffer instead of re-applying. The echo is informational\n" +
@@ -2791,14 +2791,14 @@ export const table: ApiTable = {
       ],
     },
     ConnectedAccountsSubscriber: {
-      doc: "Subscription callback for AuthenticatedApi's `subscribe-connected-accounts`.",
+      doc: "Subscription callback for `subscribe-connected-accounts` (on AuthenticatedApi).",
       methods: [
         {
           name: "add",
           params: ["id", "description", "vendor", "supportedResources", "credentialsValid", "vendorId"],
           doc:
             "If `credentialsValid` is false, the account's credentials are known to be expired, and the\n" +
-            "UI should call AuthenticatedApi's `reconnect-account` to fix this if the user tries to select this account.",
+            "UI should call `reconnect-account` (on AuthenticatedApi) to fix this if the user tries to select this account.",
         },
         {
           name: "ready",
@@ -2827,7 +2827,7 @@ export const table: ApiTable = {
       ],
     },
     NotificationSubscriber: {
-      doc: "Callback used by AuthenticatedApi's `subscribe-to-notifications`.",
+      doc: "Callback used by `subscribe-to-notifications` (on AuthenticatedApi).",
       methods: [
         {
           name: "notify",
@@ -2850,7 +2850,7 @@ export const table: ApiTable = {
       ],
     },
     WorkpiecesSubscriber: {
-      doc: "Callback interface used to receive workpiece-list updates. See Overseer's `subscribe-to-workpieces`.",
+      doc: "Callback interface used to receive workpiece-list updates. See `subscribe-to-workpieces` (on Overseer).",
       methods: [
         {
           name: "entry",
