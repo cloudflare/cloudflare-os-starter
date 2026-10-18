@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  # The checks AGENTS.md asks for before pushing. `pnpm lint` is lint, then the type-check and build,
+  # then `api:check`, which fails when `cf-os api`'s generated files do not match the pinned upstream.
+  check:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    # A wedged install or test would otherwise burn the 6-hour default.
+    timeout-minutes: 30
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      # The build and `api:check` read the pinned `cloudflare-os` submodule.
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      # No `version`: it installs the pnpm the root package.json's `packageManager` names.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      # Its postinstall, `cf-os install`, installs the submodule's own workspace.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test

@@ -3,7 +3,9 @@
 // Brings a project up to date with the starter: merges the starter's branch into it, checks the
 // Cloudflare OS submodule out at the pin that merge brings, installs, and writes `.cf-os/update.md`,
 // a brief for the operator's coding agent: what changed in both repositories, what conflicted, and
-// how to finish. Conflicts are left to git; nothing is resolved here.
+// how to finish. Conflicts are left to git; nothing is resolved here. When the root `package.json`
+// has an `api:generate` script, as the starter's does, it then regenerates `cf-os api`'s committed
+// files from the new pin and leaves them unstaged, for review with it.
 //
 // The starter is fetched from its URL, not through a remote, so this works whether the project kept
 // the `starter` remote `init` made, renamed it or removed it. The submodule follows the starter's
@@ -23,7 +25,7 @@
 // what replaces that copy, and a project older than this command does not have it. So, like
 // scaffolding, it is on the packed path: node builtins and this package's dependency-free modules.
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { displayPath, type CommandArgs, type Context } from "../context.ts";
 import { defaultSpawn, succeeded, type SpawnTool } from "../tools.ts";
@@ -44,11 +46,17 @@ const REFERENCES = `${DEFAULT_TEMPLATE}/blob/main/.agents/skills/cloudflare-os-o
 /** Upstream's Gatekeeper contract, `@gadgets/workshop-shared/gatekeeper` and `/cloudflare-gatekeeper`. */
 const CONTRACT = ["packages/workshop-shared/src/gatekeeper.ts", "packages/workshop-shared/src/cloudflare-gatekeeper.ts"];
 
-/** Lines of a failed install's output shown; it can run to hundreds. */
-const INSTALL_TAIL = 40;
+/** Lines of a failed tool's output shown; the install's can run to hundreds. */
+const OUTPUT_TAIL = 40;
 
 /** Commits listed per repository in the terminal; the brief lists them all. */
 const LISTED = 20;
+
+/** The root script that regenerates `cf-os api`'s committed files from the pin, printing what changed as JSON. */
+const API_GENERATE = "api:generate";
+
+/** API commands listed per kind (added, removed, changed), in the terminal and the brief. */
+const API_LISTED = 20;
 
 /** What updating runs against, so tests can record the sequence instead of running it. */
 export interface UpdateDeps {
@@ -278,9 +286,21 @@ interface Update {
   /** Whether the root has a `package.json` to install. */
   installable: boolean;
   installed: boolean;
+  /** `pnpm run api:generate`'s outcome; undefined when the root `package.json` has no such script. */
+  api: ApiGeneration | undefined;
   /** Steps that did not complete, each with its fix. */
   problems: string[];
 }
+
+/**
+ * What `pnpm run api:generate` did: regenerated the files (those listed changed, and the commands
+ * between them, as space-joined paths such as `open-gadget get-chat-history`), failed, or did not run
+ * because the install did not complete.
+ */
+type ApiGeneration = GeneratedApi | { status: "failed" } | { status: "not-run" };
+
+/** `api:generate`'s result: the repository-relative files it rewrote, and the commands added, removed and changed. */
+type GeneratedApi = { status: "generated"; files: string[]; added: string[]; removed: string[]; changed: string[] };
 
 /** The root of the git checkout the command was run in. */
 function repositoryRoot(ctx: Context, deps: UpdateDeps): string {
@@ -617,6 +637,7 @@ function starterSteps(state: Update): string[] {
     ...contractStep(state).map((step) => `${step} That includes the operator's own Gatekeepers, which the starter ` +
       "cannot adapt for them."),
     ...state.newPin !== state.oldPin ? [EXPORT_STEP] : [],
+    ...apiStep(state),
     ...urlStep(state),
     "Keep any follow-up fixes in commits of their own, after the merge, so the update itself stays reviewable.",
     "Run `pnpm lint` and `pnpm cf-os check`. Deploy (`pnpm cf-os deploy`) only once the operator approves.",
@@ -648,6 +669,7 @@ function pinSteps(state: Update): string[] {
       : [],
     ...contractStep(state),
     EXPORT_STEP,
+    ...apiStep(state),
     ...urlStep(state),
     ...state.staged && state.rollback ? [rollbackStep(state)] : [],
     ...state.staged && !state.rollback && !state.preview
@@ -662,6 +684,74 @@ function pinSteps(state: Update): string[] {
       "fields, vars or Gatekeepers, and what, if anything, needed fixing. If nothing beyond the pin move was " +
       "needed, say why (the guide's \"prove it\" list).",
   ];
+}
+
+/** How many API commands were added, removed and changed. */
+const apiCounts = (api: GeneratedApi) => `${api.added.length} added, ${api.removed.length} removed, ${api.changed.length} changed`;
+
+/** Each kind of API command change that has any, with its commands. */
+const apiKinds = (api: GeneratedApi): [string, string[]][] =>
+  ([["Added", api.added], ["Removed", api.removed], ["Changed (arguments or result)", api.changed]] as [string, string[]][])
+    .filter(([, commands]) => commands.length);
+
+/** The terminal's account of the regenerated API, when it changed: a failure is among the problems. */
+function apiLines(state: Update): string[] {
+  const { api } = state;
+  if (api?.status !== "generated") return [];
+  if (!api.files.length) return ["API commands: the generated files already match the pin."];
+  return [
+    `API commands: ${apiCounts(api)}; ${plural(api.files.length, "regenerated file")} left unstaged, for review.`,
+    ...apiKinds(api).flatMap(([kind, commands]) => [
+      `  ${kind}:`,
+      ...commands.slice(0, API_LISTED).map((command) => `    ${command}`),
+      ...commands.length > API_LISTED ? [`    … ${commands.length - API_LISTED} more`] : [],
+    ]),
+  ];
+}
+
+/** The brief's account of `pnpm run api:generate`, when the root has the script. */
+function apiSection(state: Update): string[] {
+  const { api } = state;
+  if (!api) return [];
+  const script = `\`pnpm run ${API_GENERATE}\``;
+  const text = api.status === "failed"
+    ? `${script} failed: see "Still to do".`
+    : api.status === "not-run"
+      ? `${script} did not run, as the install did not complete.`
+      : !api.files.length
+        ? `${script} ran, and the generated files already matched the pin: no API command changed.`
+        : [
+          `${script} regenerated \`cf-os api\` from the pin: ${apiCounts(api)}. These files are left unstaged, for review:`,
+          "",
+          ...api.files.map((file) => `- \`${file}\``),
+          ...apiKinds(api).flatMap(([kind, commands]) => [
+            "",
+            `${kind} (${commands.length}):`,
+            "",
+            ...commands.slice(0, API_LISTED).map((command) => `- \`${command}\``),
+            ...commands.length > API_LISTED ? [`- … and ${commands.length - API_LISTED} more`] : [],
+          ]),
+        ].join("\n");
+  return ["## API commands", "", text, ""];
+}
+
+/** The step for `cf-os api`'s generated files, unless generation ran and changed nothing. */
+function apiStep(state: Update): string[] {
+  const { api } = state;
+  if (!api || api.status === "generated" && !api.files.length) return [];
+  const check = "`pnpm lint` runs `api:check`, which fails until they match the pin.";
+  if (api.status === "not-run") {
+    return [`Once \`pnpm install\` has run, run \`pnpm ${API_GENERATE}\` too, and review the files it regenerates with the ` +
+      `pin. ${check}`];
+  }
+  if (api.status === "failed") {
+    return [`\`pnpm run ${API_GENERATE}\` failed: fix what it reports (the install, or a type in the new \`api.ts\` the ` +
+      `generator does not handle), run it again, and review the files it regenerates with the pin. ${check}`];
+  }
+  return [`\`cf-os api\`'s generated files were regenerated from the pin and left unstaged (listed under "API commands"). ` +
+    `Review them${state.staged ? " with the staged pin" : ""}: a removed or changed command breaks the scripts, docs and ` +
+    `skills that call it, so update those. Then commit them ${state.staged ? "with the pin" : "in a commit of their own, right after the merge"} ` +
+    `(\`git add ${api.files.join(" ")}\`).`];
 }
 
 /** The brief's account of the old pin's commits the new one does not have. */
@@ -707,6 +797,7 @@ function summary(state: Update, status: "up-to-date" | "dry-run" | "declined" | 
       contractChanges: state.contract?.length ?? null,
     },
     installed: state.installable ? state.installed : null,
+    api: state.api ?? null,
     brief: brief ?? null,
     problems: state.problems,
   };
@@ -740,16 +831,22 @@ function brief(state: Update, when: Date): string {
         ? "`pnpm install` did not run: conflict markers would break it. Run it once the merge is concluded."
         : "`pnpm install` did not complete. Run it once the problems below are fixed.";
   const reinstall = state.installable ? " and `pnpm install`" : "";
-  const undo = state.isStarter
-    ? [
-      ...state.merge === "conflicted" ? ["- While the merge is in progress: `git merge --abort`."] : [],
-      ...state.staged
-        ? [`- To drop only the staged pin: \`git restore --staged ${state.path}\`, then \`git submodule update --init --recursive\`.`]
-        : [],
-      `- To go back to where the project was${state.staged ? ", once the pin is dropped" : ""}: ` +
-        `\`git reset --keep ${state.oldHead}\`, then \`git submodule update --init --recursive\`${reinstall}.`,
-    ]
-    : [`- \`git restore --staged ${state.path}\`, then \`git submodule update --init --recursive ${state.path}\`${reinstall}.`];
+  const regenerated = state.api?.status === "generated" && state.api.files.length ? state.api.files : [];
+  const undo = [
+    ...regenerated.length
+      ? [`- To drop the regenerated API files, first: \`git restore -- ${regenerated.join(" ")}\`.`]
+      : [],
+    ...state.isStarter
+      ? [
+        ...state.merge === "conflicted" ? ["- While the merge is in progress: `git merge --abort`."] : [],
+        ...state.staged
+          ? [`- To drop only the staged pin: \`git restore --staged ${state.path}\`, then \`git submodule update --init --recursive\`.`]
+          : [],
+        `- To go back to where the project was${state.staged ? ", once the pin is dropped" : ""}: ` +
+          `\`git reset --keep ${state.oldHead}\`, then \`git submodule update --init --recursive\`${reinstall}.`,
+      ]
+      : [`- \`git restore --staged ${state.path}\`, then \`git submodule update --init --recursive ${state.path}\`${reinstall}.`],
+  ];
   const steps = state.isStarter ? starterSteps(state) : pinSteps(state);
   const contract = !state.contract
     ? `Could not be listed here. Diff it instead: ${diffCommand(state, CONTRACT)}.`
@@ -810,6 +907,7 @@ function brief(state: Update, when: Date): string {
       ? [`## Gatekeeper contract changes${state.rollback ? " rolled back" : ""}${state.contract ? ` (${state.contract.length})` : ""}`,
         "", contract, ""]
       : [],
+    ...apiSection(state),
     "## Undo",
     "",
     ...undo,
@@ -836,6 +934,66 @@ function writeBrief(ctx: Context, state: Update, when: Date): string {
   const path = join(ctx.root, BRIEF);
   writeFileSync(path, brief(state, when));
   return path;
+}
+
+/** The end of a captured tool's output, where its error is. */
+function outputTail(result: ReturnType<SpawnTool>): string {
+  const lines = `${result.stdout}\n${result.stderr ?? ""}`.split("\n").filter((line) => line.trim());
+  return [
+    ...lines.length > OUTPUT_TAIL ? [`… ${lines.length - OUTPUT_TAIL} earlier lines`] : [],
+    ...lines.slice(-OUTPUT_TAIL),
+  ].join("\n");
+}
+
+/** Whether the root `package.json` has script `name`. One that does not parse (conflict markers, say) has none. */
+function hasScript(root: string, name: string): boolean {
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts?: Record<string, unknown> };
+    return typeof manifest.scripts?.[name] === "string";
+  } catch {
+    return false;
+  }
+}
+
+/** `value`, when it is an array of strings. */
+const strings = (value: unknown) =>
+  Array.isArray(value) && value.every((item) => typeof item === "string") ? value as string[] : undefined;
+
+/**
+ * `api:generate`'s result from its stdout, or undefined when it printed none. The last line, as a pnpm
+ * that prints the script's banner prints it to stdout first.
+ */
+function parseGenerated(stdout: string): GeneratedApi | undefined {
+  try {
+    const parsed = JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as { files?: unknown; commands?: Record<string, unknown> };
+    const [files, added, removed, changed] = [parsed.files, parsed.commands?.added, parsed.commands?.removed,
+      parsed.commands?.changed].map(strings);
+    return files && added && removed && changed ? { status: "generated", files, added, removed, changed } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Runs `pnpm run api:generate`, which rewrites `cf-os api`'s committed files to match the pin, and
+ * leaves what it wrote unstaged. A failure is one of the run's problems, and leaves the pin as it is.
+ */
+function generateApi(ctx: Context, deps: UpdateDeps, state: Update): ApiGeneration {
+  ctx.out.log(`\nRunning pnpm run ${API_GENERATE}.`);
+  // Captured, as its stdout is the result read here. Its log is shown at a terminal, and when it fails.
+  const result = deps.spawn("pnpm", ["run", API_GENERATE], { cwd: ctx.root, capture: true });
+  const generated = succeeded(result) ? parseGenerated(result.stdout) : undefined;
+  if (generated) {
+    if (ctx.prompter && result.stderr?.trim()) ctx.out.log(result.stderr.trimEnd());
+    return generated;
+  }
+  ctx.out.log(outputTail(result));
+  state.problems.push(succeeded(result)
+    ? `\`pnpm run ${API_GENERATE}\` printed no result, so what it regenerated is unknown. Run it again, and review ` +
+      "what `git status` shows."
+    : `\`pnpm run ${API_GENERATE}\` failed, so \`cf-os api\`'s generated files may not match the pin. Run it again to ` +
+      "see why; `pnpm lint` fails until they match.");
+  return { status: "failed" };
 }
 
 /** Updates the repository from `args`, resolving to the exit code. */
@@ -960,7 +1118,7 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
     oldPin, starterPin, mergedPin, newPin, upstream, to, ...range,
     starterLeftOut, starterLeftOutContract, preview: offMain,
     foreignUrl: url && !isUpstream(url) ? url : undefined, merge: "none", conflicts: [], staged: false, installable: existsSync(join(root, "package.json")), installed: false,
-    problems: [],
+    api: undefined, problems: [],
   };
   if (!starter.length && newPin === oldPin && !staleCheckout && checkedOut) {
     ctx.out.log("Already up to date.");
@@ -994,15 +1152,14 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
     if (succeeded(install)) {
       result.installed = true;
     } else {
-      if (quiet) {
-        const lines = `${install.stdout}\n${install.stderr ?? ""}`.split("\n").filter((line) => line.trim());
-        ctx.out.log([
-          ...lines.length > INSTALL_TAIL ? [`… ${lines.length - INSTALL_TAIL} earlier lines`] : [],
-          ...lines.slice(-INSTALL_TAIL),
-        ].join("\n"));
-      }
+      if (quiet) ctx.out.log(outputTail(install));
       result.problems.push("`pnpm install` failed. Run it again to see why, and fix that first.");
     }
+  }
+  // Whatever moved, the pin or the generator with the merge, the committed API files should be what
+  // generation writes now. It reads the submodule's installed packages, so it waits for the install.
+  if (result.installable && hasScript(root, API_GENERATE)) {
+    result.api = result.installed ? generateApi(ctx, deps, result) : { status: "not-run" };
   }
 
   const written = writeBrief(ctx, result, deps.now());
@@ -1018,8 +1175,10 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
         "pin, not for merging."
       : `${path} is at upstream's ${short(result.newPin)}, staged and not committed, for review.`
     : result.newPin !== oldPin && !result.conflicts.includes(path) ? `${path} is at the starter's ${short(result.newPin)}.` : "";
-  ctx.out.log(["", outcome, pin, ...result.problems, `Wrote ${where}.`].filter(Boolean).join("\n"));
-  const clean = isStarter && result.merge !== "conflicted" && !result.problems.length && !result.staged;
+  ctx.out.log(["", outcome, pin, ...apiLines(result), ...result.problems, `Wrote ${where}.`].filter(Boolean).join("\n"));
+  // Regenerated API files are left to commit, so the update is not finished either.
+  const regenerated = result.api?.status === "generated" && result.api.files.length > 0;
+  const clean = isStarter && result.merge !== "conflicted" && !result.problems.length && !result.staged && !regenerated;
   // With nobody at a terminal, it is usually the coding agent itself that ran this: the brief's steps are its own.
   ctx.out.log(!ctx.prompter
     ? `\nNext: carry out the steps in ${where} now. They are addressed to you, the agent that ran this; do not ` +

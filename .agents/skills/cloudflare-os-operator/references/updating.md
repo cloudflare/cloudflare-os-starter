@@ -1,11 +1,11 @@
 # Updating From The Starter
 
-`npx cf-os@latest update` merges the starter's `main` into the project, checks the `cloudflare-os` submodule out at the pin that merge brings, installs, and writes `.cf-os/update.md`: both commit ranges, what conflicted, and the steps to finish. In a repository that pins Cloudflare OS without being a starter project, `npx cf-os@latest update --upstream` moves the pin alone. This reference is the checklist the brief's steps point at. Work through it against the ranges in the brief, then report to the operator.
+`npx cf-os@latest update` merges the starter's `main` into the project, checks the `cloudflare-os` submodule out at the pin that merge brings, installs, regenerates the `cf-os api` files from the new pin, and writes `.cf-os/update.md`: both commit ranges, what conflicted, the API commands that changed, and the steps to finish. In a repository that pins Cloudflare OS without being a starter project, `npx cf-os@latest update --upstream` moves the pin alone. This reference is the checklist the brief's steps point at. Work through it against the ranges in the brief, then report to the operator.
 
 ## Which Path You Are On
 
 - **Default: the starter's pin.** The starter has already adapted `packages/cf-os` and its shared code to that pin. The work is mostly merge conflicts in files the operator owns (`deployment.jsonc`, branding, docs they edited), plus the operator's own Gatekeepers, such as `packages/custom-gatekeeper`, which the starter cannot adapt for them.
-- **`--upstream`: upstream's `main`, staged and not committed,** on top of the starter merge, which is committed. The starter has not seen this pin yet, so everything below may apply to `packages/cf-os` itself as well. Follow [upgrade-and-rollback.md](upgrade-and-rollback.md) before committing the pin.
+- **`--upstream`: upstream's `main`, staged and not committed,** on top of the starter merge, which is committed. The starter has not seen this pin yet, so everything below may apply to `packages/cf-os` itself as well. Follow [upgrade-and-rollback.md](upgrade-and-rollback.md) before committing the pin. The regenerated API files are left unstaged beside it: review them with the pin and commit them in the same commit.
 - **Not a starter project: the pin alone.** A repository with its own config generation, build and deploy scripts that pins Cloudflare OS as a submodule, wherever it keeps it. There is no starter merge, only upstream's `main`, staged and not committed. The generic sections below apply as written. Sections marked *(starter)* describe the starter's own machinery (`generateConfigs()`, `PACKAGE_DIRS`, the new-Gatekeeper list, `buildCommands()`): map each onto this repository's equivalent. Follow [upgrade-and-rollback.md](upgrade-and-rollback.md) the same way before committing the pin.
 
 ## Most Updates Need Nothing Beyond The Merge: Prove It
@@ -18,6 +18,10 @@ Check the upstream range for each of the following. When none of them touches th
 - A new preinstalled Gatekeeper or Worker.
 - Build tooling changes.
 - Renamed paths, packages or variables.
+
+## The `cf-os api` Files *(starter)*
+
+`cf-os api`'s commands are generated from upstream's `packages/workshop-shared/src/api.ts` into `packages/cf-os/src/api/generated` (`schema.json`, `commands.ts`). When the root `package.json` has an `api:generate` script, `update` runs `pnpm run api:generate` after the install and leaves what it rewrote unstaged, for review: commit it in the same commit as a staged pin, or in a commit of its own right after the starter merge. The brief's "API commands" section lists the commands added, removed and changed (arguments or result). A removed or changed command breaks whatever calls it: grep the docs, the operator skill and any scripts for it. `pnpm lint`'s `api:check` fails until the files match the pin. A failed generation is one of the brief's problems, the pin staged regardless: usually the install, or a type in the new `api.ts` the generator does not handle. Fix it and run `pnpm api:generate`.
 
 ## Gatekeeper Contract Changes
 
