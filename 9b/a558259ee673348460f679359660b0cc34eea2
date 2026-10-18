@@ -1,0 +1,19 @@
+packages/cf-os/tsconfig.build.json
+  s_6712caea14c554::t_b68f8c8c027f63 18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9ba558259ee673348460f679359660b0cc34eea2",
+  "prompts": {},
+  "sessions": {
+    "s_6712caea14c554": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "977fe45f-33b4-4f1f-b13d-82e5b0ecf29f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
