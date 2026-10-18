@@ -1,0 +1,29 @@
+.gitignore
+  s_b132cdbd20e17f::t_3968fd58e0e388 3
+packages/cf-os/README.md
+  s_b132cdbd20e17f::t_61636d8b0bf212 35
+packages/cf-os/package.json
+  s_b132cdbd20e17f::t_70a348ae325ec2 5-17,25-37
+packages/cf-os/src/main.test.ts
+  s_b132cdbd20e17f::t_696a0c6e217dfd 5,153-181
+packages/cf-os/tsconfig.build.json
+  s_b132cdbd20e17f::t_52650f56578abb 1-19
+packages/cf-os/tsconfig.json
+  s_b132cdbd20e17f::t_432fd9004d771c 3-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b36889175fdaafb014843f025c87892a732298f0",
+  "prompts": {},
+  "sessions": {
+    "s_b132cdbd20e17f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0afb9b62-173f-4e1a-8578-00df816447c9",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
