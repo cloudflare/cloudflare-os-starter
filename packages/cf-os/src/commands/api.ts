@@ -94,7 +94,7 @@ export async function run(args: CommandArgs, ctx: Context, deps: ApiDeps = defau
   if (invocation.help) {
     const target = invocation.help;
     const help = target.kind === "node" ? nodeHelp(table, target.node, invocation.path)
-      : target.kind === "command" ? commandHelp(table, target.node, target.name, invocation.path)
+      : target.kind === "command" ? commandHelp(table, target.node, target.name, invocation.path, target.at)
       : untypedHelp(invocation.path);
     deps.stdout.write(`${help}\n`);
     return 0;

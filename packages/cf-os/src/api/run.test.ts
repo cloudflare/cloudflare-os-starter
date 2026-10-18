@@ -4,7 +4,8 @@ import { table } from "../../generator/__fixtures__/generated/commands.ts";
 import { UsageError } from "../context.ts";
 import { table as realTable } from "./generated/commands.ts";
 import {
-  commandHelp, decodeCalls, dryRunChain, nodeHelp, parseInvocation, parseSearch, searchCommands, untypedHelp, type Hop,
+  commandHelp, decodeCalls, dryRunChain, incompleteChain, nodeHelp, parseInvocation, parseSearch, searchCommands, untypedHelp,
+  type Hop,
 } from "./run.ts";
 
 const noFiles = {
@@ -74,13 +75,29 @@ test("what the table does not allow is a usage error that says what to run", () 
   usage(["open-notebook", "my notes", "nope"], /run `cf-os api open-notebook 'my notes' --help` for Notebook's\.$/);
   // A positional only `--` let through cuts the pointer short: no `--help` can follow a `--`.
   usage(["open-notebook", "--", "--weird", "nope"], /run `cf-os api open-notebook --help` for Notebook's\.$/);
+  usage(["open-notebook", "--", "--", "nope"], /run `cf-os api open-notebook --help` for Notebook's\.$/);
+});
+
+test("a chain left open says how to finish it, in commands that run as typed", () => {
+  // A token only `--` let through gets its `--` back in the example, which then walks as suggested,
+  // and cuts the help pointer short, since `--help` cannot follow a `--`.
+  for (const token of ["--weird", "--", "-h"]) {
+    const message = incompleteChain(realTable, parseInvocation(realTable, ["open-gadget", "--", token]));
+    const example = /as in `cf-os api ([^`]*)`/.exec(message)![1].split(" ").map((word) => word.replace(/^'(.*)'$/, "$1"));
+    assert.deepEqual(example, ["open-gadget", "--", token, "get-metadata"]);
+    const walked = parseInvocation(realTable, example);
+    assert.deepEqual(names(walked.hops), ["open-gadget", "get-metadata"]);
+    assert.deepEqual((walked.hops[0] as Extract<Hop, { kind: "command" }>).positionals, [token]);
+    assert.match(message, /; `cf-os api open-gadget --help` lists them\.$/);
+  }
+  assert.match(incompleteChain(realTable, parseInvocation(realTable, ["open-gadget", "my id"])), /as in `cf-os api open-gadget 'my id' get-metadata`; `cf-os api open-gadget 'my id' --help` lists them\.$/);
 });
 
 test("--help stops the walk at the segment it is in", () => {
   assert.deepEqual(parseInvocation(table, ["--help", "nope"]).help, { kind: "node", node: "FixtureAuthedApi" });
   assert.deepEqual(parseInvocation(table, ["public", "-h"]).help, { kind: "node", node: "FixturePublicApi" });
-  assert.deepEqual(parseInvocation(table, ["open-notebook", "--help"]).help, { kind: "command", node: "FixtureAuthedApi", name: "open-notebook" });
-  assert.deepEqual(parseInvocation(table, ["open-notebook", "n", "file", "-h"]).help, { kind: "command", node: "Notebook", name: "file" });
+  assert.deepEqual(parseInvocation(table, ["open-notebook", "--help"]).help, { kind: "command", node: "FixtureAuthedApi", name: "open-notebook", at: 1 });
+  assert.deepEqual(parseInvocation(table, ["open-notebook", "n", "file", "-h"]).help, { kind: "command", node: "Notebook", name: "file", at: 3 });
   assert.deepEqual(parseInvocation(table, ["open-notebook", "n", "connect", "call", "x", "--help"]).help, { kind: "untyped" });
 });
 
@@ -146,6 +163,17 @@ test("help for a command that returns a capability lists that capability's comma
   assert.match(open, /\n {2}connect → call /);
   assert.match(open, /One marked `→ call` returns an untyped capability/);
   assert.doesNotMatch(commandHelp(table, "Notebook", "lock", ["lock"]), /Then, on/);
+  // It says how to reach one of those commands' help, with what was typed so far.
+  assert.match(open, /\n\nRun `cf-os api open-notebook <id> <command> --help` for one's arguments\.\n/);
+  assert.match(commandHelp(table, "FixtureAuthedApi", "open-notebook", ["open-notebook", "my notes"]),
+    /Run `cf-os api open-notebook 'my notes' <command> --help` for one's arguments\./);
+  // A next command typed where the positional goes was taken for it: the help says so, and which help was meant.
+  const misread = commandHelp(table, "FixtureAuthedApi", "open-notebook", ["open-notebook", "file"], 1);
+  assert.match(misread, /^"file" was taken for open-notebook's <id>, not as a command\. For its help, run:\n {2}cf-os api open-notebook <id> file --help\n\nUsage: /);
+  assert.doesNotMatch(open, /was taken for/);
+  // The positional is the command's own name: `at` says which token is the command.
+  assert.match(commandHelp(table, "FixtureAuthedApi", "open-notebook", ["open-notebook", "open-notebook"], 1),
+    /Run `cf-os api open-notebook open-notebook <command> --help`/);
   // The real one: open-gadget's help lists Overseer's commands.
   assert.match(commandHelp(realTable, realTable.root, "open-gadget", ["open-gadget"]), /Then, on Overseer:[^]*\n {2}new-chat <initialMessage> <modelId> /);
 });

@@ -81,7 +81,8 @@ export type Hop =
 /** What `--help` describes. */
 export type HelpTarget =
   | { kind: "node"; node: string }
-  | { kind: "command"; node: string; name: string }
+  /** `at`: how many tokens of the walked path reach it, its name included. */
+  | { kind: "command"; node: string; name: string; at: number }
   | { kind: "untyped" };
 
 /** Where the walk stopped. */
@@ -121,13 +122,26 @@ interface Segment {
 type Position = { kind: "node"; node: string } | { kind: "untyped" } | { kind: "result"; after: string; returns: ApiReturn };
 
 /**
- * The help command for what `path` reaches, as it would be typed. A positional only `--` let through
- * cuts it short, since nothing after a `--` can be `--help`: the help is then that of the segment
- * before it.
+ * Where the first token of `path` is that the walk takes only after a `--`: one that reads as a
+ * flag, or `--` itself. -1 when there is none.
+ */
+function escapedFrom(path: string[]): number {
+  return path.findIndex((token) => token === "--" || isFlag(token));
+}
+
+/** `path` as it would be typed to walk the same way: quoted, with `--` back where it is needed. */
+function typedPath(path: string[]): string {
+  const at = escapedFrom(path);
+  return shellLine(at === -1 ? path : [...path.slice(0, at), "--", ...path.slice(at)]);
+}
+
+/**
+ * The help command for what `path` reaches, as it would be typed. A token only `--` let through cuts
+ * it short, since nothing after a `--` can be `--help`: the help is then that of the segment before.
  */
 function helpCommand(path: string[]): string {
-  const escaped = path.findIndex(isFlag);
-  return `\`cf-os api ${shellLine([...escaped === -1 ? path : path.slice(0, escaped), "--help"])}\``;
+  const at = escapedFrom(path);
+  return `\`cf-os api ${shellLine([...at === -1 ? path : path.slice(0, at), "--help"])}\``;
 }
 
 /**
@@ -213,7 +227,7 @@ export function parseInvocation(table: ApiTable, tokens: string[]): Invocation {
   const path: string[] = [];
   const hops: Hop[] = [];
   const helpFor = (): HelpTarget => current.kind === "command"
-    ? { kind: "command", node: current.hop!.node, name: current.hop!.name }
+    ? { kind: "command", node: current.hop!.node, name: current.hop!.name, at: current.at }
     : current.kind === "call" ? { kind: "untyped" }
     : { kind: "node", node: isPublic ? table.public : table.root };
 
@@ -422,19 +436,20 @@ function exampleCommand(table: ApiTable, node: string): string | undefined {
 export function incompleteChain(table: ApiTable, invocation: Invocation): string {
   const { end, path } = invocation;
   const hop = invocation.hops.at(-1);
-  const typed = `cf-os api ${shellLine(path)}`.trimEnd();
+  const typed = `cf-os api ${typedPath(path)}`.trimEnd();
+  const help = helpCommand(path);
   if (!hop || hop.kind !== "command") {
-    return `${typed} names no command, so nothing was sent. Find one with ${SEARCH}; \`${typed} --help\` lists them.`;
+    return `${typed} names no command, so nothing was sent. Find one with ${SEARCH}; ${help} lists them.`;
   }
   if (end.kind === "untyped") {
     return `${hop.name} returns an untyped capability, so the chain goes on: nothing was sent. ` +
-      `Finish it with \`call <method> [json-args...]\`, as in \`${typed} call <method>\`; \`${typed} --help\` says more.`;
+      `Finish it with \`call <method> [json-args...]\`, as in \`${typed} call <method>\`; ${help} says more.`;
   }
   const node = (end as { node: string }).node;
   const example = exampleCommand(table, node);
   return `${hop.name} returns a capability (${node}), so the chain goes on: nothing was sent. ` +
     `Finish it with one of ${node}'s commands${example ? `, as in \`${typed} ${example}\`` : ""}; ` +
-    `\`${typed} --help\` lists them.`;
+    `${help} lists them.`;
 }
 
 /**
@@ -490,15 +505,30 @@ function describeArg(arg: ApiArg): string {
   return [arg.type, arg.doc].filter(Boolean).join(". ");
 }
 
-/** Help for command `name` on capability `node`, reached by `path` (which ends with `name`). */
-export function commandHelp(table: ApiTable, node: string, name: string, path: string[]): string {
+/**
+ * Help for command `name` on capability `node`, reached by `path`: `name` is its `at`th token, and
+ * any after it are the positionals typed so far.
+ */
+export function commandHelp(table: ApiTable, node: string, name: string, path: string[], at = path.lastIndexOf(name) + 1): string {
   const command = table.nodes[node].commands[name];
-  const before = path.slice(0, path.lastIndexOf(name));
+  const before = path.slice(0, at - 1);
   const callbacks = command.args.filter((arg) => arg.encoding === "callback" || arg.encoding === "function");
   const flags = command.args.filter((arg) => arg.flag);
   const positionals = positionalArgs(command);
   const next = command.returns.kind === "stub" ? command.returns.node : undefined;
+  // A command of the next capability typed where a positional goes (`open-gadget new-chat --help`)
+  // was taken for that positional; this help is not the one meant, so it says which is.
+  const typed = path.slice(at);
+  const misread = next === undefined ? -1 : typed.findIndex((token) => Object.hasOwn(table.nodes[next].commands, token));
+  /** This command's line, the positionals typed before `kept` as typed and the rest as placeholders. */
+  const line = (kept: number) => ["cf-os api", typedPath([...before, name, ...typed.slice(0, kept)]),
+    ...positionals.slice(kept).map((arg) => `<${arg.name}>`)].filter(Boolean).join(" ");
   return [
+    ...misread === -1 ? [] : [
+      `"${typed[misread]}" was taken for ${name}'s <${positionals[misread]!.name}>, not as a command. For its help, run:`,
+      `  ${line(misread)} ${typed[misread]} --help`,
+      "",
+    ],
     `Usage: ${["cf-os", "api", ...before, name, synopsis(command, table.shapes)].filter(Boolean).join(" ")}`,
     "",
     `${node}.${command.method}`,
@@ -513,7 +543,10 @@ export function commandHelp(table: ApiTable, node: string, name: string, path: s
       : table2(table.callbacks[arg.callback!].methods.map((method) => [`${method.name}(${method.params.join(", ")})`, summary(method.doc)])))] : [],
     "",
     ...wrap(`Returns ${describeReturn(command.returns)}.`, ""),
-    ...next ? ["", `Then, on ${next}:`, ...nodeCommandLines(table, next)] : [],
+    ...next ? [
+      "", `Then, on ${next}:`, ...nodeCommandLines(table, next),
+      "", `Run \`${line(misread === -1 ? typed.length : misread)} <command> --help\` for one's arguments.`,
+    ] : [],
     "",
     RUNTIME_HELP_POINTER,
   ].join("\n");
