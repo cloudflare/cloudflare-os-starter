@@ -1,0 +1,21 @@
+packages/cf-os/src/commands/update.test.ts
+  s_075094e75b72c9::t_95affb2d12cda7 517
+packages/cf-os/src/commands/update.ts
+  s_075094e75b72c9::t_18faac7286e6e6 284-285
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0c0c98c666e95fb479d422d0cee51d38c6919896",
+  "prompts": {},
+  "sessions": {
+    "s_075094e75b72c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f7c00ba6-80f6-4ad9-85b7-c23af7262f40",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
