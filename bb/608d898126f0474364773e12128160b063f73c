@@ -1,0 +1,23 @@
+packages/cf-os/src/api/run.test.ts
+  s_6712caea14c554::t_169135bf4213a4 7-8,78-93,99-100,166-176
+packages/cf-os/src/api/run.ts
+  s_6712caea14c554::t_90039752d5b605 84-85,125-140,143-144,230,439-440,442,446,452,508-512,514,519-525,527-531,546-549
+packages/cf-os/src/commands/api.ts
+  s_6712caea14c554::t_cfabd1ba3c367e 97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bb608d898126f0474364773e12128160b063f73c",
+  "prompts": {},
+  "sessions": {
+    "s_6712caea14c554": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "977fe45f-33b4-4f1f-b13d-82e5b0ecf29f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
