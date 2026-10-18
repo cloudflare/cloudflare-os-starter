@@ -1,0 +1,27 @@
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_4e92f623cbc683::t_4a41171177409d 319
+README.md
+  s_4e92f623cbc683::t_099b1ef1b943aa 111
+deployment.jsonc
+  s_4e92f623cbc683::t_7fc0163377f195 37-39
+docs/customization.md
+  s_4e92f623cbc683::t_690de070724fe9 58-59,218
+docs/migrate-from-hosted.md
+  s_4e92f623cbc683::t_e3fc7e43d1055e 52-54,177-178,217-218
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "00570016d2647c8df9c77a1a7619546f56779da0",
+  "prompts": {},
+  "sessions": {
+    "s_4e92f623cbc683": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2b424f-f299-4e4b-9e71-84fbd412a00c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
