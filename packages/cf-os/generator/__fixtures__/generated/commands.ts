@@ -30,7 +30,10 @@ export const table: ApiTable = {
             { name: "limit", index: 1, flag: "limit", encoding: "number", type: "number", doc: "" },
             { name: "url", index: 2, flag: "arg-url", encoding: "string", type: "string", doc: "" },
           ],
-          returns: { kind: "value", type: "Note[]" },
+          returns: {
+            kind: "value",
+            type: "Note[], where Note = { body: Uint8Array; created: Date; id: number; size: bigint; tags?: string[]; title: string }",
+          },
         },
         "get-admin": {
           method: "getAdmin",
@@ -124,13 +127,13 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "Mood | undefined" },
+          returns: { kind: "value", type: "Mood | undefined, where Mood = \"busy\" | \"calm\"" },
         },
         outline: {
           method: "outline",
           doc: "A recursive named result.",
           args: [],
-          returns: { kind: "value", type: "Outline" },
+          returns: { kind: "value", type: "Outline = { children: Outline[]; title: string }" },
         },
         subscribe: {
           method: "subscribe",

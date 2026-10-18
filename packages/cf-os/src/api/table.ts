@@ -104,7 +104,11 @@ export interface ApiArg {
   callback?: string;
   /** For `function`, the function's parameter names, for help. */
   params?: string[];
-  /** The declared type, rendered TypeScript-like, for help. */
+  /**
+   * The declared type, rendered TypeScript-like, for help. For `json`, each named object or union it
+   * is made of is spelled out after it, unless that would run long: `Name = {...}`, or
+   * `X[], where X = {...}`.
+   */
   type: string;
   /** The parameter's JSDoc (`@param`), normalized; empty when it has none. */
   doc: string;
@@ -113,7 +117,8 @@ export interface ApiArg {
 /**
  * What a command's result does.
  *
- * - `value`: print it as JSON (`type` is the declared type, for help).
+ * - `value`: print it as JSON (`type` is the declared type for help, its named types spelled out as
+ *   {@link ApiArg.type}'s are).
  * - `stub`: a capability on `node`, where the chain continues with the next segment. `nullable`
  *   when the declared type is `X | null`: a null result ends the chain and prints `null`.
  * - `handle`: an empty capability (`RpcStub<{}>`): dispose it and print `null`.

@@ -77,6 +77,22 @@ test("encodes each parameter by its type", () => {
   });
   assert.equal(arg("Notebook", "file", 1).encoding, "json");
   assert.equal(arg("Notebook", "move").type, 'Destination = { kind: "folder"; path: string } | { kind: "inbox" }');
+  // A named type as a union's branch or an array's element is spelled out after the declared type, once.
+  const spelled = buildTable(edited((schema) => schema.services.Notebook!.methods.push({
+    name: "refile", doc: "", returns: { kind: "void" }, params: [
+      { name: "notes", type: { kind: "array", element: { kind: "ref", name: "Note" } }, optional: false, doc: "" },
+      { name: "to", type: { kind: "union", branches: [{ kind: "ref", name: "Destination" }, { kind: "null" }] }, optional: false, doc: "" },
+      { name: "either", type: { kind: "union", branches: [{ kind: "ref", name: "Note" }, { kind: "array", element: { kind: "ref", name: "Note" } }] }, optional: false, doc: "" },
+      { name: "tags", type: { kind: "array", element: { kind: "string" } }, optional: false, doc: "" },
+    ],
+  }))).nodes.Notebook!.commands.refile!.args.map((a) => a.type);
+  const note = "Note = { body: Uint8Array; created: Date; id: number; size: bigint; tags?: string[]; title: string }";
+  assert.deepEqual(spelled, [
+    `Note[], where ${note}`,
+    'Destination | null, where Destination = { kind: "folder"; path: string } | { kind: "inbox" }',
+    `Note | Note[], where ${note}`,
+    "string[]",
+  ]);
   assert.equal(arg("Notebook", "subscribe", 1).encoding, "date");
   assert.deepEqual(arg("Notebook", "subscribe"), {
     name: "subscriber", index: 0, encoding: "callback", callback: "NotesSubscriber",
@@ -97,13 +113,21 @@ test("classifies each result", () => {
   const returns = (node: string, command: string) => nodes[node]!.commands[command]!.returns;
   assert.deepEqual(returns("FixtureAuthedApi", "open-notebook"), { kind: "stub", node: "Notebook", nullable: false });
   assert.deepEqual(returns("FixtureAuthedApi", "get-admin"), { kind: "stub", node: "FixtureAdmin", nullable: true });
-  assert.deepEqual(returns("FixtureAuthedApi", "find-notes"), { kind: "value", type: "Note[]" });
+  // A result's named types are spelled out as a JSON parameter's are, so its fields are in the help.
+  assert.deepEqual(returns("FixtureAuthedApi", "find-notes"), {
+    kind: "value", type: "Note[], where Note = { body: Uint8Array; created: Date; id: number; size: bigint; tags?: string[]; title: string }",
+  });
   assert.deepEqual(returns("FixturePublicApi", "download"), { kind: "stream" });
   assert.deepEqual(returns("Notebook", "lock"), { kind: "handle" });
   assert.deepEqual(returns("Notebook", "connect"), { kind: "untyped" });
   assert.deepEqual(returns("Notebook", "subscribe"), { kind: "subscription" });
   assert.deepEqual(returns("Notebook", "watch-title"), { kind: "subscription" });
-  assert.deepEqual(returns("Notebook", "outline"), { kind: "value", type: "Outline" });
+  assert.deepEqual(returns("Notebook", "outline"), { kind: "value", type: "Outline = { children: Outline[]; title: string }" });
+  // One too long to read in help stays a name.
+  const long = buildTable(edited((schema) => {
+    schema.shapes.Outline = { kind: "object", properties: Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`field${i}`, { kind: "string" }])) };
+  }));
+  assert.deepEqual(long.nodes.Notebook!.commands.outline!.returns, { kind: "value", type: "Outline" });
 });
 
 test("lists every callback method, and only the shapes json arguments reach", () => {
@@ -182,6 +206,8 @@ test("docs are in the CLI's words: methods named as their commands, TODO paragra
     assert.equal(cliDoc(text, commands, "Notebook"), text);
   }
   assert.equal(cliDoc("`lock()` and `Notebook.lock()`, then (lock()).", commands, "Notebook"), "`lock` and `lock`, then (`lock`).");
+  // A stray backtick pairs with nothing in the next paragraph.
+  assert.equal(cliDoc("The `stop button.\n\nThen lock() and `outline()`.", commands, "Notebook"), "The `stop button.\n\nThen `lock` and `outline`.");
   assert.equal(cliDoc("Kept.\n\nTODO: pagination.\nMore of it.\n\nTODO(x): later.\n\nAlso kept.", commands), "Kept.\n\nAlso kept.");
 
   const table = buildTable(edited((schema) => {

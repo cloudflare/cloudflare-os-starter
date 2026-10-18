@@ -194,12 +194,13 @@ export function cliDoc(doc: string, commands: CommandsByNode, on?: string): stri
     return owners.length === 1 && owners[0] !== on ? `\`${command}\` (on ${owners[0]})` : `\`${command}\``;
   };
   const call = "(?:([A-Z]\\w*)\\.)?([a-z]\\w*)\\(\\)";
-  return doc.split(/\n[ \t]*\n/).filter((paragraph) => !/^\s*TODO\b/.test(paragraph)).join("\n\n")
-    // Code spans land on the odd indices.
-    .split(/(`[^`]*`)/).map((part, index) => index % 2 === 1
+  // Code spans pair within a paragraph, so a stray backtick in one leaves the next alone; they land
+  // on the odd indices.
+  return doc.split(/\n[ \t]*\n/).filter((paragraph) => !/^\s*TODO\b/.test(paragraph))
+    .map((paragraph) => paragraph.split(/(`[^`]*`)/).map((part, index) => index % 2 === 1
       ? part.replace(new RegExp(`^\`${call}\`$`), named)
-      : part.replace(new RegExp(`(?<![\\w.\`])${call}(?!\`)`, "g"), named))
-    .join("");
+      : part.replace(new RegExp(`(?<![\\w.\`])${call}(?!\`)`, "g"), named)).join(""))
+    .join("\n\n");
 }
 
 function service(schema: Schema, name: string, what: string) {
@@ -272,19 +273,24 @@ function buildArg(schema: Schema, where: string, param: SchemaParam, index: numb
       };
     }
   }
-  return { ...base, ...flag, encoding: "json", shape: param.type, ...tail, type: jsonTypeText(schema, param.type) };
+  return { ...base, ...flag, encoding: "json", shape: param.type, ...tail, type: spelledTypeText(schema, param.type) };
 }
 
+/** The longest named type {@link spelledTypeText} spells out: a few lines of help, not a page. */
+const SPELLED_MAX = 600;
+
 /**
- * A JSON parameter's type for help: as declared, with each named object or union it is made of (the
- * type itself, a union's branch, an array's element) spelled out once, so its fields are in the help.
+ * A JSON parameter's or a result's type for help: as declared, with each named object or union it
+ * is made of (the type itself, a union's branch, an array's element) spelled out once, so its fields
+ * are in the help. One that would run past {@link SPELLED_MAX} stays a name.
  */
-function jsonTypeText(schema: Schema, shape: ApiShape): string {
+function spelledTypeText(schema: Schema, shape: ApiShape): string {
   const parts = shape.kind === "union" ? shape.branches : [shape];
   const names = [...new Set(parts.map((part) => part.kind === "array" ? part.element : part)
     .flatMap((part) => part.kind === "ref" ? [part.name] : []))]
     .filter((name) => ["object", "union"].includes(schema.shapes[name]?.kind ?? ""));
-  const spelled = names.map((name) => `${name} = ${typeText(schema.shapes[name]!)}`);
+  const spelled = names.map((name) => `${name} = ${typeText(schema.shapes[name]!)}`)
+    .filter((text) => text.length <= SPELLED_MAX);
   if (shape.kind === "ref" && spelled.length === 1) return spelled[0]!;
   return spelled.length === 0 ? typeText(shape) : `${typeText(shape)}, where ${spelled.join(", ")}`;
 }
@@ -340,7 +346,7 @@ function buildReturn(schema: Schema, method: SchemaMethod, args: ApiArg[]): ApiR
     return { kind: "stub", node: type.service, nullable };
   }
   if (type.kind === "readableStream") return { kind: "stream" };
-  return { kind: "value", type: typeText(method.returns) };
+  return { kind: "value", type: spelledTypeText(schema, method.returns) };
 }
 
 function buildCallback(callback: SchemaService): ApiCallback {

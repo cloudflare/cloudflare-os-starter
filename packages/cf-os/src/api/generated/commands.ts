@@ -43,7 +43,10 @@ export const table: ApiTable = {
           method: "getSettings",
           doc: "Read all admin-managed settings for the admin UI in one call.",
           args: [],
-          returns: { kind: "value", type: "AdminSettingsView" },
+          returns: {
+            kind: "value",
+            type: "AdminSettingsView = { accentColor: string; announcement: string; banner: BannerConfig; formats: AdminFormat[]; gatewayModels?: { defaultReasoning: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" | null; models: AdminModelView[]; modelsDevSuggestions: boolean; providerSettings: AdminGatewayProvider[]; providers: AiModelProvider[]; userModelsEnabled: boolean }; instanceInstructions: string; resourceVendors: AdminResourceVendor[]; signupsEnabled: boolean; siteLogo?: AvatarImage; siteName: string; userSearchEnabled: boolean }",
+          },
         },
         "is-blueprint-featured": {
           method: "isBlueprintFeatured",
@@ -304,7 +307,7 @@ export const table: ApiTable = {
           args: [
             { name: "data", index: 0, encoding: "bytes", nullable: true, type: "Uint8Array | null", doc: "" },
           ],
-          returns: { kind: "value", type: "AvatarImage | undefined" },
+          returns: { kind: "value", type: "AvatarImage | undefined, where AvatarImage = { url: string }" },
         },
         "set-site-name": {
           method: "setSiteName",
@@ -351,7 +354,10 @@ export const table: ApiTable = {
             "A pass says that the model answered that one request. It costs more than\n" +
             "`test-gateway-provider`, whose quick request is capped at a few tokens.",
           args: [{ name: "modelId", index: 0, encoding: "string", type: "string", doc: "" }],
-          returns: { kind: "value", type: "GatewayModelTest" },
+          returns: {
+            kind: "value",
+            type: "GatewayModelTest = { message: string; model: string; ok: false; status?: number } | { model: string; ok: true }",
+          },
         },
         "test-gateway-provider": {
           method: "testGatewayProvider",
@@ -376,7 +382,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "GatewayModelTest" },
+          returns: {
+            kind: "value",
+            type: "GatewayModelTest = { message: string; model: string; ok: false; status?: number } | { model: string; ok: true }",
+          },
         },
         "test-new-gateway-model": {
           method: "testNewGatewayModel",
@@ -402,7 +411,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "GatewayModelLevelTest[]" },
+          returns: {
+            kind: "value",
+            type: "GatewayModelLevelTest[], where GatewayModelLevelTest = { message: string; model: string; ok: false; reasoning: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" | null; status?: number } | { model: string; ok: true; reasoning: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" | null }",
+          },
         },
         "update-format": {
           method: "updateFormat",
@@ -497,7 +509,7 @@ export const table: ApiTable = {
             { name: "publicKey", index: 0, encoding: "string", type: "string", doc: "" },
             { name: "state", index: 1, encoding: "string", type: "string", doc: "" },
           ],
-          returns: { kind: "value", type: "DeviceSessionHandoffStart" },
+          returns: { kind: "value", type: "DeviceSessionHandoffStart = { ticket: string; userDoId: string }" },
         },
         "complete-connect-handoff": {
           method: "completeConnectHandoff",
@@ -552,7 +564,7 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "ConnectFlowStart" },
+          returns: { kind: "value", type: "ConnectFlowStart = { nonce: string; url: string }" },
         },
         "create-gatekeeper-user-selection": {
           method: "createGatekeeperUserSelection",
@@ -565,7 +577,10 @@ export const table: ApiTable = {
             { name: "vendorId", index: 0, encoding: "string", type: "string", doc: "" },
             { name: "selectedUserId", index: 1, encoding: "string", type: "string", doc: "" },
           ],
-          returns: { kind: "value", type: "GatekeeperUserSelection | null" },
+          returns: {
+            kind: "value",
+            type: "GatekeeperUserSelection | null, where GatekeeperUserSelection = { profile: GatekeeperUserProfileSnapshot; ticket: string }",
+          },
         },
         "delete-model": {
           method: "deleteModel",
@@ -615,7 +630,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "ConnectFlowStart | null" },
+          returns: {
+            kind: "value",
+            type: "ConnectFlowStart | null, where ConnectFlowStart = { nonce: string; url: string }",
+          },
         },
         "get-admin-api": {
           method: "getAdminApi",
@@ -633,7 +651,10 @@ export const table: ApiTable = {
             "Get AI configuration info, including whether AI Gateway mode is active and which providers\n" +
             "are available. The frontend uses this to adjust the model management UI.",
           args: [],
-          returns: { kind: "value", type: "AiGatewayInfo" },
+          returns: {
+            kind: "value",
+            type: "AiGatewayInfo = { builtInModelIds: string[]; enabled: true; enabledProviders: AiModelProvider[]; userModelsEnabled: boolean } | { enabled: false }",
+          },
         },
         "get-avatar": {
           method: "getAvatar",
@@ -647,7 +668,10 @@ export const table: ApiTable = {
           method: "getCloudflareUsage",
           doc: "Get the user's current free-tier usage and connected-account balance.",
           args: [],
-          returns: { kind: "value", type: "CloudflareUsageInfo" },
+          returns: {
+            kind: "value",
+            type: "CloudflareUsageInfo = { accountId?: string; accountName?: string; balance: number | null; cloudflareLimitsEnabled: boolean; connected: boolean; dailyLimit: number; dailyUsed: number; needsAccountSelection?: boolean; remaining: number; resetAt?: string; unlimited: boolean }",
+          },
         },
         "get-gatekeeper-app": {
           method: "getGatekeeperApp",
@@ -656,7 +680,10 @@ export const table: ApiTable = {
             "gatekeeper id, or null if there is no such UI-providing gatekeeper. The Workshop hosts the HTML\n" +
             "in a sandboxed iframe and exposes `ui` to it over a MessagePort RPC session.",
           args: [{ name: "id", index: 0, encoding: "string", type: "string", doc: "" }],
-          returns: { kind: "value", type: "GatekeeperUiFrame | null" },
+          returns: {
+            kind: "value",
+            type: "GatekeeperUiFrame | null, where GatekeeperUiFrame = { iframeHtml: string; ui: RpcStub<any> }",
+          },
         },
         "get-model-config": {
           method: "getModelConfig",
@@ -670,7 +697,10 @@ export const table: ApiTable = {
           method: "getOwnBlueprint",
           doc: "Return a blueprint created by the current user, or null if it is not owned by this user.",
           args: [{ name: "blueprintId", index: 0, encoding: "string", type: "string", doc: "" }],
-          returns: { kind: "value", type: "BlueprintUserSummary | null" },
+          returns: {
+            kind: "value",
+            type: "BlueprintUserSummary | null, where BlueprintUserSummary = { description: string; id: string; lastUpdated: Date; pinned?: boolean; source: BlueprintSource; title: string; version: number }",
+          },
         },
         "get-preferred-model": {
           method: "getPreferredModel",
@@ -691,7 +721,7 @@ export const table: ApiTable = {
           method: "getUiFeatureFlags",
           doc: "Resolve UI feature flags for the authenticated user.",
           args: [],
-          returns: { kind: "value", type: "UiFeatureFlags" },
+          returns: { kind: "value", type: "UiFeatureFlags = { \"placeholder-flag\": boolean }" },
         },
         "has-password-login": {
           method: "hasPasswordLogin",
@@ -738,7 +768,10 @@ export const table: ApiTable = {
             "the same shape as listGatekeeperVendors (with no resources) so the connect UI handles both\n" +
             "identically, routing on `description.autoProvisionsAccount`.",
           args: [],
-          returns: { kind: "value", type: "GatekeeperVendorInfo[]" },
+          returns: {
+            kind: "value",
+            type: "GatekeeperVendorInfo[], where GatekeeperVendorInfo = { description: VendorDescription; id: string; supportedResources: SupportedResource[]; unavailable?: boolean }",
+          },
         },
         "list-cloudflare-accounts": {
           method: "listCloudflareAccounts",
@@ -747,7 +780,10 @@ export const table: ApiTable = {
             "when the user has more than one. Returns an empty array if not connected. Connecting Cloudflare\n" +
             "is done via the Cloudflare gatekeeper (connectAccount(\"cloudflare\")) or by signing in with it.",
           args: [],
-          returns: { kind: "value", type: "CloudflareAccountOption[]" },
+          returns: {
+            kind: "value",
+            type: "CloudflareAccountOption[], where CloudflareAccountOption = { accountId: string; accountName: string }",
+          },
         },
         "list-featured-blueprints": {
           method: "listFeaturedBlueprints",
@@ -755,7 +791,10 @@ export const table: ApiTable = {
             "List the deployment-wide featured blueprints. This is served from a KV snapshot rather\n" +
             "than directly from the AdminSettings durable object.",
           args: [],
-          returns: { kind: "value", type: "BlueprintPublicInfo[]" },
+          returns: {
+            kind: "value",
+            type: "BlueprintPublicInfo[], where BlueprintPublicInfo = { id: string; metadata: BlueprintMetadata; screenshotUrl?: string }",
+          },
         },
         "list-gadgets": {
           method: "listGadgets",
@@ -764,7 +803,10 @@ export const table: ApiTable = {
             "\n" +
             "Provisional gadgets are hidden.",
           args: [],
-          returns: { kind: "value", type: "GadgetMetadataWithTimestamps[]" },
+          returns: {
+            kind: "value",
+            type: "GadgetMetadataWithTimestamps[], where GadgetMetadataWithTimestamps = { containsRestrictedData?: boolean; created: Date; defaultGadgetId?: number; id: string; lastActive: Date; notificationMute?: NotificationMute; owner?: AiChatAuthorInfo; ownerInvitesOnly?: boolean; pinned?: boolean; role?: CollaboratorRole; title: string; totalCost?: number }",
+          },
         },
         "list-gatekeeper-apps": {
           method: "listGatekeeperApps",
@@ -773,7 +815,10 @@ export const table: ApiTable = {
             "available to this user. The Workshop renders a nav entry + page per entry. Independent of whether\n" +
             "the gatekeeper is a singleton.",
           args: [],
-          returns: { kind: "value", type: "GatekeeperAppInfo[]" },
+          returns: {
+            kind: "value",
+            type: "GatekeeperAppInfo[], where GatekeeperAppInfo = { icon?: AvatarImage; id: string; title: string }",
+          },
         },
         "list-gatekeeper-vendors": {
           method: "listGatekeeperVendors",
@@ -789,7 +834,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "GatekeeperVendorInfo[]" },
+          returns: {
+            kind: "value",
+            type: "GatekeeperVendorInfo[], where GatekeeperVendorInfo = { description: VendorDescription; id: string; supportedResources: SupportedResource[]; unavailable?: boolean }",
+          },
         },
         "list-library-blueprints": {
           method: "listLibraryBlueprints",
@@ -797,7 +845,10 @@ export const table: ApiTable = {
             "List the blueprints currently in the user's library. This includes uploaded `.gadget`\n" +
             "archives (stored locally) and blueprints saved by reference from other publishers.",
           args: [],
-          returns: { kind: "value", type: "BlueprintLibrarySummary[]" },
+          returns: {
+            kind: "value",
+            type: "BlueprintLibrarySummary[], where BlueprintLibrarySummary = { addedAt: Date; id: string; metadata: BlueprintMetadata; pinned?: boolean; uploaded: boolean }",
+          },
         },
         "list-models": {
           method: "listModels",
@@ -818,7 +869,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "AiChatAuthorInfo[]" },
+          returns: {
+            kind: "value",
+            type: "AiChatAuthorInfo[], where AiChatAuthorInfo = { commitEmail?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
+          },
         },
         "list-output-formats": {
           method: "listOutputFormats",
@@ -828,7 +882,10 @@ export const table: ApiTable = {
             "\n" +
             "These are ordinary blueprints an admin has promoted.",
           args: [],
-          returns: { kind: "value", type: "OutputFormatOffer[]" },
+          returns: {
+            kind: "value",
+            type: "OutputFormatOffer[], where OutputFormatOffer = { blueprintId: string; description: string; output: BlueprintOutput; requiresSetup: boolean }",
+          },
         },
         "list-outputs": {
           method: "listOutputs",
@@ -841,7 +898,10 @@ export const table: ApiTable = {
             "when it appears in `list-gadgets`), and stops updating them if their access is revoked.\n" +
             "Provisional gadgets (still awaiting acceptance of a chat's changes) are never included.",
           args: [],
-          returns: { kind: "value", type: "ListOutputsResult" },
+          returns: {
+            kind: "value",
+            type: "ListOutputsResult = { catchingUp: boolean; outputs: OutputSummary[] }",
+          },
         },
         "list-own-blueprints": {
           method: "listOwnBlueprints",
@@ -849,7 +909,10 @@ export const table: ApiTable = {
             "List all blueprints created by the current user (from User DO). Useful for an audit\n" +
             "view in Settings.",
           args: [],
-          returns: { kind: "value", type: "BlueprintUserSummary[]" },
+          returns: {
+            kind: "value",
+            type: "BlueprintUserSummary[], where BlueprintUserSummary = { description: string; id: string; lastUpdated: Date; pinned?: boolean; source: BlueprintSource; title: string; version: number }",
+          },
         },
         "new-gadget": {
           method: "newGadget",
@@ -936,7 +999,7 @@ export const table: ApiTable = {
             "`complete-connect-handoff`, the account is updated and subscribers are notified with\n" +
             "credentialsValid: true.",
           args: [{ name: "accountId", index: 0, encoding: "number", type: "number", doc: "" }],
-          returns: { kind: "value", type: "ConnectFlowStart" },
+          returns: { kind: "value", type: "ConnectFlowStart = { nonce: string; url: string }" },
         },
         "register-notification-device": {
           method: "registerNotificationDevice",
@@ -980,7 +1043,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "UserDirectoryRecord[]" },
+          returns: {
+            kind: "value",
+            type: "UserDirectoryRecord[], where UserDirectoryRecord = { id: string; name: string }",
+          },
         },
         "select-cloudflare-account": {
           method: "selectCloudflareAccount",
@@ -1084,7 +1150,7 @@ export const table: ApiTable = {
             { name: "accountId", index: 0, encoding: "number", type: "number", doc: "" },
             { name: "resourceUrlPattern", index: 1, encoding: "string", type: "string", doc: "" },
           ],
-          returns: { kind: "value", type: "GatekeeperUiFrame" },
+          returns: { kind: "value", type: "GatekeeperUiFrame = { iframeHtml: string; ui: RpcStub<any> }" },
         },
         "start-resource-configurator": {
           method: "startResourceConfigurator",
@@ -1097,7 +1163,7 @@ export const table: ApiTable = {
             { name: "accountId", index: 0, encoding: "number", type: "number", doc: "" },
             { name: "resourceUrlPattern", index: 1, encoding: "string", type: "string", doc: "" },
           ],
-          returns: { kind: "value", type: "GatekeeperUiFrame" },
+          returns: { kind: "value", type: "GatekeeperUiFrame = { iframeHtml: string; ui: RpcStub<any> }" },
         },
         "subscribe-connected-accounts": {
           method: "subscribeConnectedAccounts",
@@ -1181,7 +1247,10 @@ export const table: ApiTable = {
           method: "whoami",
           doc: "Get profile info for the user who is logged in.",
           args: [],
-          returns: { kind: "value", type: "AiChatAuthorInfo" },
+          returns: {
+            kind: "value",
+            type: "AiChatAuthorInfo = { commitEmail?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
+          },
         },
       },
     },
@@ -1232,7 +1301,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "ApplyBlueprintResult" },
+          returns: {
+            kind: "value",
+            type: "ApplyBlueprintResult = { chatId: number; outcome: \"proposed\" } | { outcome: \"baseUnavailable\" } | { outcome: \"unrelated\" } | { outcome: \"upToDate\" }",
+          },
         },
         bind: {
           method: "bind",
@@ -1300,7 +1372,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "BlueprintGadgetSummary" },
+          returns: {
+            kind: "value",
+            type: "BlueprintGadgetSummary = { codeVersionDate: Date; description: string; dirty?: boolean; id: string; screenshotUrl?: string; title: string; unpublishedChanges?: true; version: number }",
+          },
         },
         export: {
           method: "export",
@@ -1325,7 +1400,10 @@ export const table: ApiTable = {
             "Get the blueprint annotation for the named binding, if one has been set. Annotations live on\n" +
             "the binding edge, not on the target gatekeeper (see BlueprintBindingAnnotation).",
           args: [{ name: "name", index: 0, encoding: "string", type: "string", doc: "" }],
-          returns: { kind: "value", type: "BlueprintBindingAnnotation | null" },
+          returns: {
+            kind: "value",
+            type: "BlueprintBindingAnnotation | null, where BlueprintBindingAnnotation = { description: string; suggestValue?: boolean; title: string }",
+          },
         },
         "get-export-formats": {
           method: "getExportFormats",
@@ -1333,7 +1411,10 @@ export const table: ApiTable = {
             "Lists the Gadget's supported file export formats. If `chatId` is specified,\n" +
             "the formats are read from the code currently proposed in that chat.",
           args: [{ name: "chatId", index: 0, flag: "chat-id", encoding: "number", type: "number", doc: "" }],
-          returns: { kind: "value", type: "GadgetExportFormat[]" },
+          returns: {
+            kind: "value",
+            type: "GadgetExportFormat[], where GadgetExportFormat = { contentType: string; fileExtension: string; id: string; label: string; mode: \"browser\" | \"server\" }",
+          },
         },
         "get-id": {
           method: "getId",
@@ -1357,7 +1438,7 @@ export const table: ApiTable = {
             "Returns null if the gadget has no deployed UI code (e.g. if it's new, or if it's just an AI\n" +
             "agent with no code).",
           args: [{ name: "chatId", index: 0, flag: "chat-id", encoding: "number", type: "number", doc: "" }],
-          returns: { kind: "value", type: "UiBundle | null" },
+          returns: { kind: "value", type: "UiBundle | null, where UiBundle = { jsCode: string }" },
         },
         "list-bindings": {
           method: "listBindings",
@@ -1367,7 +1448,10 @@ export const table: ApiTable = {
             "If `chatId` is specified, bindings which have been proposed but not yet accepted in the given\n" +
             "chat thread will be included.",
           args: [{ name: "chatId", index: 0, flag: "chat-id", encoding: "number", type: "number", doc: "" }],
-          returns: { kind: "value", type: "GadgetBindingInfo[]" },
+          returns: {
+            kind: "value",
+            type: "GadgetBindingInfo[], where GadgetBindingInfo = { chatId?: number; name: string; resourceTitle: string; target: number; vendorId?: string }",
+          },
         },
         remove: {
           method: "remove",
@@ -1440,13 +1524,19 @@ export const table: ApiTable = {
           method: "describe",
           doc: "Get the resource description, including the schema of its RPC interface.",
           args: [],
-          returns: { kind: "value", type: "ResourceDescription" },
+          returns: {
+            kind: "value",
+            type: "ResourceDescription = { hasSlashCommands?: true; hookTsType?: string; snippet: string; suggestedBindingName: string; title: string; tsType: string; url: string }",
+          },
         },
         "get-creation-spec": {
           method: "getCreationSpec",
           doc: "Get the creation spec describing how this gatekeeper was originally created.",
           args: [],
-          returns: { kind: "value", type: "GatekeeperCreationSpec" },
+          returns: {
+            kind: "value",
+            type: "GatekeeperCreationSpec = { accountId: number; type: \"ambient\"; vendorId: string } | { config: AgentSpawnerConfig; modelName?: string; modelProvider?: string; type: \"agentSpawner\" } | { modelId: string; modelName: string; provider: string; type: \"aiModel\" } | { resourceUrl?: string; type: \"gatekeeper\"; typeUrlPattern: string; vendorId: string }",
+          },
         },
         "get-id": {
           method: "getId",
@@ -1546,7 +1636,10 @@ export const table: ApiTable = {
             },
             { name: "note", index: 2, flag: "note", encoding: "string", type: "string", doc: "" },
           ],
-          returns: { kind: "value", type: "CollaboratorInfo | null" },
+          returns: {
+            kind: "value",
+            type: "CollaboratorInfo | null, where CollaboratorInfo = { addedBy: PermissionEdge[]; profile: AiChatAuthorInfo; role?: CollaboratorRole }",
+          },
         },
         "approve-action": {
           method: "approveAction",
@@ -1725,7 +1818,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "AiChatHistoryPage" },
+          returns: {
+            kind: "value",
+            type: "AiChatHistoryPage = { compacted?: { proposedChange?: CodeChange; summary: string; to: number }; messages: AiChatMessage[] }",
+          },
         },
         "get-chat-message": {
           method: "getChatMessage",
@@ -1747,7 +1843,10 @@ export const table: ApiTable = {
             { name: "fromCommit", index: 0, encoding: "string", type: "string", doc: "" },
             { name: "depth", index: 1, flag: "depth", encoding: "number", type: "number", doc: "" },
           ],
-          returns: { kind: "value", type: "CommitInfo[]" },
+          returns: {
+            kind: "value",
+            type: "CommitInfo[], where CommitInfo = { author: CommitIdentity; message: string; oid: string; parents: string[]; timestamp: Date }",
+          },
         },
         "get-gadget": {
           method: "getGadget",
@@ -1767,7 +1866,10 @@ export const table: ApiTable = {
           method: "getMetadata",
           doc: "Get metadata describing this workspace.",
           args: [],
-          returns: { kind: "value", type: "GadgetMetadata" },
+          returns: {
+            kind: "value",
+            type: "GadgetMetadata = { containsRestrictedData?: boolean; defaultGadgetId?: number; id: string; notificationMute?: NotificationMute; owner?: AiChatAuthorInfo; ownerInvitesOnly?: boolean; pinned?: boolean; role?: CollaboratorRole; title: string; totalCost?: number }",
+          },
         },
         "list-actions": {
           method: "listActions",
@@ -1800,7 +1902,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "ActionHistoryPage" },
+          returns: {
+            kind: "value",
+            type: "ActionHistoryPage = { entries: ActionLogEntry[]; nextBeforeId?: number }",
+          },
         },
         "list-auto-approved-action-kinds": {
           method: "listAutoApprovedActionKinds",
@@ -1812,7 +1917,10 @@ export const table: ApiTable = {
           method: "listBlueprints",
           doc: "List blueprints created from this workspace's gadgets.",
           args: [],
-          returns: { kind: "value", type: "BlueprintGadgetSummary[]" },
+          returns: {
+            kind: "value",
+            type: "BlueprintGadgetSummary[], where BlueprintGadgetSummary = { codeVersionDate: Date; description: string; dirty?: boolean; id: string; screenshotUrl?: string; title: string; unpublishedChanges?: true; version: number }",
+          },
         },
         "list-changed-paths": {
           method: "listChangedPaths",
@@ -1840,13 +1948,19 @@ export const table: ApiTable = {
           method: "listChats",
           doc: "List past AI chats.",
           args: [],
-          returns: { kind: "value", type: "AiChatMetadata[]" },
+          returns: {
+            kind: "value",
+            type: "AiChatMetadata[], where AiChatMetadata = { activeAgent?: AiChatAuthorInfo; cacheReadTokens?: number; cacheWriteTokens?: number; codeBase?: ChatCodeBase; compactedTo?: number; id: number; lastActive: Date; promptTokens?: number; proposedChangeWorkpieces?: number[]; spawnerName?: string; started: Date; title: string; totalCost?: number; totalTokens?: number }",
+          },
         },
         "list-collaborators": {
           method: "listCollaborators",
           doc: "List all collaborators. Available to owner and all collaborators.",
           args: [],
-          returns: { kind: "value", type: "CollaboratorInfo[]" },
+          returns: {
+            kind: "value",
+            type: "CollaboratorInfo[], where CollaboratorInfo = { addedBy: PermissionEdge[]; profile: AiChatAuthorInfo; role?: CollaboratorRole }",
+          },
         },
         "list-hooks": {
           method: "listHooks",
@@ -1856,7 +1970,10 @@ export const table: ApiTable = {
             "The list spans the whole workspace; each entry names the gadget it wakes (see\n" +
             "BoundHookInfo.gadgetId), so a per-gadget view must filter on that.",
           args: [],
-          returns: { kind: "value", type: "BoundHookInfo[]" },
+          returns: {
+            kind: "value",
+            type: "BoundHookInfo[], where BoundHookInfo = { description: HookDescription; enabled: boolean; gadgetId: number; gatekeeperId: number; id: number; resourceTitle?: string; resourceUrl?: string }",
+          },
         },
         "list-models": {
           method: "listModels",
@@ -1864,7 +1981,10 @@ export const table: ApiTable = {
             "List available language models; decision models are left out. The first listed model should\n" +
             "be the default, unless the user has chosen something else.",
           args: [],
-          returns: { kind: "value", type: "AiChatAuthorInfo[]" },
+          returns: {
+            kind: "value",
+            type: "AiChatAuthorInfo[], where AiChatAuthorInfo = { commitEmail?: string; id: string; name: string; type: \"agent\" | \"gadget\" | \"user\" }",
+          },
         },
         "list-observer-requirements": {
           method: "listObserverRequirements",
@@ -1882,7 +2002,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "ObserverBindingNeed[]" },
+          returns: {
+            kind: "value",
+            type: "ObserverBindingNeed[], where ObserverBindingNeed = { failure?: ObserverBindingFailure; gatekeeperId: number; resourceTitle: string; resourceUrl?: string; vendorId: string }",
+          },
         },
         "list-pre-approvable-actions": {
           method: "listPreApprovableActions",
@@ -1890,13 +2013,19 @@ export const table: ApiTable = {
             "List the auto-approvable action kinds offered by gatekeepers bound in this workspace. Each\n" +
             "entry identifies its connection and reports whether a matching auto-approval rule is enabled.",
           args: [],
-          returns: { kind: "value", type: "PreApprovableAction[]" },
+          returns: {
+            kind: "value",
+            type: "PreApprovableAction[], where PreApprovableAction = { actionKind: ActionKind; alreadyEnabled: boolean; gatekeeperId: number; resourceTitle: string; vendorId?: string }",
+          },
         },
         "list-share-links": {
           method: "listShareLinks",
           doc: "List active share links (for management UI).",
           args: [],
-          returns: { kind: "value", type: "ShareLinkInfo[]" },
+          returns: {
+            kind: "value",
+            type: "ShareLinkInfo[], where ShareLinkInfo = { created: Date; createdBy: AiChatAuthorInfo; linkId: string; note?: string; role?: CollaboratorRole }",
+          },
         },
         "list-slash-commands": {
           method: "listSlashCommands",
@@ -1904,7 +2033,10 @@ export const table: ApiTable = {
             "Lists slash commands available from Gatekeepers currently attached to this Gadget, including\n" +
             "ambient ones.",
           args: [],
-          returns: { kind: "value", type: "SlashCommandChoice[]" },
+          returns: {
+            kind: "value",
+            type: "SlashCommandChoice[], where SlashCommandChoice = { description: string; name: string; providerLabel: string; resourceLabel?: string; selection: SlashCommandId }",
+          },
         },
         "list-tree": {
           method: "listTree",
@@ -1921,7 +2053,10 @@ export const table: ApiTable = {
             "it), and the base content of a chat's pins (see ChatCodeBase), one file at a time as it is\n" +
             "opened or edited.",
           args: [{ name: "commitId", index: 0, encoding: "string", type: "string", doc: "" }],
-          returns: { kind: "value", type: "TreeNode[]" },
+          returns: {
+            kind: "value",
+            type: "TreeNode[], where TreeNode = { children: TreeNode[]; kind: \"dir\"; name: string } | { kind: \"executable\" | \"file\" | \"submodule\" | \"symlink\"; name: string }",
+          },
         },
         "merge-changes": {
           method: "mergeChanges",
@@ -1956,7 +2091,7 @@ export const table: ApiTable = {
             "the release as a parent, unless its history already holds it, and the gadget follows that\n" +
             "blueprint from then on.",
           args: [{ name: "chatId", index: 0, encoding: "number", type: "number", doc: "" }],
-          returns: { kind: "value", type: "MergeChangesResult" },
+          returns: { kind: "value", type: "MergeChangesResult = { outcome: \"merged\" | \"stale\" }" },
         },
         "new-agent-spawner-gatekeeper": {
           method: "newAgentSpawnerGatekeeper",
@@ -2074,7 +2209,10 @@ export const table: ApiTable = {
             "access would change (lose access or be downgraded to a lower role) as a consequence, so the\n" +
             "caller can present checkboxes for which to keep vs. remove.",
           args: [{ name: "profileId", index: 0, encoding: "string", type: "string", doc: "" }],
-          returns: { kind: "value", type: "AffectedCollaborator[]" },
+          returns: {
+            kind: "value",
+            type: "AffectedCollaborator[], where AffectedCollaborator = { addedBy: PermissionEdge[]; newRole: CollaboratorRole | null; oldRole: CollaboratorRole; profile: AiChatAuthorInfo }",
+          },
         },
         "preview-revoke-share-link": {
           method: "previewRevokeShareLink",
@@ -2083,7 +2221,10 @@ export const table: ApiTable = {
             "would change (lose access or be downgraded to a lower role) as a consequence, so the caller\n" +
             "can present checkboxes for which to keep vs. remove.",
           args: [{ name: "linkId", index: 0, encoding: "string", type: "string", doc: "" }],
-          returns: { kind: "value", type: "AffectedCollaborator[]" },
+          returns: {
+            kind: "value",
+            type: "AffectedCollaborator[], where AffectedCollaborator = { addedBy: PermissionEdge[]; newRole: CollaboratorRole | null; oldRole: CollaboratorRole; profile: AiChatAuthorInfo }",
+          },
         },
         "read-files-at-commit": {
           method: "readFilesAtCommit",
@@ -2161,7 +2302,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "AffectedCollaborator[]" },
+          returns: {
+            kind: "value",
+            type: "AffectedCollaborator[], where AffectedCollaborator = { addedBy: PermissionEdge[]; newRole: CollaboratorRole | null; oldRole: CollaboratorRole; profile: AiChatAuthorInfo }",
+          },
         },
         "retry-agent": {
           method: "retryAgent",
@@ -2229,7 +2373,10 @@ export const table: ApiTable = {
               doc: "",
             },
           ],
-          returns: { kind: "value", type: "AffectedCollaborator[]" },
+          returns: {
+            kind: "value",
+            type: "AffectedCollaborator[], where AffectedCollaborator = { addedBy: PermissionEdge[]; newRole: CollaboratorRole | null; oldRole: CollaboratorRole; profile: AiChatAuthorInfo }",
+          },
         },
         "send-chat-message": {
           method: "sendChatMessage",
@@ -2687,7 +2834,10 @@ export const table: ApiTable = {
             "Fetch blueprint metadata by ID. Returns null if the blueprint doesn't exist. No\n" +
             "authentication required (knowing the ID is sufficient, since a blueprint is \"just data\").",
           args: [{ name: "id", index: 0, encoding: "string", type: "string", doc: "" }],
-          returns: { kind: "value", type: "BlueprintPublicInfo | null" },
+          returns: {
+            kind: "value",
+            type: "BlueprintPublicInfo | null, where BlueprintPublicInfo = { id: string; metadata: BlueprintMetadata; screenshotUrl?: string }",
+          },
         },
         "get-server-config": {
           method: "getServerConfig",
@@ -2695,7 +2845,10 @@ export const table: ApiTable = {
             "Returns deployment-level configuration the client needs at boot (auth mode, available sign-in\n" +
             "vendors, whether the Cloudflare limits flow is enabled). Contains no secrets.",
           args: [],
-          returns: { kind: "value", type: "ServerConfig" },
+          returns: {
+            kind: "value",
+            type: "ServerConfig = { accentColor: string; announcement: string; authVendors: AuthVendorInfo[]; banner: string; bannerColor: BannerColor; cloudflareLimitsEnabled: boolean; passwordAuthEnabled: boolean; signupsEnabled: boolean; siteLogo?: AvatarImage; siteName: string; userSearchEnabled: boolean }",
+          },
         },
         ping: {
           method: "ping",

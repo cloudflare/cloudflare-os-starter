@@ -72,6 +72,8 @@ test("what the table does not allow is a usage error that says what to run", () 
   usage(["find-notes", "q", "--limit"], /^--limit needs a value\. Run `cf-os api find-notes --help` for its options\.$/);
   usage(["open-notebook", "my notes", "outline", "--bogus"], /^Unknown option --bogus for outline\. Run `cf-os api open-notebook 'my notes' outline --help` for its options\.$/);
   usage(["open-notebook", "my notes", "nope"], /run `cf-os api open-notebook 'my notes' --help` for Notebook's\.$/);
+  // A positional only `--` let through cuts the pointer short: no `--help` can follow a `--`.
+  usage(["open-notebook", "--", "--weird", "nope"], /run `cf-os api open-notebook --help` for Notebook's\.$/);
 });
 
 test("--help stops the walk at the segment it is in", () => {

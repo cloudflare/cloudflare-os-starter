@@ -120,9 +120,14 @@ interface Segment {
 
 type Position = { kind: "node"; node: string } | { kind: "untyped" } | { kind: "result"; after: string; returns: ApiReturn };
 
-/** The help command for what `path` reaches, as it would be typed. */
+/**
+ * The help command for what `path` reaches, as it would be typed. A positional only `--` let through
+ * cuts it short, since nothing after a `--` can be `--help`: the help is then that of the segment
+ * before it.
+ */
 function helpCommand(path: string[]): string {
-  return `\`cf-os api ${shellLine([...path, "--help"])}\``;
+  const escaped = path.findIndex(isFlag);
+  return `\`cf-os api ${shellLine([...escaped === -1 ? path : path.slice(0, escaped), "--help"])}\``;
 }
 
 /**
@@ -507,7 +512,7 @@ export function commandHelp(table: ApiTable, node: string, name: string, path: s
       ? table2([[`${arg.name}(${(arg.params ?? []).join(", ")})`, arg.doc]])
       : table2(table.callbacks[arg.callback!].methods.map((method) => [`${method.name}(${method.params.join(", ")})`, summary(method.doc)])))] : [],
     "",
-    `Returns ${describeReturn(command.returns)}.`,
+    ...wrap(`Returns ${describeReturn(command.returns)}.`, ""),
     ...next ? ["", `Then, on ${next}:`, ...nodeCommandLines(table, next)] : [],
     "",
     RUNTIME_HELP_POINTER,
