@@ -1,0 +1,53 @@
+package.json
+  s_4e92f623cbc683::t_c7e529eb7be310 22
+pnpm-lock.yaml
+  s_4e92f623cbc683::t_9de88b3d42ed16 9-11,28,31-32,38-39,47,49,81,83,98,120,155-156,158,1581-1582,1584,1592-1593,1612-1614,2285-2287,2293-2298,2326-2327,2334-2335,2337-2339,2433-2434,2458,2461,2463,2465,2881,2896,2901,3314,3316-3321,3336-3337,3554-3557,3891-3892,4020,4022-4024,4027-4028,4031,4034-4035,4042,4045,4056,4141
+docs/customization.md
+  s_4e92f623cbc683::t_d0d64f29c1d950 56,58
+README.md
+  s_4e92f623cbc683::t_245e7874c1fb01 111
+packages/custom-gatekeeper/package.json
+  s_4e92f623cbc683::t_df48ad5af03f8e 17
+scripts/deployment-config.ts
+  s_b132cdbd20e17f::t_0b4fedba64addb 116
+pnpm-workspace.yaml
+  s_4e92f623cbc683::t_fad8d1c48c4d96 17,31-32,37-38
+deployment.jsonc
+  s_4e92f623cbc683::t_1778d63d0d9b43 36-39
+docs/migrate-from-hosted.md
+  s_4e92f623cbc683::t_56e9363319c226 176-178
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_4e92f623cbc683::t_98e2cd5f62c89a 319
+packages/custom-gatekeeper/vitest.config.ts
+  s_4e92f623cbc683::t_a17b6fbe46de50 1
+scripts/deploy.test.ts
+  s_4e92f623cbc683::t_d68f1a74042fa9 358-364
+scripts/deploy.ts
+  s_4e92f623cbc683::t_9b90d13838a609 561-565,567
+cloudflare-os
+  s_4e92f623cbc683::t_e9199c255db6b7 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "056c62ad71dff8d9c8d51e44b1fa9f48d093f88f",
+  "prompts": {},
+  "sessions": {
+    "s_4e92f623cbc683": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2b424f-f299-4e4b-9e71-84fbd412a00c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_b132cdbd20e17f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0afb9b62-173f-4e1a-8578-00df816447c9",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
