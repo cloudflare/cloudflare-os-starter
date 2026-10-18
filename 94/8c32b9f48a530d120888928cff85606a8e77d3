@@ -1,0 +1,71 @@
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_b4b37a91e4da8a::t_7069fe23bfe7ef 52,60-61,318,380
+AGENTS.md
+  s_b4b37a91e4da8a::t_34b79f2e9da88a 5
+README.md
+  s_b4b37a91e4da8a::t_d76657eca4f55d 131,157
+docs/customization.md
+  s_b4b37a91e4da8a::t_3df27b36cf70b1 212,220-221
+docs/migrate-from-hosted.md
+  s_b4b37a91e4da8a::t_e1ef772efd56e3 273-274
+packages/cf-os/README.md
+  s_b4b37a91e4da8a::t_11077d25cbccb1 3,12,26-27,30,34,38-70,73
+packages/cf-os/src/api/callbacks.test.ts
+  s_f4752a3f31547a::t_04d582f1b9798d 1-75
+packages/cf-os/src/api/codec.test.ts
+  s_b4b37a91e4da8a::t_0ae5af2645c8b7 1-146
+packages/cf-os/src/api/codec.ts
+  s_b4b37a91e4da8a::t_93ae6be246586b 1-296
+packages/cf-os/src/api/run.test.ts
+  s_b4b37a91e4da8a::t_d9cea667f39be2 1-117
+packages/cf-os/src/api/run.ts
+  s_b4b37a91e4da8a::t_4bf248ef07017b 1-724
+packages/cf-os/src/api/session.test.ts
+  s_b4b37a91e4da8a::t_c63a68132453a9 1-228
+packages/cf-os/src/api/session.ts
+  s_b4b37a91e4da8a::t_0904a530ca5126 1-324
+packages/cf-os/src/api/test-server.ts
+  s_b4b37a91e4da8a::t_f62965e03898b7 1-239
+packages/cf-os/src/commands/api.test.ts
+  s_b4b37a91e4da8a::t_17e86e4588c57c 1-348
+packages/cf-os/src/commands/api.ts
+  s_b4b37a91e4da8a::t_8b9bd22362b000 1-142
+packages/cf-os/src/main.test.ts
+  s_b4b37a91e4da8a::t_47eedbfb0425cf 28-32,90,95-100,131-132,140-197,279,281,289-290
+packages/cf-os/src/main.ts
+  s_b4b37a91e4da8a::t_a8199301f52a95 3,15-17,68-75,80-82,167-177,229-260,331-335,337-349,352-353,355,390-391
+packages/cf-os/src/api/callbacks.ts
+  s_91dd0681c57eca::t_12fc4762eceb10 1-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "948c32b9f48a530d120888928cff85606a8e77d3",
+  "prompts": {},
+  "sessions": {
+    "s_91dd0681c57eca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-af5eed40276cf66cd",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_b4b37a91e4da8a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c726646e-8fee-4993-9c2b-904b9d19e84c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f4752a3f31547a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a8928a7-4e3d-4b4d-8e6a-5564c5c9710a",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
