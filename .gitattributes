@@ -2,3 +2,7 @@
 # Maintainers are mostly on macOS/Linux, where this is the default, but on Windows
 # `core.autocrlf=true` is, and a CRLF working copy breaks anything comparing file bytes.
 * text=auto eol=lf
+
+# `cf-os api`'s files, generated from the pinned upstream's API by `pnpm api:generate`: collapsed in
+# GitHub's diffs and left out of its language stats. `pnpm lint` (`api:check`) keeps them current.
+packages/cf-os/src/api/generated/** linguist-generated

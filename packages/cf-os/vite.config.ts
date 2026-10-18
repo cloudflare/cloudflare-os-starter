@@ -22,6 +22,7 @@ export default {
           input: [
             { auto: true },
             { pattern: 'src/**/*.ts', base: 'package' },
+            { pattern: 'generator/**', base: 'package' },
             { pattern: '{package.json,tsconfig*.json,vite.config.ts}', base: 'package' },
             { pattern: '{tsconfig.json,pnpm-lock.yaml}', base: 'workspace' },
             { pattern: 'cloudflare-os/scripts/**/*.ts', base: 'workspace' },
@@ -30,7 +31,7 @@ export default {
         },
       },
       test: {
-        command: withTestTimeout("node --test 'packages/cf-os/src/**/*.test.ts'"),
+        command: withTestTimeout("node --test 'packages/cf-os/src/**/*.test.ts' 'packages/cf-os/generator/**/*.test.ts'"),
         cwd: '../..',
         cache: {
           env: TESTS_WITH_TIMEOUT_ENV,

@@ -18,9 +18,15 @@ catalogs:
     capnweb-validate:
       specifier: 0.3.0
       version: 0.3.0
+    hash-wasm:
+      specifier: ^4.12.0
+      version: 4.12.0
     typescript:
       specifier: 7.0.2
       version: 7.0.2
+    typescript6:
+      specifier: npm:typescript@6.0.3
+      version: 6.0.3
     vite:
       specifier: 7.3.6
       version: 7.3.6
@@ -81,15 +87,24 @@ importers:
       '@types/node':
         specifier: 26.1.0
         version: 26.1.0
+      capnweb:
+        specifier: 'catalog:'
+        version: 0.12.0
       cf:
         specifier: 1.0.0-beta.19
         version: 1.0.0-beta.19(@types/node@26.1.0)
+      hash-wasm:
+        specifier: 'catalog:'
+        version: 4.12.0
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
+      typescript6:
+        specifier: 'catalog:'
+        version: typescript@6.0.3
 
   packages/custom-gatekeeper:
     dependencies:
@@ -1964,6 +1979,9 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
+  hash-wasm@4.12.0:
+    resolution: {integrity: sha512-+/2B2rYLb48I/evdOIhP+K/DD2ca2fgBjp6O+GBEnCDk2e4rpeXIK8GvIyRPjTezgmWn9gmKwkQjjx6BtqDHVQ==}
+
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
 
@@ -2234,6 +2252,11 @@ packages:
 
   typescript@5.9.3:
     resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+  typescript@6.0.3:
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -3672,6 +3695,8 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
+  hash-wasm@4.12.0: {}
+
   js-tokens@4.0.0: {}
 
   jsonc-parser@3.3.1: {}
@@ -4013,6 +4038,8 @@ snapshots:
     optional: true
 
   typescript@5.9.3: {}
+
+  typescript@6.0.3: {}
 
   typescript@7.0.2:
     optionalDependencies:

@@ -13,7 +13,7 @@ Updating is always `cf-os update`, never a hand-moved gitlink or a hand-merged s
 
 Checks:
 
-* `pnpm lint` (lint, type-check, build) and `pnpm test` before pushing. `pnpm cf-os check` generates every Worker's config and dry-runs each deploy.
+* `pnpm lint` (lint, type-check, build, and `api:check`: the generated API files match the pin) and `pnpm test` before pushing. `pnpm cf-os check` generates every Worker's config and dry-runs each deploy.
 * `cf-os` tests are `node:test`: `node --test packages/cf-os/src/<file>.test.ts`. The Workers' tests run on Vitest.
 * `pnpm cf-os deploy` deploys for real, with no confirmation: only when the operator asks.
 

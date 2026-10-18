@@ -41,8 +41,11 @@
   "devDependencies": {
     "@gadgets/scripts": "link:../../cloudflare-os/scripts",
     "@types/node": "26.1.0",
+    "capnweb": "catalog:",
     "cf": "1.0.0-beta.19",
+    "hash-wasm": "catalog:",
     "jsonc-parser": "^3.3.1",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "typescript6": "catalog:"
   }
 }

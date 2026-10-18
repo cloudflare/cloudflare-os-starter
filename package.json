@@ -14,7 +14,9 @@
     "test": "cf-os install --check && vp run --filter \"!cloudflare-os-starter\" --cache test",
     "lint:check": "vp lint",
     "lint:fix": "vp lint --fix",
-    "lint": "pnpm run lint:check && pnpm run build",
+    "api:generate": "node packages/cf-os/generator/generate.ts",
+    "api:check": "node packages/cf-os/generator/generate.ts --check",
+    "lint": "pnpm run lint:check && pnpm run build && pnpm run api:check",
     "check": "cf-os check",
     "deploy": "cf-os deploy"
   },
