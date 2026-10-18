@@ -15,5 +15,5 @@
     "declaration": false
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/**/*.test.ts", "src/test-support.ts", "src/fake-cf.ts", "src/core/memory-client.ts"]
+  "exclude": ["src/**/*.test.ts", "src/test-support.ts", "src/fake-cf.ts", "src/core/memory-client.ts", "src/api/test-server.ts"]
 }
