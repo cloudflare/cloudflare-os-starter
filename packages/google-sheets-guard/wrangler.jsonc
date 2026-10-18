@@ -1,0 +1,25 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "google-sheets-guard",
+  "main": ".wrangler/validate/packages/google-sheets-guard/src/index.ts",
+  "build": {
+    "command": "pnpm exec capnweb-validate build --cwd ../.. --tsconfig packages/google-sheets-guard/tsconfig.worker.json --out packages/google-sheets-guard/.wrangler/validate",
+    "watch_dir": ["src", "../../cloudflare-os/packages/gatekeeper-google/src"]
+  },
+  "compatibility_date": "2026-08-04",
+  "compatibility_flags": ["allow_irrevocable_stub_storage", "nodejs_als"],
+  "rules": [
+    { "type": "Text", "globs": ["**/*.txt", "**/*.svg"], "fallthrough": false }
+  ],
+  "migrations": [
+    {
+      "tag": "v0",
+      "new_sqlite_classes": ["UserAccount", "GoogleSheetsGatekeeperImpl"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false }
+  }
+}

@@ -25,6 +25,7 @@ const packageDirs = {
   context: "cloudflare-os/packages/gatekeeper-context",
   scheduler: "cloudflare-os/packages/gatekeeper-scheduler",
   customGatekeeper: "packages/custom-gatekeeper",
+  googleSheetsGuard: "packages/google-sheets-guard",
   errorReporter: "packages/error-reporter",
 } as const;
 const generatedPaths = Object.fromEntries(
@@ -64,6 +65,10 @@ const aiGatewayPaths = [
 const errorReportingPaths = [
   "workers.errorReporter.name",
   "errorReporting.environment",
+];
+
+const googleSheetsGuardPaths = [
+  "workers.googleSheetsGuard.name",
 ];
 
 const resourcePaths = [
@@ -160,10 +165,18 @@ function validatePublicBaseUrl(config: DeploymentConfig, route: RouterRoute): vo
 }
 
 export function validateConfig(config: DeploymentConfig): DeploymentConfig {
+  const googleSheetsGuard = config.googleSheetsGuard;
+  if (googleSheetsGuard !== undefined &&
+      (googleSheetsGuard === null || typeof googleSheetsGuard !== "object" ||
+       Array.isArray(googleSheetsGuard) || typeof googleSheetsGuard.enabled !== "boolean")) {
+    throw new Error(
+      "Google Sheets Guard configuration must be an object with boolean enabled.");
+  }
   const activePaths = [
     ...requiredPaths,
     ...(config.aiGateway?.enabled ? aiGatewayPaths : []),
     ...(config.errorReporting?.enabled ? errorReportingPaths : []),
+    ...(config.googleSheetsGuard?.enabled ? googleSheetsGuardPaths : []),
   ];
   for (const path of activePaths) {
     const value = valueAt(config, path);
@@ -213,8 +226,10 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     throw new Error("Cloudflare account IDs must be 32 hexadecimal characters.");
   }
   const workerNames = Object.entries(config.workers)
-    .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
-    .map(([, worker]) => worker.name);
+    .filter(([key, worker]) => worker !== undefined &&
+      (key !== "errorReporter" || config.errorReporting.enabled) &&
+      (key !== "googleSheetsGuard" || config.googleSheetsGuard?.enabled))
+    .map(([, worker]) => worker!.name);
   if (new Set(workerNames).size !== workerNames.length) {
     throw new Error(
       "Router, Workshop, Context, Scheduler, and custom Gatekeeper names must be unique.");
@@ -435,6 +450,9 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   const context = structuredClone(bases.context);
   const scheduler = structuredClone(bases.scheduler);
   const customGatekeeper = structuredClone(bases.customGatekeeper);
+  const googleSheetsGuard = config.googleSheetsGuard?.enabled
+    ? structuredClone(bases.googleSheetsGuard)
+    : undefined;
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
@@ -448,6 +466,10 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     { binding: "GATEKEEPER_CONTEXT", service: config.workers.context.name },
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
     { binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name },
+    ...(googleSheetsGuard ? [{
+      binding: "GATEKEEPER_GOOGLE_SHEETS_GUARD",
+      service: config.workers.googleSheetsGuard!.name,
+    }] : []),
   ];
 
   setCommon(workshop, config, config.workers.workshop.name);
@@ -513,6 +535,11 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       service: config.workers.customGatekeeper.name,
       entrypoint: "GatekeeperVendor",
     },
+    ...(googleSheetsGuard ? [{
+      binding: "GATEKEEPER_GOOGLE_SHEETS_GUARD",
+      service: config.workers.googleSheetsGuard!.name,
+      entrypoint: "GatekeeperVendor",
+    }] : []),
   ];
   workshop.kv_namespaces = [
     { binding: "BLUEPRINTS", ...(config.resources.blueprintsKvNamespaceId
@@ -552,12 +579,28 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     CUSTOM_MESSAGE: config.customGatekeeper.message,
   };
 
+  if (googleSheetsGuard) {
+    setCommon(googleSheetsGuard, config, config.workers.googleSheetsGuard!.name);
+    googleSheetsGuard.vars = {
+      BASE_URL: `${origin}/gatekeeper/google-sheets-guard`,
+    };
+    googleSheetsGuard.secrets = {
+      required: [
+        "CLIENT_ID",
+        "CLIENT_SECRET",
+        "P3_SPREADSHEET_ID",
+        "P3_ALLOWED_RANGE",
+      ],
+    };
+  }
+
   if (errorReporter) {
     setCommon(errorReporter, config, config.workers.errorReporter!.name);
   }
 
   return {
     router, workshop, context, scheduler, customGatekeeper,
+    ...(googleSheetsGuard && { googleSheetsGuard }),
     ...(errorReporter && { errorReporter }),
   };
 }
@@ -605,6 +648,13 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[] {
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
     { args: ownBuild("custom-gatekeeper") },
+    ...(config.googleSheetsGuard?.enabled ? [
+      // The wrapper inherits the pinned Google worker. Its imported module references generated
+      // configurator assets even though this facade never exposes the picker, so build them from
+      // the same pinned source before Wrangler bundles the facade.
+      { args: submoduleBuild("@gadgets/google-gatekeeper", "build:configurator") },
+      { args: ownBuild("google-sheets-guard") },
+    ] : []),
     ...(config.errorReporting.enabled ? [{ args: ownBuild("error-reporter") }] : []),
     // Access mode is a build-time constant in the frontend bundle (`src/useAuth.ts`), so it is set
     // here rather than inherited: a bundle built under a different value is wrong, not just stale.
@@ -720,6 +770,7 @@ async function main(): Promise<void> {
     context: await readJsonc(join(root, packageDirs.context, "wrangler.jsonc")),
     scheduler: await readJsonc(join(root, packageDirs.scheduler, "wrangler.jsonc")),
     customGatekeeper: await readJsonc(join(root, packageDirs.customGatekeeper, "wrangler.jsonc")),
+    googleSheetsGuard: await readJsonc(join(root, packageDirs.googleSheetsGuard, "wrangler.jsonc")),
     errorReporter: await readJsonc(join(root, packageDirs.errorReporter, "wrangler.jsonc")),
   });
   reportAiGateway(config);
@@ -740,6 +791,9 @@ async function main(): Promise<void> {
     deployWorker(packageDirs.context, deployArgs);
     deployWorker(packageDirs.scheduler, deployArgs);
     deployWorker(packageDirs.customGatekeeper, deployArgs);
+    if (config.googleSheetsGuard?.enabled) {
+      deployWorker(packageDirs.googleSheetsGuard, deployArgs);
+    }
     deployWorker(packageDirs.workshop, deployArgs);
     // Last: it binds every one of the above.
     deployWorker(packageDirs.router, deployArgs);

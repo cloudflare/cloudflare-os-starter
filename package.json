@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "vp run -r --cache build",
-    "test": "node --test 'scripts/**/*.test.ts' && vp run --filter '!cloudflare-os-starter' --cache test",
+    "test": "node --test scripts/deploy.test.ts && vp run -r --cache test:run",
     "types:scripts": "tsc -p scripts/tsconfig.json",
     "lint:check": "vp lint",
     "lint:fix": "vp lint --fix",

@@ -19,6 +19,7 @@ const validConfig: DeploymentConfig = {
     context: { name: "acme-cloudflare-os-context" },
     scheduler: { name: "acme-cloudflare-os-scheduler" },
     customGatekeeper: { name: "acme-cloudflare-os-custom" },
+    googleSheetsGuard: { name: "acme-cloudflare-os-google-sheets" },
     errorReporter: { name: "acme-cloudflare-os-errors" },
   },
   access: {
@@ -38,6 +39,7 @@ const validConfig: DeploymentConfig = {
     artifacts: { enabled: true, namespace: "acme-context-collections" },
   },
   customGatekeeper: { name: "Acme", message: "Use the company handbook." },
+  googleSheetsGuard: { enabled: false },
   errorReporting: { enabled: true, environment: "production", release: "abc123" },
   resources: {
     blueprintsKvNamespaceId: "blueprints-kv-id",
@@ -74,6 +76,7 @@ async function baseConfigs(): Promise<BaseConfigs> {
     context: await baseConfig("../cloudflare-os/packages/gatekeeper-context/wrangler.jsonc"),
     scheduler: await baseConfig("../cloudflare-os/packages/gatekeeper-scheduler/wrangler.jsonc"),
     customGatekeeper: await baseConfig("../packages/custom-gatekeeper/wrangler.jsonc"),
+    googleSheetsGuard: await baseConfig("../packages/google-sheets-guard/wrangler.jsonc"),
     errorReporter: await baseConfig("../packages/error-reporter/wrangler.jsonc"),
   };
 }
@@ -315,6 +318,75 @@ test("deploys the ambient Scheduler Gatekeeper the hosted flow preinstalls", asy
     .map(({ args }) => args)
     .filter((args) => args.includes("@gadgets/gatekeeper-scheduler"));
   assert.deepEqual(builds.map((args) => args.at(-1)), ["build:app", "build"]);
+});
+
+test("keeps the P3 Google Sheets guard absent by default", async () => {
+  const generated = generateConfigs(validConfig, await baseConfigs());
+  assert.equal(generated.googleSheetsGuard, undefined);
+  assert.equal(generated.router.services!.some(
+    (service) => service.binding === "GATEKEEPER_GOOGLE_SHEETS_GUARD"), false);
+  assert.equal(generated.workshop.services!.some(
+    (service) => service.binding === "GATEKEEPER_GOOGLE_SHEETS_GUARD"), false);
+  assert.equal(buildCommands(validConfig).some(
+    ({ args }) => args.includes("google-sheets-guard")), false);
+});
+
+test("generates a private, secret-bound P3 Google Sheets guard when enabled", async () => {
+  const config = variant((c) => { c.googleSheetsGuard = { enabled: true }; });
+  const generated = generateConfigs(config, await baseConfigs());
+  const guard = generated.googleSheetsGuard!;
+
+  assert.equal(guard.name, "acme-cloudflare-os-google-sheets");
+  assert.equal(guard.workers_dev, false);
+  assert.equal(guard.preview_urls, false);
+  assert.deepEqual(guard.vars, {
+    BASE_URL: "https://os.example.com/gatekeeper/google-sheets-guard",
+  });
+  assert.deepEqual(guard.secrets, { required: [
+    "CLIENT_ID",
+    "CLIENT_SECRET",
+    "P3_SPREADSHEET_ID",
+    "P3_ALLOWED_RANGE",
+  ] });
+  assert.ok(generated.router.services!.some((service) =>
+    service.binding === "GATEKEEPER_GOOGLE_SHEETS_GUARD" &&
+    service.service === "acme-cloudflare-os-google-sheets" &&
+    service.entrypoint === undefined));
+  assert.ok(generated.workshop.services!.some((service) =>
+    service.binding === "GATEKEEPER_GOOGLE_SHEETS_GUARD" &&
+    service.service === "acme-cloudflare-os-google-sheets" &&
+    service.entrypoint === "GatekeeperVendor"));
+  assert.ok(buildCommands(config).some(
+    ({ args }) => args.includes("google-sheets-guard")));
+  assert.ok(buildCommands(config).some(({ args }) =>
+    args.includes("@gadgets/google-gatekeeper") && args.at(-1) === "build:configurator"));
+});
+
+test("requires a P3 guard Worker name only when the guard is enabled", () => {
+  const disabled = variant((c) => {
+    delete c.workers.googleSheetsGuard;
+    c.googleSheetsGuard = { enabled: false };
+  });
+  assert.doesNotThrow(() => validateConfig(disabled));
+
+  const enabled = variant((c) => {
+    delete c.workers.googleSheetsGuard;
+    c.googleSheetsGuard = { enabled: true };
+  });
+  assert.throws(() => validateConfig(enabled), /workers.googleSheetsGuard.name/);
+});
+
+test("requires an explicit boolean for the P3 guard enabled state", () => {
+  for (const invalid of ["false", "true", 0, 1, null]) {
+    assert.throws(
+      () => validateConfig(variant((c) => { c.googleSheetsGuard.enabled = invalid; })),
+      /Google Sheets Guard.*boolean/i,
+    );
+  }
+  assert.throws(
+    () => validateConfig(variant((c) => { c.googleSheetsGuard = null; })),
+    /Google Sheets Guard.*boolean/i,
+  );
 });
 
 test("keeps every Worker behind the router off the public internet", async () => {

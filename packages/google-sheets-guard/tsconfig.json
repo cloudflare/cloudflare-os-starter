@@ -1,0 +1,13 @@
+{
+  "extends": "../../cloudflare-os/tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["../../cloudflare-os/packages/gatekeeper-google/worker-configuration.d.ts"],
+    "noEmit": true
+  },
+  "include": ["src", "__tests__"],
+  "exclude": ["dist", "node_modules", ".wrangler"]
+}

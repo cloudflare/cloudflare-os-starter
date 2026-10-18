@@ -1,0 +1,28 @@
+{
+  "name": "google-sheets-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "types:check": "tsc --noEmit",
+    "test:run": "pnpm --dir ../../cloudflare-os exec vp run -F @gadgets/google-gatekeeper --no-cache build:configurator && vitest run"
+  },
+  "dependencies": {
+    "@gadgets/backend-utils": "link:../../cloudflare-os/packages/backend-utils",
+    "@gadgets/configurator-ui": "link:../../cloudflare-os/packages/configurator-ui",
+    "@gadgets/workshop-shared": "workspace:*",
+    "capnweb": "catalog:",
+    "capnweb-validate": "catalog:",
+    "mimetext": "^3.0.28",
+    "postal-mime": "^2.7.6"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@types/node": "26.1.0",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

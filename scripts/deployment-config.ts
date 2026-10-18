@@ -112,6 +112,8 @@ export interface DeploymentConfig {
     context: { name: string };
     scheduler: { name: string };
     customGatekeeper: { name: string };
+    /** Required only when `googleSheetsGuard.enabled`. */
+    googleSheetsGuard?: { name: string };
     /** Only required when `errorReporting.enabled`. */
     errorReporter?: { name: string };
   };
@@ -120,6 +122,8 @@ export interface DeploymentConfig {
   context: ContextConfig;
   /** Display text the example custom Gatekeeper serves to agents. */
   customGatekeeper: { name: string; message: string };
+  /** P3 exact-resource Google Sheets facade. Secrets hold the resource ID and fixed range. */
+  googleSheetsGuard?: { enabled: boolean };
   /** Private explicit-issue destination. */
   errorReporting: { enabled: boolean; environment?: string; release?: string | null };
   /** Workshop KV/R2. `null` requests Wrangler automatic provisioning. */
@@ -182,6 +186,8 @@ export interface GeneratedConfigs {
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
+  /** Absent when `googleSheetsGuard.enabled` is false or omitted. */
+  googleSheetsGuard?: ProdWranglerConfig;
   /** Absent when `errorReporting.enabled` is false. */
   errorReporter?: ProdWranglerConfig;
 }
@@ -193,6 +199,7 @@ export interface BaseConfigs {
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
+  googleSheetsGuard: ProdWranglerConfig;
   errorReporter: ProdWranglerConfig;
 }
 
