@@ -1,0 +1,57 @@
+AGENTS.md
+  s_6712caea14c554::t_82a7c4d09e375d 5
+packages/cf-os/README.md
+  s_6712caea14c554::t_b7503c6c45d227 43-53,56,58
+packages/cf-os/generator/__fixtures__/api.ts
+  s_6712caea14c554::t_93f1751c41c1d2 62
+packages/cf-os/generator/__fixtures__/generated/commands.ts
+  s_6712caea14c554::t_df1be5992c72ea 25-34
+packages/cf-os/generator/__fixtures__/generated/schema.json
+  s_6712caea14c554::t_d265bee72dc258 37-73
+packages/cf-os/generator/emit.test.ts
+  s_6712caea14c554::t_25fb67e8d9a10f 12,55,97,145-146,148,150-173,219,225,254-266
+packages/cf-os/generator/emit.ts
+  s_6712caea14c554::t_082d2287bd4ffb 13,80-84,131-134,137-138,161-195,511,522,525
+packages/cf-os/generator/extract.test.ts
+  s_6712caea14c554::t_d7d9ee8cd04413 67-68
+packages/cf-os/src/api/callbacks.test.ts
+  s_6712caea14c554::t_6b5bb7637c2aab 38,48-50,64,66-67,70,75-76
+packages/cf-os/src/api/callbacks.ts
+  s_6712caea14c554::t_24daa7a50aa7b7 8-9,15-24,31-32,46,66,68,70
+packages/cf-os/src/api/generated/commands.ts
+  s_6712caea14c554::t_1978373d03fbd7 14,80,274,352,367,388,390,442,444,446,451,509-510,513,533,535,603-604,765,841-842,864,914,926,934,936,971,1159,1191,1210,1245,1257,1282,1380,1427,1481,1506,1512,1647,1671,1673,1745,1778,1826,1916,1919,1937,1952,1982,1994,2049,2053,2206,2243,2349,2419,2429-2431,2455-2457,2519,2627,2629,2665,2735-2736,2743,2749,2762,2794,2801,2830,2853
+packages/cf-os/src/api/run.test.ts
+  s_6712caea14c554::t_e7310a0e48bd2d 6-8,53,62-65,67-70,83-84,99-100,107-116,122-123,130-169
+packages/cf-os/src/api/run.ts
+  s_6712caea14c554::t_c2e61ba8fd4522 19,48-53,145-160,240,253,396,409-437,444,449,454,469,480,485,487,499,503-588,707
+packages/cf-os/src/api/session.test.ts
+  s_6712caea14c554::t_bd9f76e79ecea5 131,144,162
+packages/cf-os/src/api/test-server.ts
+  s_6712caea14c554::t_294430a5dcb458 154-155
+packages/cf-os/src/commands/api.test.ts
+  s_6712caea14c554::t_d35e940bee1dd3 101-105,147,154-156,164,323-324,329-344,360-365
+packages/cf-os/src/commands/api.ts
+  s_6712caea14c554::t_28bc0dbb239158 2,8,29-31,80-92
+packages/cf-os/src/main.test.ts
+  s_6712caea14c554::t_9c931beab5f820 170,177,181-182
+packages/cf-os/src/main.ts
+  s_6712caea14c554::t_43447411e3e8a2 331-337,355,393
+packages/cf-os/src/api/paths.ts
+  s_6712caea14c554::t_b3a11b1e41f584 1-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "533bb0266ac46b3872726430bb6baa1da9b0f71b",
+  "prompts": {},
+  "sessions": {
+    "s_6712caea14c554": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "977fe45f-33b4-4f1f-b13d-82e5b0ecf29f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
