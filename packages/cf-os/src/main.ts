@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// cf-os: scaffold, configure and deploy a self-hosted Cloudflare OS.
+// cf-os: scaffold, configure and deploy a self-hosted Cloudflare OS, and call a running one's API.
 //
 // This file is the dispatcher, and with scaffolding and `update` the only part a globally installed
 // `cf-os` ever runs for itself.
@@ -12,8 +12,9 @@
 //
 // Commands load lazily. `install` has to work before the submodule is checked out, and the
 // `@gadgets/scripts` modules other commands import only resolve once it is -- so nothing imported
-// statically here, or by `commands/scaffold.ts` or `commands/update.ts`, may reach them.
-// `main.test.ts` checks that.
+// statically here, or by `commands/scaffold.ts` or `commands/update.ts`, may reach them. Nor may
+// it reach `api`'s modules (`src/api`), whose packages (capnweb, hash-wasm) are development
+// dependencies a published copy lacks, nor the generator's (typescript6). `main.test.ts` checks both.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
@@ -64,9 +65,20 @@ interface CommandSpec {
   delegates?: false;
   /** True when the command also runs outside a Cloudflare OS project. */
   anywhere?: true;
+  /**
+   * True when the command parses its own arguments, `--help` included: `api`, whose commands and
+   * flags are its generated table's. Only the global `--config`, `--account` and `--profile` are
+   * taken out; every other token after the command's name reaches it as a positional, verbatim.
+   * Its usage errors exit {@link USAGE_EXIT}, so a caller can tell "nothing was sent, fix the
+   * command" from a failure of the call itself.
+   */
+  rawArgs?: true;
   /** The module to run. `inProject` is false only for `init`, which then scaffolds. */
   load(inProject: boolean): Promise<CommandModule>;
 }
+
+/** The exit code of a {@link CommandSpec.rawArgs} command's usage error; others' are 1. */
+const USAGE_EXIT = 2;
 
 const COMMANDS: Record<string, CommandSpec> = {
   init: {
@@ -161,6 +173,17 @@ const COMMANDS: Record<string, CommandSpec> = {
     anywhere: true,
     load: () => import("./commands/update.ts"),
   },
+  api: {
+    summary: "call a running instance's API, with the commands generated from the pinned cloudflare-os",
+    synopsis: "[public] <command> [arguments] [<command> [arguments]]... [--url <origin>] [--auth <mode>] " +
+      "[--username <name>] [--dry-run] [--timeout <seconds>] [--out <file|->]",
+    help: [],
+    options: {},
+    positionals: 0,
+    failure: "API call failed.",
+    rawArgs: true,
+    load: () => import("./commands/api.ts"),
+  },
   install: {
     summary: "install the cloudflare-os submodule's own workspace",
     synopsis: "[--check]",
@@ -210,6 +233,38 @@ function commandIndex(argv: string[]): number {
     else if (!argv[i].startsWith("-")) return i;
   }
   return -1;
+}
+
+/**
+ * `argv` without the command's name and the global options with a value, which are returned
+ * apart, for a {@link CommandSpec.rawArgs} command. Tokens after a `--` are the command's, whatever
+ * they look like.
+ */
+function splitGlobals(argv: string[], at: number): { values: CommandArgs["values"]; rest: string[] } {
+  const values: CommandArgs["values"] = {};
+  const rest: string[] = [];
+  const tokens = argv.toSpliced(at, 1);
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "--") {
+      rest.push(...tokens.slice(i));
+      break;
+    }
+    const flag = token.split("=")[0];
+    const name = flag.slice(2);
+    if (!flag.startsWith("--") || !Object.hasOwn(GLOBAL_OPTIONS, name) ||
+      GLOBAL_OPTIONS[name as keyof typeof GLOBAL_OPTIONS].type !== "string") {
+      rest.push(token);
+      continue;
+    }
+    if (token.length > flag.length) {
+      values[name] = token.slice(flag.length + 1);
+    } else {
+      if (i + 1 >= tokens.length) throw new Error(`Option '${flag} <value>' argument missing`);
+      values[name] = tokens[++i];
+    }
+  }
+  return { values, rest };
 }
 
 /** What {@link cli} runs against, so tests can stand in for the process. */
@@ -282,22 +337,31 @@ export async function cli(argv: string[], deps: CliDeps): Promise<number> {
     return 1;
   }
 
-  let parsed: ReturnType<typeof parseArgs>;
+  /** What follows a usage error: the command's usage, or for one parsing its own, where its help is. */
+  const usageHint = spec.rawArgs
+    ? `Usage: cf-os ${name} ${spec.synopsis}\n\nRun \`cf-os ${name} --help\` for its commands and options.`
+    : commandUsage(name);
+  let parsed: { values: CommandArgs["values"]; positionals: string[] };
   try {
-    parsed = parseArgs({
-      args: argv.toSpliced(at, 1),
-      options: { ...GLOBAL_OPTIONS, ...spec.options },
-      allowPositionals: true,
-      strict: true,
-    });
-    if (parsed.positionals.length > spec.positionals) {
-      throw new Error(`Unexpected argument ${parsed.positionals[spec.positionals]}.`);
+    if (spec.rawArgs) {
+      const { values, rest } = splitGlobals(argv, at);
+      parsed = { values, positionals: rest };
+    } else {
+      parsed = parseArgs({
+        args: argv.toSpliced(at, 1),
+        options: { ...GLOBAL_OPTIONS, ...spec.options },
+        allowPositionals: true,
+        strict: true,
+      }) as typeof parsed;
+      if (parsed.positionals.length > spec.positionals) {
+        throw new Error(`Unexpected argument ${parsed.positionals[spec.positionals]}.`);
+      }
     }
   } catch (error) {
-    deps.out.log(`${(error as Error).message}\n\n${commandUsage(name)}`);
-    return 1;
+    deps.out.log(`${(error as Error).message}\n\n${usageHint}`);
+    return spec.rawArgs ? USAGE_EXIT : 1;
   }
-  const values = parsed.values as CommandArgs["values"];
+  const { values } = parsed;
   if (values.help) {
     process.stdout.write(`${commandUsage(name)}\n`);
     return 0;
@@ -332,8 +396,8 @@ export async function cli(argv: string[], deps: CliDeps): Promise<number> {
   } catch (error) {
     if (error instanceof Cancelled) return 130;
     if (error instanceof UsageError) {
-      deps.out.log(`${error.message}\n\n${commandUsage(name)}`);
-      return 1;
+      deps.out.log(`${error.message}\n\n${usageHint}`);
+      return spec.rawArgs ? USAGE_EXIT : 1;
     }
     // One line, no stack: every failure here is a config, account or subprocess problem.
     deps.out.log(`\n${spec.failure} ${(error as Error).message}`);

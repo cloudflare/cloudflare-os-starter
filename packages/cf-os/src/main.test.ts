@@ -25,7 +25,11 @@ async function run(
     spawned.push({ args, env: options.env, cwd: options.cwd });
     return { status };
   };
-  const write = t.mock.method(process.stdout, "write", (chunk: string) => {
+  // Only text is the command's: the test runner reports on stdout in bytes, and may while a command
+  // awaits, so those pass through.
+  const original = process.stdout.write.bind(process.stdout) as (chunk: Uint8Array) => boolean;
+  const write = t.mock.method(process.stdout, "write", (chunk: string | Uint8Array) => {
+    if (typeof chunk !== "string") return original(chunk);
     stdout.push(chunk);
     return true;
   });
@@ -83,14 +87,17 @@ test("prints each command's help on stdout, anywhere", async (t) => {
   const { code, stdout } = await run(t, ["--help"], { cwd });
   assert.equal(code, 0);
   assert.match(stdout, /Commands:\n {2}init/);
+  assert.match(stdout, /^ {2}api {2,}call a running instance's API/m);
 });
 
 test("outside a project, only init and update run", async (t) => {
   const cwd = tempDir(t);
-  for (const name of ["import", "access", "secrets", "check", "deploy", "install"]) {
-    const { code, log } = await run(t, [name], { cwd });
-    assert.equal(code, 1, name);
-    assert.match(log, /Run `cf-os init <dir>` to create one/, name);
+  // `api --help` too: its help is the project's generated table, which there is none of here.
+  for (const argv of [["import"], ["access"], ["secrets"], ["check"], ["deploy"], ["install"], ["api"], ["api", "--help"]]) {
+    const { code, log, stdout } = await run(t, argv, { cwd });
+    assert.equal(code, 1, argv.join(" "));
+    assert.match(log, /Run `cf-os init <dir>` to create one/, argv.join(" "));
+    assert.equal(stdout, "", argv.join(" "));
   }
   // update moves the pin of any repository that has one, so it is the command that refuses here.
   const updated = await run(t, ["update", "--upstream"], { cwd });
@@ -121,12 +128,71 @@ test("hands off to a copy at packages/cfos, where projects from before the renam
 
 test("hands off what only the project's copy may know: other commands, options and help", async (t) => {
   const { root, local } = projectWithLocalCopy(t);
-  for (const argv of [["frobnicate"], ["check", "--newer-option"], ["deploy", "--help"]]) {
+  for (const argv of [["frobnicate"], ["check", "--newer-option"], ["deploy", "--help"],
+    ["api", "open-gadget", "g1", "--profile", "p", "get-chat-history", "7", "--help"]]) {
     const { code, spawned, log } = await run(t, argv, { cwd: root });
     assert.equal(code, 0, argv.join(" "));
     assert.deepEqual(spawned.map((entry) => entry.args), [[local, ...argv]]);
     assert.equal(log, "");
   }
+});
+
+/** A project to run `api` in, in-process: its deployment file names no origin; `other.jsonc` does. */
+function apiProject(t: Parameters<typeof scratchProject>[0]): string {
+  const root = scratchProject(t, TEMPLATE);
+  writeFileSync(join(root, "other.jsonc"),
+    `{ "publicBaseUrl": null, "workers": { "router": { "name": "acme-os", "route": { "customDomain": "os.example.com" } } } }`);
+  return root;
+}
+
+test("api takes its tokens verbatim, with the global options read and taken out wherever they are", async (t) => {
+  const root = apiProject(t);
+  const { code, stdout, log } = await run(t, [
+    "--profile", "p", "api", "--config", "other.jsonc", "open-gadget", "g1", "get-chat-history", "7",
+    "--before-sequence=3", "--account=acc", "--auth", "access", "--dry-run",
+  ], { cwd: root, env: { [DELEGATION_SENTINEL]: "1" } });
+  assert.equal(code, 0, log);
+  // The origin is other.jsonc's: --config reached the command, and --account and --profile did not
+  // reach its own parsing, which knows neither.
+  assert.deepEqual(JSON.parse(stdout), {
+    url: "wss://os.example.com/api",
+    auth: { mode: "access" },
+    on: "AuthenticatedApi",
+    chain: [{ method: "openGadget", args: ["g1"] }, { method: "getChatHistory", args: [7, 3] }],
+  });
+});
+
+test("api parses its own help and options; its usage errors point at its help", async (t) => {
+  const root = apiProject(t);
+  const env = { [DELEGATION_SENTINEL]: "1" };
+  const help = await run(t, ["api", "--help"], { cwd: root, env });
+  assert.equal(help.code, 0, help.log);
+  assert.match(help.stdout, /^Usage: cf-os api <command>/);
+  assert.match(help.stdout, /^ {2}list-gadgets\b/m);
+  assert.match(help.stdout, /`cf-os api public <command>`/);
+
+  // Exit 2, not 1: nothing was sent, so the command needs fixing rather than retrying.
+  const missing = await run(t, ["api", "whoami", "--config"], { cwd: root, env });
+  assert.equal(missing.code, 2);
+  assert.match(missing.log, /^Option '--config <value>' argument missing\n\nUsage: cf-os api \[public\] <command>/);
+  assert.match(missing.log, /Run `cf-os api --help` for its commands and options\.$/);
+
+  const unknown = await run(t, ["api", "whoami", "--nope"], { cwd: root, env });
+  assert.equal(unknown.code, 2);
+  assert.match(unknown.log, /^Unknown option --nope for whoami\./);
+  assert.doesNotMatch(unknown.log, /Global options:/);
+
+  // Ending on a capability sends nothing, and says so.
+  const incomplete = await run(t, ["api", "new-gadget"], { cwd: root, env });
+  assert.equal(incomplete.code, 2);
+  assert.match(incomplete.log, /^new-gadget returns a capability \(Overseer\), so the chain goes on: nothing was sent\. /);
+  assert.match(incomplete.log, /as in `cf-os api new-gadget get-metadata`/);
+
+  // After `--`, a token that looks like a global option is the command's.
+  const escaped = await run(t, ["api", "--url", "https://example.invalid", "--dry-run", "--", "--config", "x"],
+    { cwd: root, env });
+  assert.equal(escaped.code, 2);
+  assert.match(escaped.log, /AuthenticatedApi has no command "--config"/);
 });
 
 test("says to install a project whose dependencies are not, rather than crash in its copy", async (t) => {
@@ -274,9 +340,9 @@ function staticClosure(entries: string[]): { files: Set<string>; packages: Set<s
   return { files, packages };
 }
 
-test("the packed path never reaches @gadgets/scripts", () => {
+test("the packed path never reaches @gadgets/scripts, or api's modules and packages", () => {
   // A published copy runs dispatch, delegation, scaffolding and update only, and lacks the `link:`
-  // package.
+  // package and the development dependencies `api` runs on.
   const { files, packages } = staticClosure([MAIN, join(SRC, "commands", "scaffold.ts"), join(SRC, "commands", "update.ts")]);
   const reached = [...packages].filter((name) => name.startsWith("@gadgets/"));
   assert.deepEqual(reached, [], `reachable from ${[...files].map((file) => relative(SRC, file)).join(", ")}`);
@@ -284,6 +350,8 @@ test("the packed path never reaches @gadgets/scripts", () => {
   assert.deepEqual([...files].map((file) => relative(SRC, file).replaceAll("\\", "/"))
     .filter((file) => file.startsWith("commands/")).toSorted(),
     ["commands/scaffold.ts", "commands/update.ts"]);
+  assert.deepEqual([...files].map((file) => relative(SRC, file).replaceAll("\\", "/")).filter((file) => file.startsWith("api/")), []);
+  assert.deepEqual([...packages].filter((name) => ["capnweb", "hash-wasm", "typescript6"].includes(name)), []);
   assert.deepEqual([...packages].filter((name) => !name.startsWith("node:")), ["@clack/prompts"]);
   // What a global install gets is exactly that: everything else is the project copy's, from its own install.
   const manifest = JSON.parse(readFileSync(join(SRC, "..", "package.json"), "utf8"));
