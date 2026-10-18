@@ -1,0 +1,29 @@
+packages/cf-os/src/commands/access.test.ts
+  s_4e92f623cbc683::t_8ea887cb576a2e 55-71
+packages/cf-os/src/commands/access.ts
+  s_4e92f623cbc683::t_edb58e70f260c8 27-28,30-34,37-39
+packages/cf-os/src/commands/update.test.ts
+  s_4e92f623cbc683::t_b6d2542995c4cc 580
+packages/cf-os/src/commands/update.ts
+  s_4e92f623cbc683::t_f15da839de9ff6 27,440-443,850
+packages/cf-os/src/core/access.test.ts
+  s_4e92f623cbc683::t_854453ae10ea67 87-98
+packages/cf-os/src/core/access.ts
+  s_4e92f623cbc683::t_67177838043a7c 1-6,35-36,82-86,124-126,149-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8f0f40a5067eb81c28980eb2bca38816f78b085e",
+  "prompts": {},
+  "sessions": {
+    "s_4e92f623cbc683": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2b424f-f299-4e4b-9e71-84fbd412a00c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
