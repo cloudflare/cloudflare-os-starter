@@ -1,0 +1,27 @@
+.agents/skills/cloudflare-os-operator/references/updating.md
+  s_075094e75b72c9::t_2453882fc1d139 70-72
+packages/cf-os/README.md
+  s_075094e75b72c9::t_13575002d56c62 25
+packages/cf-os/src/commands/update.test.ts
+  s_075094e75b72c9::t_04fe21f5779666 15,17-24,66-67,301,452-561
+packages/cf-os/src/commands/update.ts
+  s_075094e75b72c9::t_471ff86338e510 1,12-13,83-87,92,94-99,105,107-110,112-118,123,190,193-195,197-198,249-251,271-273,276,298,342-343,377-382,394-407,433-435,476-479,502-504,528-530,537-539,564,568-571,606-607,622,651-663,666-677,680,683-686,692
+packages/cf-os/src/main.ts
+  s_075094e75b72c9::t_1e3eaf19802b53 128,134-135,140-141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1317b6f621c4071be98de6dd479a6409eed76bd1",
+  "prompts": {},
+  "sessions": {
+    "s_075094e75b72c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f7c00ba6-80f6-4ad9-85b7-c23af7262f40",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
