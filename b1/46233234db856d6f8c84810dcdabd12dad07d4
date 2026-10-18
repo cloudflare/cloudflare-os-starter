@@ -1,0 +1,29 @@
+packages/cf-os/generator/__fixtures__/generated/commands.ts
+  s_6712caea14c554::t_e64d170fece9ca 98,106,123
+packages/cf-os/generator/emit.test.ts
+  s_6712caea14c554::t_cb6362ebac589e 74-76,79,172,176,180-184,190
+packages/cf-os/generator/emit.ts
+  s_6712caea14c554::t_f05066c2d0c9c6 184-186,189-196,198-202,275-289
+packages/cf-os/src/api/generated/commands.ts
+  s_6712caea14c554::t_7afef0a2627d68 14,36,228,401,419,458,466,788,971,1062,1127,1166,1174,1191,1210,1245,1282,1299,1405,1427,1481,1565,1972,1982,2009,2019,2028,2037,2049,2053,2255,2265,2274,2283,2309,2405,2519,2735-2736,2743,2749,2762,2794,2801,2830,2853
+packages/cf-os/src/api/run.test.ts
+  s_6712caea14c554::t_bcf23921ba3da5 69-74,124-126,164-165,187
+packages/cf-os/src/api/run.ts
+  s_6712caea14c554::t_9a47c7ac135456 117-118,123-131,133-136,204,229,232,251,264,270,273-276,287,301,544,551,555-565,568,593
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b146233234db856d6f8c84810dcdabd12dad07d4",
+  "prompts": {},
+  "sessions": {
+    "s_6712caea14c554": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "977fe45f-33b4-4f1f-b13d-82e5b0ecf29f",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
