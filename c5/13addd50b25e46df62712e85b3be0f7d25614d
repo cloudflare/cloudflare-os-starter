@@ -1,0 +1,19 @@
+AGENTS.md
+  s_4e92f623cbc683::t_8b5d6071a330f0 1-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c513addd50b25e46df62712e85b3be0f7d25614d",
+  "prompts": {},
+  "sessions": {
+    "s_4e92f623cbc683": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2b424f-f299-4e4b-9e71-84fbd412a00c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
