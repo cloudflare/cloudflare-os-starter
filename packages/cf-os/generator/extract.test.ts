@@ -64,8 +64,8 @@ test("tells capabilities, callbacks, streams, handles and any tails apart", () =
 });
 
 test("keeps optional parameters' types without the undefined they imply", () => {
-  const search = extractSchema(FIXTURE).services.FixtureAuthedApi!.methods.find((m) => m.name === "search")!;
-  assert.deepEqual(search.params.map(({ name, type, optional }) => ({ name, type, optional })), [
+  const findNotes = extractSchema(FIXTURE).services.FixtureAuthedApi!.methods.find((m) => m.name === "findNotes")!;
+  assert.deepEqual(findNotes.params.map(({ name, type, optional }) => ({ name, type, optional })), [
     { name: "query", type: { kind: "string" }, optional: false },
     { name: "limit", type: { kind: "number" }, optional: true },
     { name: "url", type: { kind: "string" }, optional: true },

@@ -98,11 +98,11 @@ test("a chain is sent pipelined in one session, its result printed and every stu
 
 test("optional parameters are flags, anywhere in their segment; unset ones are undefined, trailing ones trimmed", async (t) => {
   const h = harness(t);
-  assert.equal(await h.api("search", "q", "--limit", "5", "--arg-url", "x"), 0);
-  assert.equal(await h.api("search", "--arg-url=x", "q"), 0);
-  assert.equal(await h.api("search", "q"), 0);
-  assert.equal(await h.api("search", "-5", "--limit", "-1"), 0);
-  assert.deepEqual(callsOf(h.log, "search"), [["q", 5, "x"], ["q", undefined, "x"], ["q"], ["-5", -1]]);
+  assert.equal(await h.api("find-notes", "q", "--limit", "5", "--arg-url", "x"), 0);
+  assert.equal(await h.api("find-notes", "--arg-url=x", "q"), 0);
+  assert.equal(await h.api("find-notes", "q"), 0);
+  assert.equal(await h.api("find-notes", "-5", "--limit", "-1"), 0);
+  assert.deepEqual(callsOf(h.log, "findNotes"), [["q", 5, "x"], ["q", undefined, "x"], ["q"], ["-5", -1]]);
   assert.deepEqual(h.json[0], [{ id: 1, title: "q" }]);
 });
 
@@ -144,15 +144,16 @@ test("a subscription prints NDJSON events until --timeout, then disposes its han
   assert.equal(await h.api("open-notebook", "n", "subscribe", "--timeout", "0.3"), 0);
   const events = h.stdout().trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(events.map((event) => event.event), ["added", "removed", "ready"]);
-  assert.deepEqual(events[0].args, [{
+  assert.deepEqual(events[0].args, { note: {
     id: 1,
     title: "First",
     created: "2026-01-02T03:04:05.000Z",
     size: "12345678901234567890",
     body: { base64: "AQID" },
     tags: ["a"],
-  }]);
-  assert.deepEqual(events[1].args, [7]);
+  } });
+  assert.deepEqual(events[1].args, { id: 7 });
+  assert.deepEqual(events[2].args, {});
   assert.deepEqual(callsOf(h.log, "subscriberFailed"), []);
   await eventually(() => ["subscription", "notebook", "authed", "root"].every((name) => h.log.disposed.includes(name)), "disposal");
 });
@@ -160,7 +161,7 @@ test("a subscription prints NDJSON events until --timeout, then disposes its han
 test("a bare-function callback's events are named after its parameter", async (t) => {
   const h = harness(t);
   assert.equal(await h.api("open-notebook", "n", "watch-title", "--timeout", "0.2"), 0);
-  assert.deepEqual(h.stdout().trim().split("\n").map((line) => JSON.parse(line)), [{ event: "callback", args: ["title of n"] }]);
+  assert.deepEqual(h.stdout().trim().split("\n").map((line) => JSON.parse(line)), [{ event: "callback", args: { title: "title of n" } }]);
   await eventually(() => h.log.disposed.includes("watch"), "the handle's disposal");
 });
 
@@ -319,8 +320,25 @@ test("ending on a capability is a usage error that says nothing was sent and how
   assert.match(await incomplete("get-admin"), /Finish it with one of FixtureAdmin's commands; /);
   assert.match(await incomplete("open-notebook", "n", "connect"),
     /^connect returns an untyped capability, so the chain goes on: nothing was sent\. Finish it with `call <method> \[json-args\.\.\.\]`/);
-  assert.equal(await incomplete(), "cf-os api names no command, so nothing was sent. `cf-os api --help` lists them.");
+  assert.equal(await incomplete(), 'cf-os api names no command, so nothing was sent. Find one with `cf-os api search "<task>"`; ' +
+    "`cf-os api --help` lists them.");
   assert.match(await incomplete("public"), /^cf-os api public names no command/);
+  assert.equal(h.server.opened, 0);
+});
+
+test("search prints the best matches as JSON, whole command lines, and connects to nothing", async (t) => {
+  const h = harness(t);
+  // Runtime options are taken and ignored, wherever they are.
+  assert.equal(await h.api("--url", "https://example.invalid", "search", "subscribe", "to", "a", "notebook", "--dry-run"), 0);
+  const matches = h.json[0] as { command: string; summary: string }[];
+  assert.deepEqual(matches[0], { command: "cf-os api open-notebook <id> subscribe", summary: "A callback interface." });
+  assert.ok(matches.length <= 5);
+  assert.equal(await h.api("search", "--help"), 0);
+  assert.match(h.stdout(), /^Usage: cf-os api search "<describe the task>"/);
+  await assert.rejects(h.api("search"), /search needs a task/);
+  await assert.rejects(h.api("search", "x", "--nope"), /Unknown option '--nope'.* Run `cf-os api search --help`\./);
+  // `search` is a word only in a command's first place.
+  await assert.rejects(h.api("open-notebook", "n", "search"), /Notebook has no command "search"/);
   assert.equal(h.server.opened, 0);
 });
 
@@ -339,9 +357,12 @@ test("--help prints the help of the command or capability reached so far, on std
 test("a token after a chain-ending result, or an unknown command, is a usage error", async (t) => {
   const h = harness(t);
   await assert.rejects(h.api("set-mood", "calm", "ping"), (error: Error) =>
-    error instanceof UsageError && /set-mood returns a value, which ends the chain/.test(error.message));
-  await assert.rejects(h.api("open-notebook", "n", "nope"), (error: Error) =>
-    error instanceof UsageError && /Notebook has no command "nope"\. Run `cf-os api open-notebook n --help`/.test(error.message));
+    error instanceof UsageError && /set-mood returns nothing, which ends the chain/.test(error.message));
+  await assert.rejects(h.api("open-notebook", "n", "outline", "lock"), (error: Error) =>
+    error instanceof UsageError && /outline returns a value, which ends the chain/.test(error.message));
+  await assert.rejects(h.api("open-notebook", "n", "nope"), (error: Error) => error instanceof UsageError &&
+    /Notebook has no command "nope"\. Find one with `cf-os api search "<task>"`, or run `cf-os api open-notebook n --help` for Notebook's\./
+      .test(error.message));
   await assert.rejects(h.api("open-notebook", "n", "outline", "--limit", "1"), /Unknown option --limit for outline/);
   await assert.rejects(h.api("open-notebook"), /open-notebook needs <id>/);
   assert.equal(h.server.opened, 0);

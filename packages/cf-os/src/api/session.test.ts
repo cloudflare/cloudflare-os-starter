@@ -128,7 +128,7 @@ test("Access mode sends Origin and cf-access-token, then authenticateFromCfAcces
   const { log, deps, spawned } = sessionDeps(t, {});
   const session = await connect(target, { mode: "access" }, { serviceSalt: SALT, needsSignIn: true }, deps);
   const { api } = await session.authenticate();
-  assert.deepEqual(await api.search("q"), [{ id: 1, title: "q" }]);
+  assert.deepEqual(await api.findNotes("q"), [{ id: 1, title: "q" }]);
   api[Symbol.dispose]();
   session.main[Symbol.dispose]();
   assert.deepEqual(log.headers, [{ Origin: "https://os.example.com", "cf-access-token": "from.cloudflared.token" }]);
@@ -141,7 +141,7 @@ test("token mode authenticates with CFOS_API_TOKEN; a public chain needs no toke
   const { log, deps, spawned } = sessionDeps(t, { CFOS_API_TOKEN: "good-token" });
   const session = await connect(target, { mode: "token" }, { serviceSalt: SALT, needsSignIn: true }, deps);
   const { api } = await session.authenticate();
-  assert.deepEqual(await api.search("q"), [{ id: 1, title: "q" }]);
+  assert.deepEqual(await api.findNotes("q"), [{ id: 1, title: "q" }]);
   session.main[Symbol.dispose]();
   assert.deepEqual(log.headers, [{ Origin: "https://os.example.com" }]);
   assert.deepEqual(callsOf(log, "authenticate"), [["good-token"]]);
@@ -159,7 +159,7 @@ test("password mode logs in with the argon2id hash, then authenticates with the 
   const { log, deps } = sessionDeps(t, { CFOS_API_PASSWORD: "s3cret" }, { login: { username: "alice", hashHex } });
   const session = await connect(target, { mode: "password", username: "alice" }, { serviceSalt: SALT, needsSignIn: true }, deps);
   const { api } = await session.authenticate();
-  assert.deepEqual(await api.search("q"), [{ id: 1, title: "q" }]);
+  assert.deepEqual(await api.findNotes("q"), [{ id: 1, title: "q" }]);
   session.main[Symbol.dispose]();
   assert.deepEqual(callsOf(log, "login"), [["alice", hashHex]]);
   assert.deepEqual(callsOf(log, "authenticate"), [["good-token"]]);

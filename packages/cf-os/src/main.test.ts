@@ -167,20 +167,19 @@ test("api parses its own help and options; its usage errors point at its help", 
   const env = { [DELEGATION_SENTINEL]: "1" };
   const help = await run(t, ["api", "--help"], { cwd: root, env });
   assert.equal(help.code, 0, help.log);
-  assert.match(help.stdout, /^Usage: cf-os api <command>/);
+  assert.match(help.stdout, /^AGENTS: [^]*\n {2}cf-os api search "<describe the task>"\n[^]*\n\nUsage: cf-os api <command>/);
   assert.match(help.stdout, /^ {2}list-gadgets\b/m);
   assert.match(help.stdout, /`cf-os api public <command>`/);
 
   // Exit 2, not 1: nothing was sent, so the command needs fixing rather than retrying.
   const missing = await run(t, ["api", "whoami", "--config"], { cwd: root, env });
   assert.equal(missing.code, 2);
-  assert.match(missing.log, /^Option '--config <value>' argument missing\n\nUsage: cf-os api \[public\] <command>/);
-  assert.match(missing.log, /Run `cf-os api --help` for its commands and options\.$/);
+  assert.equal(missing.log, "Option '--config <value>' argument missing. Run `cf-os api --help` for its commands and options.");
 
   const unknown = await run(t, ["api", "whoami", "--nope"], { cwd: root, env });
   assert.equal(unknown.code, 2);
-  assert.match(unknown.log, /^Unknown option --nope for whoami\./);
-  assert.doesNotMatch(unknown.log, /Global options:/);
+  // Its own usage errors are the message alone: no synopsis after it.
+  assert.match(unknown.log, /^Unknown option --nope for whoami\. Run `cf-os api whoami --help` for its options\.$/);
 
   // Ending on a capability sends nothing, and says so.
   const incomplete = await run(t, ["api", "new-gadget"], { cwd: root, env });

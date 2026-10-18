@@ -59,7 +59,7 @@ export interface FixtureAuthedApi extends RpcTarget {
   importArchive(archive: ReadableStream<Uint8Array>): Promise<string>;
 
   /** An optional middle parameter, and one whose flag collides with the runtime's `--url`. */
-  search(query: string, limit?: number, url?: string): Promise<Note[]>;
+  findNotes(query: string, limit?: number, url?: string): Promise<Note[]>;
 
   /** A string-literal union. */
   setMood(mood: Mood): Promise<void>;

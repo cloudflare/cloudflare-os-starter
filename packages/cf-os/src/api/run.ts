@@ -16,6 +16,7 @@ import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import { UsageError, type Output } from "../context.ts";
 import { callbackStub, functionStub, ndjsonEvents } from "./callbacks.ts";
 import { admitsString, decodeArg, decodeUntyped, encodeValue, StreamArg, type ArgSource } from "./codec.ts";
+import { nodePrefixes, PUBLIC_SEGMENT } from "./paths.ts";
 import type { Remote, Session } from "./session.ts";
 import type { ApiArg, ApiCommand, ApiNode, ApiReturn, ApiTable } from "./table.ts";
 
@@ -43,6 +44,12 @@ const RUNTIME_HELP = [
   "  --config <path>      deployment file to read the origin from",
   "  -h, --help           help for the capability or command reached so far",
 ];
+
+/** How to find a command, as messages put it. */
+const SEARCH = '`cf-os api search "<task>"`';
+
+/** The one line that stands for {@link RUNTIME_HELP} everywhere but the root's help. */
+const RUNTIME_HELP_POINTER = "API options: `cf-os api --help`";
 
 /** The runtime flags, parsed. */
 export interface RuntimeFlags {
@@ -135,14 +142,22 @@ function optionFor(options: ParseArgsOptionsConfig, name: string): { type: "stri
 }
 
 /** What a chain-ending result is, for messages. */
-const RESULT_NOUN: Record<ApiReturn["kind"], string> = {
-  value: "a value",
-  stub: "a capability",
-  handle: "a handle",
-  stream: "bytes",
-  subscription: "events",
-  untyped: "an untyped capability",
-};
+function resultNoun(returns: ApiReturn): string {
+  switch (returns.kind) {
+    case "value":
+      return returns.type === "void" ? "nothing" : "a value";
+    case "stub":
+      return "a capability";
+    case "handle":
+      return "a handle";
+    case "stream":
+      return "bytes";
+    case "subscription":
+      return "events";
+    case "untyped":
+      return "an untyped capability";
+  }
+}
 
 function describeReturn(returns: ApiReturn): string {
   switch (returns.kind) {
@@ -222,7 +237,7 @@ export function parseInvocation(table: ApiTable, tokens: string[]): Invocation {
       throw new UsageError("call needs a method name: `call <method> [json-args...]`.");
     }
     if (position.kind === "result") {
-      throw new UsageError(`${position.after} returns ${RESULT_NOUN[position.returns.kind]}, which ends the chain: nothing can follow it, but "${token}" does.`);
+      throw new UsageError(`${position.after} returns ${resultNoun(position.returns)}, which ends the chain: nothing can follow it, but "${token}" does.`);
     }
     if (position.kind === "untyped") {
       if (token !== "call") {
@@ -235,7 +250,7 @@ export function parseInvocation(table: ApiTable, tokens: string[]): Invocation {
     const command: ApiCommand | undefined = Object.hasOwn(node.commands, token) ? node.commands[token] : undefined;
     if (!command) {
       const at = path.length > 1 ? `cf-os api ${path.slice(0, -1).join(" ")}` : `cf-os api${isPublic ? " public" : ""}`;
-      throw new UsageError(`${position.node} has no command "${token}". Run \`${at} --help\` for its commands.`);
+      throw new UsageError(`${position.node} has no command "${token}". Find one with ${SEARCH}, or run \`${at} --help\` for ${position.node}'s.`);
     }
     const hop: Extract<Hop, { kind: "command" }> = { kind: "command", name: token, node: position.node, command, positionals: [], flags: {} };
     current = { kind: "command", hop, options: commandOptions(command), flagTokens: [], positionals: hop.positionals, needed: positionalArgs(command).length };
@@ -378,7 +393,7 @@ export function incompleteChain(table: ApiTable, invocation: Invocation): string
   const hop = invocation.hops.at(-1);
   const typed = `cf-os api ${shellLine(path)}`.trimEnd();
   if (!hop || hop.kind !== "command") {
-    return `${typed} names no command, so nothing was sent. \`${typed} --help\` lists them.`;
+    return `${typed} names no command, so nothing was sent. Find one with ${SEARCH}; \`${typed} --help\` lists them.`;
   }
   if (end.kind === "untyped") {
     return `${hop.name} returns an untyped capability, so the chain goes on: nothing was sent. ` +
@@ -391,32 +406,52 @@ export function incompleteChain(table: ApiTable, invocation: Invocation): string
     `\`${typed} --help\` lists them.`;
 }
 
+/**
+ * `node`'s commands, one line each, after what the `→` marks mean when any of them carries one. The
+ * listing of a capability's help, and of the help of a command that returns one.
+ */
+function nodeCommandLines(table: ApiTable, node: string): string[] {
+  const commands = Object.values(table.nodes[node].commands);
+  return [
+    ...commands.some((command) => command.returns.kind === "stub") ? [
+      "A command marked `→ X` returns capability X: follow it on the same line with one of X's commands.",
+      "On its own it sends nothing.",
+    ] : [],
+    ...commands.some((command) => command.returns.kind === "untyped") ? [
+      "One marked `→ call` returns an untyped capability, finished with `call <method> [json-args...]`.",
+    ] : [],
+    ...commands.some(leadsTo) ? [""] : [],
+    ...table2(Object.entries(table.nodes[node].commands).map(([name, command]) => [
+      `${name} ${positionalArgs(command).map((arg) => `<${arg.name}>`).join(" ")}`.trim() + leadsTo(command),
+      summary(command.doc),
+    ])),
+  ];
+}
+
+/** What `cf-os api --help` opens with: how an agent finds a command without walking the help. */
+const AGENT_BANNER = [
+  "AGENTS: do not walk the commands with --help. Find the one for a task with",
+  '  cf-os api search "<describe the task>"',
+  "which prints the five best matches as JSON, each a whole command line; then run `<command> --help`.",
+];
+
 /** Help for capability `node`, reached by `path` (`public` alone for `PublicApi`). */
 export function nodeHelp(table: ApiTable, node: string, path: string[]): string {
   const entry = table.nodes[node];
   const prefix = ["cf-os", "api", ...path].join(" ");
   const isRoot = path.length === 0;
-  const commands = Object.entries(entry.commands);
   return [
+    ...isRoot ? [...AGENT_BANNER, ""] : [],
     `Usage: ${prefix} <command> [arguments] [options]`,
     "",
     ...entry.doc ? [...wrap(entry.doc, ""), ""] : [],
-    ...commands.some(([, command]) => leadsTo(command)) ? [
-      "A command marked `→ X` returns capability X: follow it on the same line with one of X's commands",
-      "(`→ call`: with `call <method>`). On its own it sends nothing.",
-      "",
-    ] : [],
     `Commands on ${node}${isRoot ? ", after signing in" : ""}:`,
-    ...table2(commands.map(([name, command]) => [
-      `${name} ${positionalArgs(command).map((arg) => `<${arg.name}>`).join(" ")}`.trim() + leadsTo(command),
-      summary(command.doc),
-    ])),
+    ...nodeCommandLines(table, node),
     ...isRoot ? ["", `\`cf-os api public <command>\` calls ${table.public} without signing in (run \`cf-os api public --help\`).`] : [],
     "",
     `Run \`${prefix} <command> --help\` for a command's arguments.`,
     "",
-    "API options:",
-    ...RUNTIME_HELP,
+    ...isRoot ? ["API options:", ...RUNTIME_HELP] : [RUNTIME_HELP_POINTER],
   ].join("\n");
 }
 
@@ -431,6 +466,7 @@ export function commandHelp(table: ApiTable, node: string, name: string, path: s
   const callbacks = command.args.filter((arg) => arg.encoding === "callback" || arg.encoding === "function");
   const flags = command.args.filter((arg) => arg.flag);
   const positionals = positionalArgs(command);
+  const next = command.returns.kind === "stub" ? command.returns.node : undefined;
   return [
     `Usage: ${["cf-os", "api", ...before, name, synopsis(command, table.shapes)].filter(Boolean).join(" ")}`,
     "",
@@ -441,14 +477,14 @@ export function commandHelp(table: ApiTable, node: string, name: string, path: s
       arg.encoding === "boolean" ? `--${arg.flag}, --no-${arg.flag}` : `--${arg.flag} ${placeholder(arg, table.shapes)}`,
       describeArg(arg),
     ]))] : [],
-    ...callbacks.length ? ["", "Events (one JSON line each, {\"event\", \"args\"}):", ...callbacks.flatMap((arg) => arg.encoding === "function"
+    ...callbacks.length ? ["", 'Events (one JSON line each, {"event": <name>, "args": {<parameter>: <value>}}):', ...callbacks.flatMap((arg) => arg.encoding === "function"
       ? table2([[`${arg.name}(${(arg.params ?? []).join(", ")})`, arg.doc]])
       : table2(table.callbacks[arg.callback!].methods.map((method) => [`${method.name}(${method.params.join(", ")})`, summary(method.doc)])))] : [],
     "",
     `Returns ${describeReturn(command.returns)}.`,
+    ...next ? ["", `Then, on ${next}:`, ...nodeCommandLines(table, next)] : [],
     "",
-    "API options:",
-    ...RUNTIME_HELP,
+    RUNTIME_HELP_POINTER,
   ].join("\n");
 }
 
@@ -460,9 +496,94 @@ export function untypedHelp(path: string[]): string {
     "An untyped capability: the API does not say what it offers. `call` invokes a method by name, each",
     "argument parsed as JSON, or passed as a string when it is not JSON. Nothing is checked.",
     "",
-    "API options:",
-    ...RUNTIME_HELP,
+    RUNTIME_HELP_POINTER,
   ].join("\n");
+}
+
+/** One match of `cf-os api search`. */
+export interface SearchMatch {
+  /** The whole command line, from `cf-os api`, a placeholder for each positional along the way. */
+  command: string;
+  /** The first sentence of its doc. */
+  summary: string;
+}
+
+/** Words a task is described with that pick out no command. */
+const STOP_WORDS = new Set(["a", "an", "and", "all", "by", "for", "from", "i", "in", "into", "it", "its", "me",
+  "my", "of", "on", "or", "the", "this", "to", "with"]);
+
+/** `text`'s words, lowercased and crudely stemmed, so `chats` meets `chat` and `starts` `start`. */
+function searchTerms(text: string): string[] {
+  return text.toLowerCase().replace(/'s\b/g, "").split(/[^a-z0-9]+/).filter(Boolean).map((word) => {
+    let stem = word.endsWith("ies") ? `${word.slice(0, -3)}y` : word.endsWith("ss") ? word : word.replace(/s$/, "");
+    if (stem.length > 5 && stem.endsWith("ing")) stem = stem.slice(0, -3);
+    else if (stem.length > 4 && stem.endsWith("ed")) stem = stem.slice(0, -2);
+    return stem.length > 3 ? stem.replace(/e$/, "") : stem;
+  });
+}
+
+/**
+ * The commands that best match `query`, best first, at most `limit`. A query word scores where it
+ * best matches: 3 in the command's own name, 2 in its summary, 1 in the hops that lead to it or the
+ * first sentence of the capability it is on. Ties go to the shorter command line. Local and
+ * deterministic: it reads the table, nothing else.
+ */
+export function searchCommands(table: ApiTable, query: string, limit = 5): SearchMatch[] {
+  const terms = [...new Set(searchTerms(query))].filter((term) => !STOP_WORDS.has(term));
+  const matches: (SearchMatch & { score: number })[] = [];
+  for (const [node, prefix] of nodePrefixes(table)) {
+    const segments: string[] = [];
+    let at = table.root;
+    for (const [index, segment] of prefix.entries()) {
+      segments.push(segment);
+      if (index === 0 && segment === PUBLIC_SEGMENT) {
+        at = table.public;
+        continue;
+      }
+      const hop = table.nodes[at].commands[segment];
+      segments.push(...positionalArgs(hop).map((arg) => `<${arg.name}>`));
+      at = (hop.returns as { node: string }).node;
+    }
+    const around = new Set(searchTerms(`${prefix.join(" ")} ${node} ${summary(table.nodes[node].doc)}`));
+    for (const [name, command] of Object.entries(table.nodes[node].commands)) {
+      const own = new Set(searchTerms(`${name} ${command.method}`));
+      const said = new Set(searchTerms(summary(command.doc)));
+      const score = terms.reduce((total, term) =>
+        total + (own.has(term) ? 3 : said.has(term) ? 2 : around.has(term) ? 1 : 0), 0);
+      if (score === 0) continue;
+      const line = ["cf-os", "api", ...segments, name, ...positionalArgs(command).map((arg) => `<${arg.name}>`)].join(" ");
+      matches.push({ command: line, summary: summary(command.doc), score });
+    }
+  }
+  return matches.toSorted((a, b) => b.score - a.score || a.command.length - b.command.length)
+    .slice(0, limit).map(({ command, summary: said }) => ({ command, summary: said }));
+}
+
+/** Help for `cf-os api search`. */
+export function searchHelp(): string {
+  return [
+    'Usage: cf-os api search "<describe the task>"',
+    "",
+    'The five commands that best match the task, as JSON on stdout: [{"command", "summary"}], each',
+    "command a whole line from `cf-os api`, with a placeholder for every argument it needs. Run",
+    "`<command> --help` for its arguments. It reads the command table only: it connects to nothing.",
+  ].join("\n");
+}
+
+/**
+ * The query when `tokens` -- everything after `cf-os api` but the global options -- are a search
+ * (`search` is the first word that is not an option), else undefined. Runtime options are accepted
+ * and ignored, as a search connects to nothing; `help` is true for `--help`.
+ */
+export function parseSearch(tokens: string[]): { query: string; help: boolean } | undefined {
+  const loose = parseArgs({ args: tokens, options: RUNTIME_OPTIONS, strict: false, allowPositionals: true });
+  if (loose.positionals[0] !== "search") return undefined;
+  try {
+    const { values, positionals } = parseArgs({ args: tokens, options: RUNTIME_OPTIONS, strict: true, allowPositionals: true });
+    return { query: positionals.slice(1).join(" "), help: values.help === true };
+  } catch (error) {
+    throw new UsageError(`${(error as Error).message} Run \`cf-os api search --help\`.`);
+  }
 }
 
 /** A `callback` or `function` argument, minted when the call is made. */
@@ -583,7 +704,7 @@ export async function execute(
     if (arg instanceof StreamArg) return io.openStream(arg.path);
     if (!(arg instanceof CallbackArg)) return arg;
     const stub = arg.arg.encoding === "function"
-      ? functionStub(arg.arg.name, emit)
+      ? functionStub(arg.arg.name, arg.arg.params ?? [], emit)
       : callbackStub(arg.arg.callback!, table.callbacks[arg.arg.callback!], emit);
     disposables.push(stub);
     return stub;

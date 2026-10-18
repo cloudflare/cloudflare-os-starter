@@ -10,6 +10,7 @@
 import type {
   ApiArg, ApiCallback, ApiCommand, ApiEncoding, ApiNode, ApiReturn, ApiShape, ApiTable,
 } from "../src/api/table.ts";
+import { nodePrefixes, PUBLIC_SEGMENT } from "../src/api/paths.ts";
 
 /** What `extract.ts` produces: the capability graph reachable from the entry interface. */
 export interface Schema {
@@ -76,8 +77,11 @@ export const ROOT_CREDENTIAL_METHODS = ["changePassword"];
 /** The credential method whose result is the table's root. */
 const AUTHENTICATE = "authenticate";
 
-/** The segment selecting the public node. */
-const PUBLIC = "public";
+/**
+ * Words the CLI takes in a command's place on the root: `public` selects the public node, `search`
+ * finds commands. The root may have no command named either.
+ */
+const RESERVED_COMMANDS = [PUBLIC_SEGMENT, "search"];
 
 /**
  * Flags the runtime itself takes. An optional parameter whose flag would be one of these is
@@ -124,9 +128,13 @@ export function buildTable(schema: Schema): ApiTable {
       if (command.returns.kind === "stub") queue.push(command.returns.node);
     }
   }
-  if (nodes[root.service]!.commands[PUBLIC]) {
-    throw new Error(`${root.service} has a method named "${PUBLIC}", which the CLI reserves for ${schema.entry}`);
+  for (const reserved of RESERVED_COMMANDS) {
+    if (nodes[root.service]!.commands[reserved]) {
+      throw new Error(`${root.service} has a method named "${reserved}", a word the CLI reserves`);
+    }
   }
+
+  inCliWords(nodes, callbacks);
 
   const shapes: Record<string, ApiShape> = {};
   const pending = [...refs(Object.values(nodes).flatMap((node) =>
@@ -148,6 +156,41 @@ export function buildTable(schema: Schema): ApiTable {
     callbacks: sortRecord(callbacks),
     shapes: sortRecord(shapes),
   };
+}
+
+/** Rewrites every doc in `nodes` and `callbacks` with {@link cliDoc}, against `nodes`' commands. */
+function inCliWords(nodes: Record<string, ApiNode>, callbacks: Record<string, ApiCallback>): void {
+  const commandOf = new Map<string, string>();
+  for (const [name, node] of Object.entries(nodes)) {
+    for (const [command, { method }] of Object.entries(node.commands)) {
+      commandOf.set(method, command);
+      commandOf.set(`${name}.${method}`, command);
+    }
+  }
+  for (const node of Object.values(nodes)) {
+    node.doc = cliDoc(node.doc, commandOf);
+    for (const command of Object.values(node.commands)) {
+      command.doc = cliDoc(command.doc, commandOf);
+      for (const arg of command.args) arg.doc = cliDoc(arg.doc, commandOf);
+    }
+  }
+  for (const callback of Object.values(callbacks)) {
+    callback.doc = cliDoc(callback.doc, commandOf);
+    for (const method of callback.methods) method.doc = cliDoc(method.doc, commandOf);
+  }
+}
+
+/**
+ * `doc` in the CLI's words: a method named as `method()` or `Interface.method()` becomes the command
+ * that calls it, `` `kebab-name` ``, when `commandOf` has it (by method, or by `Interface.method`),
+ * and paragraphs that start with `TODO`, notes for upstream's maintainers, are left out.
+ */
+export function cliDoc(doc: string, commandOf: Map<string, string>): string {
+  return doc.split(/\n[ \t]*\n/).filter((paragraph) => !/^\s*TODO\b/.test(paragraph)).join("\n\n")
+    .replace(/(`?)(?<![\w.])(?:([A-Z]\w*)\.)?([a-z]\w*)\(\)\1/g, (match, _quote, owner?: string, method?: string) => {
+      const command = commandOf.get(owner ? `${owner}.${method}` : method!);
+      return command ? `\`${command}\`` : match;
+    });
 }
 
 function service(schema: Schema, name: string, what: string) {
@@ -465,20 +508,7 @@ export interface CommandEntry {
  */
 export function commandEntries(schema: Schema): Map<string, CommandEntry> {
   const table = buildTable(schema);
-  const prefixes = new Map<string, string[]>([[table.root, []]]);
-  const queue = [table.root, table.public];
-  prefixes.set(table.public, [PUBLIC]);
-  for (let i = 0; i < queue.length; i++) {
-    const node = queue[i]!;
-    const prefix = prefixes.get(node)!;
-    const hops = Object.entries(table.nodes[node]!.commands)
-      .toSorted(([a], [b]) => hopRank(a) - hopRank(b) || compare(a, b));
-    for (const [name, command] of hops) {
-      if (command.returns.kind !== "stub" || prefixes.has(command.returns.node)) continue;
-      prefixes.set(command.returns.node, [...prefix, name]);
-      queue.push(command.returns.node);
-    }
-  }
+  const prefixes = nodePrefixes(table);
 
   const routes = new Map<string, string[][]>();
   const walk = (node: string, prefix: string[], visited: Set<string>) => {
@@ -489,10 +519,10 @@ export function commandEntries(schema: Schema): Map<string, CommandEntry> {
     }
   };
   walk(table.root, [], new Set([table.root]));
-  walk(table.public, [PUBLIC], new Set([table.public]));
+  walk(table.public, [PUBLIC_SEGMENT], new Set([table.public]));
 
   const entries = new Map<string, CommandEntry>();
-  for (const node of queue) {
+  for (const node of prefixes.keys()) {
     const methods = new Map(schema.services[node]!.methods.map((method) => [method.name, method]));
     for (const [name, command] of Object.entries(table.nodes[node]!.commands)) {
       const method = methods.get(command.method)!;
@@ -531,11 +561,6 @@ function withoutInterfaceNames(key: string, value: unknown): unknown {
 
 /** The keys of table and schema entries whose value names an interface. */
 const INTERFACE_NAME_KEYS = new Set(["node", "service", "callback"]);
-
-/** Hops that get or open an existing capability first. */
-function hopRank(command: string): number {
-  return /^(get|open)-/.test(command) ? 0 : 1;
-}
 
 /** The named shapes `names` reach, themselves included. */
 function reachable(schema: Schema, names: Set<string>): Set<string> {

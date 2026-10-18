@@ -2,7 +2,7 @@ This repository deploys a self-hosted [Cloudflare OS](https://github.com/cloudfl
 
 * `cloudflare-os/`: upstream, pinned by the gitlink. Never edit it here; it changes only by moving the pin.
 * `packages/cf-os`: the `cf-os` CLI (`pnpm cf-os <command>`), which configures, checks, deploys and updates the project. `src/core` is pure logic; Cloudflare API calls go through `src/cf-client.ts`.
-* `pnpm cf-os api ...` drives a running instance through its API (`pnpm cf-os api --help`; `--dry-run` connects to nothing). A command that returns a capability is chained with the next on one line (`open-gadget <id> list-chats`); exit 2 means nothing was sent. Its commands are generated from the pin into `packages/cf-os/src/api/generated`: never edit them; `cf-os update` regenerates them, and after moving the pin any other way run `pnpm api:generate`.
+* `pnpm exec cf-os api ...` drives a running instance through its API; start with `pnpm exec cf-os api search "<task>"`, which prints the matching commands as whole command lines (`--dry-run` connects to nothing). A command that returns a capability is chained with the next on one line (`open-gadget <id> list-chats`); exit 2 means nothing was sent. Its commands are generated from the pin into `packages/cf-os/src/api/generated`: never edit them; `cf-os update` regenerates them, and after moving the pin any other way run `pnpm api:generate`.
 * `packages/custom-gatekeeper`, `packages/error-reporter`: this repository's own Workers.
 * `.agents/skills/cloudflare-os-operator`: load it for anything touching a deployment: Access, `deployment.jsonc`, deploys, migrations, rollback.
 

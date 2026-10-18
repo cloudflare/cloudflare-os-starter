@@ -151,8 +151,8 @@ export function fixtureRoot(log: ServerLog, options: FixtureOptions = {}): RpcTa
       for await (const chunk of archive) chunks.push(chunk);
       return Buffer.concat(chunks).toString("utf8");
     }
-    search(...args: unknown[]): unknown[] {
-      record("search", args);
+    findNotes(...args: unknown[]): unknown[] {
+      record("findNotes", args);
       return [{ id: 1, title: String(args[0]) }];
     }
     setMood(mood: string): Promise<void> | void {

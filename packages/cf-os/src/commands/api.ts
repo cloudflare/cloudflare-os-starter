@@ -1,10 +1,11 @@
 // `cf-os api [public] <command> [arguments] [<command> [arguments]]... [options]`
+// `cf-os api search "<task>"`
 //
 // Drives a running Cloudflare OS instance through its Cap'n Web API, the one the browser uses. The
 // commands are not written here: they are the generated table (src/api/generated/commands.ts),
 // from the pinned upstream's workshop-shared/src/api.ts, which `pnpm api:generate` rewrites when the
 // pin moves. This module reads the instance's address and the sign-in to use, then hands the walk
-// to src/api/run.ts.
+// to src/api/run.ts, or, for `search`, ranks the table's commands against the task.
 //
 // main.ts passes every token after `api` through untouched except the global `--config`,
 // `--account` and `--profile`, so the flags of each segment are parsed here, against that segment's
@@ -25,6 +26,9 @@ import {
   incompleteChain,
   nodeHelp,
   parseInvocation,
+  parseSearch,
+  searchCommands,
+  searchHelp,
   untypedHelp,
   type RunIo,
 } from "../api/run.ts";
@@ -73,6 +77,19 @@ function webBytes(stream: NodeJS.ReadableStream): ReadableStream<Uint8Array> {
 /** `cf-os api`. */
 export async function run(args: CommandArgs, ctx: Context, deps: ApiDeps = defaultDeps()): Promise<number> {
   const { table } = deps;
+  // `search` finds commands in the table, before any walk: it connects to nothing.
+  const search = parseSearch(args.positionals);
+  if (search?.help) {
+    deps.stdout.write(`${searchHelp()}\n`);
+    return 0;
+  }
+  if (search) {
+    if (!search.query.trim()) throw new UsageError('search needs a task: `cf-os api search "<describe the task>"`.');
+    const matches = searchCommands(table, search.query);
+    if (matches.length === 0) ctx.out.log("No command matches. `cf-os api --help` lists the first ones.");
+    ctx.out.json(matches);
+    return 0;
+  }
   const invocation = parseInvocation(table, args.positionals);
   if (invocation.help) {
     const target = invocation.help;

@@ -337,10 +337,13 @@ export async function cli(argv: string[], deps: CliDeps): Promise<number> {
     return 1;
   }
 
-  /** What follows a usage error: the command's usage, or for one parsing its own, where its help is. */
-  const usageHint = spec.rawArgs
-    ? `Usage: cf-os ${name} ${spec.synopsis}\n\nRun \`cf-os ${name} --help\` for its commands and options.`
-    : commandUsage(name);
+  /**
+   * A usage error as printed: with the command's usage after it, or, for one parsing its own, alone,
+   * since its messages say what to run. Only the global options' parse errors, which are not its
+   * own, get a pointer at its help.
+   */
+  const usageError = (message: string, own: boolean) => !spec.rawArgs ? `${message}\n\n${commandUsage(name)}`
+    : own ? message : `${message.replace(/[^.!?]$/, "$&.")} Run \`cf-os ${name} --help\` for its commands and options.`;
   let parsed: { values: CommandArgs["values"]; positionals: string[] };
   try {
     if (spec.rawArgs) {
@@ -358,7 +361,7 @@ export async function cli(argv: string[], deps: CliDeps): Promise<number> {
       }
     }
   } catch (error) {
-    deps.out.log(`${(error as Error).message}\n\n${usageHint}`);
+    deps.out.log(usageError((error as Error).message, false));
     return spec.rawArgs ? USAGE_EXIT : 1;
   }
   const { values } = parsed;
@@ -396,7 +399,7 @@ export async function cli(argv: string[], deps: CliDeps): Promise<number> {
   } catch (error) {
     if (error instanceof Cancelled) return 130;
     if (error instanceof UsageError) {
-      deps.out.log(`${error.message}\n\n${usageHint}`);
+      deps.out.log(usageError(error.message, true));
       return spec.rawArgs ? USAGE_EXIT : 1;
     }
     // One line, no stack: every failure here is a config, account or subprocess problem.

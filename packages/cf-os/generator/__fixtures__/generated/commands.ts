@@ -22,6 +22,16 @@ export const table: ApiTable = {
     FixtureAuthedApi: {
       doc: "The authenticated API, as upstream's AuthenticatedApi.",
       commands: {
+        "find-notes": {
+          method: "findNotes",
+          doc: "An optional middle parameter, and one whose flag collides with the runtime's `--url`.",
+          args: [
+            { name: "query", index: 0, encoding: "string", type: "string", doc: "" },
+            { name: "limit", index: 1, flag: "limit", encoding: "number", type: "number", doc: "" },
+            { name: "url", index: 2, flag: "arg-url", encoding: "string", type: "string", doc: "" },
+          ],
+          returns: { kind: "value", type: "Note[]" },
+        },
         "get-admin": {
           method: "getAdmin",
           doc: "A nullable capability over a method-only interface.",
@@ -41,16 +51,6 @@ export const table: ApiTable = {
             "@param id The notebook's ID.",
           args: [{ name: "id", index: 0, encoding: "string", type: "string", doc: "The notebook's ID." }],
           returns: { kind: "stub", node: "Notebook", nullable: false },
-        },
-        search: {
-          method: "search",
-          doc: "An optional middle parameter, and one whose flag collides with the runtime's `--url`.",
-          args: [
-            { name: "query", index: 0, encoding: "string", type: "string", doc: "" },
-            { name: "limit", index: 1, flag: "limit", encoding: "number", type: "number", doc: "" },
-            { name: "url", index: 2, flag: "arg-url", encoding: "string", type: "string", doc: "" },
-          ],
-          returns: { kind: "value", type: "Note[]" },
         },
         "set-mood": {
           method: "setMood",

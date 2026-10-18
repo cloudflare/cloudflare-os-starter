@@ -35,6 +35,43 @@
       "doc": "The authenticated API, as upstream's AuthenticatedApi.",
       "methods": [
         {
+          "name": "findNotes",
+          "doc": "An optional middle parameter, and one whose flag collides with the runtime's `--url`.",
+          "params": [
+            {
+              "name": "query",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "limit",
+              "type": {
+                "kind": "number"
+              },
+              "optional": true,
+              "doc": ""
+            },
+            {
+              "name": "url",
+              "type": {
+                "kind": "string"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "array",
+            "element": {
+              "kind": "ref",
+              "name": "Note"
+            }
+          }
+        },
+        {
           "name": "getAdmin",
           "doc": "A nullable capability over a method-only interface.",
           "params": [],
@@ -93,43 +130,6 @@
           "returns": {
             "kind": "stub",
             "service": "Notebook"
-          }
-        },
-        {
-          "name": "search",
-          "doc": "An optional middle parameter, and one whose flag collides with the runtime's `--url`.",
-          "params": [
-            {
-              "name": "query",
-              "type": {
-                "kind": "string"
-              },
-              "optional": false,
-              "doc": ""
-            },
-            {
-              "name": "limit",
-              "type": {
-                "kind": "number"
-              },
-              "optional": true,
-              "doc": ""
-            },
-            {
-              "name": "url",
-              "type": {
-                "kind": "string"
-              },
-              "optional": true,
-              "doc": ""
-            }
-          ],
-          "returns": {
-            "kind": "array",
-            "element": {
-              "kind": "ref",
-              "name": "Note"
-            }
           }
         },
         {

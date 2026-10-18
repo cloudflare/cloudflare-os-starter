@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  buildTable, COMMANDS_PATH, commandEntries, CREDENTIAL_METHODS, diffCommands, generate, kebab, ROOT_CREDENTIAL_METHODS,
+  buildTable, cliDoc, COMMANDS_PATH, commandEntries, CREDENTIAL_METHODS, diffCommands, generate, kebab, ROOT_CREDENTIAL_METHODS,
   type Schema, SCHEMA_PATH, typeText,
 } from "./emit.ts";
 
@@ -52,7 +52,7 @@ test("roots the table at authenticate()'s result, with the entry as public, less
 });
 
 test("makes required parameters positional and optional ones flags, clear of the runtime's", () => {
-  const { args } = buildTable(fixture()).nodes.FixtureAuthedApi!.commands.search!;
+  const { args } = buildTable(fixture()).nodes.FixtureAuthedApi!.commands["find-notes"]!;
   assert.deepEqual(args.map(({ name, index, flag, encoding }) => ({ name, index, flag, encoding })), [
     { name: "query", index: 0, flag: undefined, encoding: "string" },
     { name: "limit", index: 1, flag: "limit", encoding: "number" },
@@ -94,7 +94,7 @@ test("classifies each result", () => {
   const returns = (node: string, command: string) => nodes[node]!.commands[command]!.returns;
   assert.deepEqual(returns("FixtureAuthedApi", "open-notebook"), { kind: "stub", node: "Notebook", nullable: false });
   assert.deepEqual(returns("FixtureAuthedApi", "get-admin"), { kind: "stub", node: "FixtureAdmin", nullable: true });
-  assert.deepEqual(returns("FixtureAuthedApi", "search"), { kind: "value", type: "Note[]" });
+  assert.deepEqual(returns("FixtureAuthedApi", "find-notes"), { kind: "value", type: "Note[]" });
   assert.deepEqual(returns("FixturePublicApi", "download"), { kind: "stream" });
   assert.deepEqual(returns("Notebook", "lock"), { kind: "handle" });
   assert.deepEqual(returns("Notebook", "connect"), { kind: "untyped" });
@@ -142,15 +142,35 @@ test("fails on names that collide after kebab-casing, naming both", () => {
   assert.throws(() => buildTable(twin), /Notebook\.watchTitle and Notebook\.watch_title are both the command "watch-title"/);
 
   const flags = edited((schema) => {
-    const search = schema.services.FixtureAuthedApi!.methods.find((m) => m.name === "search")!;
-    search.params.push({ name: "arg_url", type: { kind: "string" }, optional: true, doc: "" });
+    const findNotes = schema.services.FixtureAuthedApi!.methods.find((m) => m.name === "findNotes")!;
+    findNotes.params.push({ name: "arg_url", type: { kind: "string" }, optional: true, doc: "" });
   });
-  assert.throws(() => buildTable(flags), /FixtureAuthedApi\.search: parameters url and arg_url are both --arg-url/);
+  assert.throws(() => buildTable(flags), /FixtureAuthedApi\.findNotes: parameters url and arg_url are both --arg-url/);
 
-  const reserved = edited((schema) => {
-    schema.services.FixtureAuthedApi!.methods.push({ name: "public", doc: "", params: [], returns: { kind: "void" } });
-  });
-  assert.throws(() => buildTable(reserved), /FixtureAuthedApi has a method named "public"/);
+  for (const word of ["public", "search"]) {
+    const reserved = edited((schema) => {
+      schema.services.FixtureAuthedApi!.methods.push({ name: word, doc: "", params: [], returns: { kind: "void" } });
+    });
+    assert.throws(() => buildTable(reserved), new RegExp(`FixtureAuthedApi has a method named "${word}", a word the CLI reserves`));
+  }
+  // Below the root they are names like any other.
+  buildTable(edited((schema) => {
+    schema.services.Notebook!.methods.push({ name: "search", doc: "", params: [], returns: { kind: "void" } });
+  }));
+});
+
+test("docs are in the CLI's words: methods named as their commands, TODO paragraphs left out", () => {
+  const commandOf = new Map([["getAdmin", "get-admin"], ["FixtureAuthedApi.getAdmin", "get-admin"], ["lock", "lock"]]);
+  assert.equal(cliDoc("Via FixtureAuthedApi.getAdmin(), or `getAdmin()`; then lock().", commandOf),
+    "Via `get-admin`, or `get-admin`; then `lock`.");
+  // Only what names a command: not a method on something else, a callback's, or one with arguments.
+  assert.equal(cliDoc("Not this.lock(), Other.lock(), added() or lock(x).", commandOf), "Not this.lock(), Other.lock(), added() or lock(x).");
+  assert.equal(cliDoc("Kept.\n\nTODO: pagination.\nMore of it.\n\nTODO(x): later.\n\nAlso kept.", commandOf), "Kept.\n\nAlso kept.");
+
+  const table = buildTable(edited((schema) => {
+    schema.services.Notebook!.methods.find((m) => m.name === "lock")!.doc = "See outline().\n\nTODO: unlock.";
+  }));
+  assert.equal(table.nodes.Notebook!.commands.lock!.doc, "See `outline`.");
 });
 
 test("renders types for help", () => {
@@ -196,13 +216,13 @@ test("diffs commands: added, removed, and changed in arguments, result or a shap
     notebook.methods.find((m) => m.name === "upload")!.params[1]!.optional = false;
     notebook.methods.find((m) => m.name === "connect")!.doc = "Docs alone are no change.";
     schema.services.FixtureAuthedApi!.methods.find((m) => m.name === "setMood")!.returns = { kind: "string" };
-    // Note is reached by `file`'s argument and `search`'s result.
+    // Note is reached by `file`'s argument and `find-notes`'s result.
     (schema.shapes.Note as { properties: Record<string, unknown> }).properties.extra = { kind: "string" };
   });
   assert.deepEqual(diffCommands(fixture(), after), {
     added: ["open-notebook unlock"],
     removed: ["open-notebook lock"],
-    changed: ["open-notebook file", "open-notebook subscribe", "open-notebook upload", "search", "set-mood"],
+    changed: ["find-notes", "open-notebook file", "open-notebook subscribe", "open-notebook upload", "set-mood"],
   });
 
   const callback = edited((schema) => {
@@ -231,10 +251,17 @@ test("diffs commands: added, removed, and changed in arguments, result or a shap
   assert.deepEqual(diffCommands(fixture(), hop), { added: ["get-notebook-by-slug"], removed: [], changed: [] });
 });
 
-test("emit.ts is pure: it imports table types only, and reads no clock, environment or disk", () => {
-  const source = readFileSync(join(import.meta.dirname, "emit.ts"), "utf8");
-  const imports = [...source.matchAll(/^import\b[^;]*?from\s+"([^"]+)";/gms)];
-  assert.deepEqual(imports.map((match) => match[1]), ["../src/api/table.ts"]);
-  assert.ok(imports.every((match) => /^import type\b/.test(match[0])), "type-only");
-  assert.doesNotMatch(source, /\bimport\s*\(|\brequire\s*\(|\bprocess\.|\bDate\.now\b|\bnew Date\b|\bMath\.random\b/);
+const readSource = (path: string) => readFileSync(join(import.meta.dirname, path), "utf8");
+const importsOf = (source: string) => [...source.matchAll(/^import\b[^;]*?from\s+"([^"]+)";/gms)];
+
+test("emit.ts is pure: it imports table types and paths.ts only, and reads no clock, environment or disk", () => {
+  const emit = readSource("emit.ts");
+  assert.deepEqual(importsOf(emit).map((match) => match[1]), ["../src/api/table.ts", "../src/api/paths.ts"]);
+  assert.match(importsOf(emit)[0]![0], /^import type\b/);
+  // paths.ts, shared with the runtime, holds to the same: table types only.
+  const paths = readSource("../src/api/paths.ts");
+  assert.deepEqual(importsOf(paths).map((match) => match[0]), ['import type { ApiTable } from "./table.ts";']);
+  for (const source of [emit, paths]) {
+    assert.doesNotMatch(source, /\bimport\s*\(|\brequire\s*\(|\bprocess\.|\bDate\.now\b|\bnew Date\b|\bMath\.random\b/);
+  }
 });

@@ -11,7 +11,7 @@ export const table: ApiTable = {
     AdminApi: {
       doc:
         "Capability for managing deployment-wide admin settings, obtained via\n" +
-        "AuthenticatedApi.getAdminApi() (which is null for non-admins). The access check happens when the\n" +
+        "`get-admin-api` (which is null for non-admins). The access check happens when the\n" +
         "capability is minted, so these methods don't re-check. Covers branding, agent instructions,\n" +
         "which gatekeeper connectors/resources are offered, and the models an AI Gateway deployment\n" +
         "provides — NOT authentication config (that's env-var driven). Each setter throws on invalid\n" +
@@ -77,7 +77,7 @@ export const table: ApiTable = {
         "remove-gateway-model": {
           method: "removeGatewayModel",
           doc:
-            "Remove a model added with addGatewayModel(), along with its mode and settings. Throws if no\n" +
+            "Remove a model added with `add-gateway-model`, along with its mode and settings. Throws if no\n" +
             "added model has this ID; a suggested model can't be removed, only disabled.\n" +
             "\n" +
             "Removing frees the ID rather than reserving it. The chats, spawners and preferences that name\n" +
@@ -271,7 +271,7 @@ export const table: ApiTable = {
             "\n" +
             "The admin's browser reads the setting and, with it on, downloads models.dev's public model\n" +
             "list while an admin adds a model, to fill in the add-model form. It changes nothing the server\n" +
-            "does: the server never contacts models.dev, and addGatewayModel() validates a suggested model\n" +
+            "does: the server never contacts models.dev, and `add-gateway-model` validates a suggested model\n" +
             "like any other.",
           args: [{ name: "enabled", index: 0, encoding: "boolean", type: "boolean", doc: "" }],
           returns: { kind: "value", type: "void" },
@@ -349,7 +349,7 @@ export const table: ApiTable = {
             "result (see GatewayModelTest).\n" +
             "\n" +
             "A pass says that the model answered that one request. It costs more than\n" +
-            "testGatewayProvider(), whose quick request is capped at a few tokens.",
+            "`test-gateway-provider`, whose quick request is capped at a few tokens.",
           args: [{ name: "modelId", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "value", type: "GatewayModelTest" },
         },
@@ -364,7 +364,7 @@ export const table: ApiTable = {
             "\n" +
             "A pass says that one model answered once. A 401 or 403 does not tell a provider key the\n" +
             "gateway lacks from a CF_AI_GATEWAY_API_TOKEN that may not run models. The request is a\n" +
-            "quick one that takes none of a model's settings: testGatewayModel() sends a model the\n" +
+            "quick one that takes none of a model's settings: `test-gateway-model` sends a model the\n" +
             "request its chats would.",
           args: [
             {
@@ -385,9 +385,9 @@ export const table: ApiTable = {
             "with no reasoning level set (so asking for what BuiltInReasoning describes, whatever the\n" +
             "deployment's default level is), and one at each reasoning level the model would list once\n" +
             "added (see AdminModelView.reasoningLevels). The requests are sent together, through the\n" +
-            "gateway, as the admin, each under testGatewayModel()'s response cap and time limit. The\n" +
+            "gateway, as the admin, each under `test-gateway-model`'s response cap and time limit. The\n" +
             "results come with the request that set no level first, then the levels from least to most.\n" +
-            "It stores nothing. Throws outside AI Gateway mode and for a model addGatewayModel() would\n" +
+            "It stores nothing. Throws outside AI Gateway mode and for a model `add-gateway-model` would\n" +
             "refuse, for the same reason; a request that fails is a result (see GatewayModelLevelTest).\n" +
             "\n" +
             "A pass says that the model answered that one request. A model that lists every level is sent\n" +
@@ -439,16 +439,16 @@ export const table: ApiTable = {
           method: "addModel",
           doc:
             "Adds a new model to the user's configured set. The ID must not name a model the user already\n" +
-            "added; use `updateModel()` to replace one.\n" +
+            "added; use `update-model` to replace one.\n" +
             "\n" +
-            "`copySecretsFrom` names a hand-added model (see `getModelConfig()`) whose stored secrets fill\n" +
+            "`copySecretsFrom` names a hand-added model (see `get-model-config`) whose stored secrets fill\n" +
             "in the `null` secrets of `config`, which is how a model is cloned without the client ever\n" +
-            "holding the secrets. The rules of `updateModel()` for keeping a secret apply to copying one.\n" +
+            "holding the secrets. The rules of `update-model` for keeping a secret apply to copying one.\n" +
             "Without it, `config` must contain no `null` secrets. With it, `profile.id` must also not name\n" +
             "a model provided by the deployment's AI Gateway configuration.\n" +
             "\n" +
             "Throws on a deployment whose users may not add their own models (see\n" +
-            "`AiGatewayInfo.userModelsEnabled`), as `updateModel()` does.",
+            "`AiGatewayInfo.userModelsEnabled`), as `update-model` does.",
           args: [
             {
               name: "profile",
@@ -506,11 +506,11 @@ export const table: ApiTable = {
             "running in the popup, over the popup's session, which is the initiating user's (the SPA\n" +
             "authenticates as any Workshop tab does: from the shared localStorage token, or from the\n" +
             "Cloudflare Access identity in an Access deployment). `ticket` is the handoff ticket from the\n" +
-            "page's URL fragment; `nonce` must be the one connectAccount() / reconnectAccount() /\n" +
-            "ensureAccountResources() returned for the flow that produced the ticket, read from the popup's\n" +
+            "page's URL fragment; `nonce` must be the one `connect-account` / `reconnect-account` /\n" +
+            "`ensure-account-resources` returned for the flow that produced the ticket, read from the popup's\n" +
             "own sessionStorage. Both are single-use. Activates the pending connect / reconnect /\n" +
             "ensure-resources grant, after which the account (or its restored credentials) appears via\n" +
-            "subscribeConnectedAccounts(). Throws with a user-facing message if the ticket or nonce is\n" +
+            "`subscribe-connected-accounts`. Throws with a user-facing message if the ticket or nonce is\n" +
             "unknown to this user, already used, or expired, or they belong to different flows.",
           args: [
             { name: "ticket", index: 0, encoding: "string", type: "string", doc: "" },
@@ -530,9 +530,9 @@ export const table: ApiTable = {
             "Connect this account to a specific account on a third-party service. Returns the URL which the\n" +
             "Workshop opens as a disowned popup to complete the authorization, plus the flow's nonce (see\n" +
             "`ConnectFlowStart`). When the flow finishes, the popup lands on the Workshop's own\n" +
-            "/connect/handoff page, which redeems the handoff with completeConnectHandoff() over its own\n" +
+            "/connect/handoff page, which redeems the handoff with `complete-connect-handoff` over its own\n" +
             "session; only then is the account added to the list, which can be observed through\n" +
-            "subscribeConnectedAccounts().\n" +
+            "`subscribe-connected-accounts`.\n" +
             "\n" +
             "`resourceUrlPatterns`, if given, limits the connection to the authorization needed for those\n" +
             "grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,\n" +
@@ -600,8 +600,8 @@ export const table: ApiTable = {
           doc:
             "Ensure the authorization for the listed grantable resource types (by `urlPattern`) is granted\n" +
             "on a connected account, expanding if needed. Returns a flow to open as a disowned popup (as for\n" +
-            "connectAccount()) to authorize them, or null if nothing was needed. Completion is redeemed via\n" +
-            "completeConnectHandoff(); the updated grant is then observable via subscribeConnectedAccounts().\n" +
+            "`connect-account`) to authorize them, or null if nothing was needed. Completion is redeemed via\n" +
+            "`complete-connect-handoff`; the updated grant is then observable via `subscribe-connected-accounts`.\n" +
             "Returning null also re-reads the account's description, so a list of granted resource types\n" +
             "that was out of date is corrected and observable the same way.",
           args: [
@@ -762,9 +762,7 @@ export const table: ApiTable = {
           doc:
             "List metadata about all the user's Gadgets. Used to display the front-page listing.\n" +
             "\n" +
-            "Provisional gadgets are hidden.\n" +
-            "\n" +
-            "TODO: Pagination, sort options.",
+            "Provisional gadgets are hidden.",
           args: [],
           returns: { kind: "value", type: "GadgetMetadataWithTimestamps[]" },
         },
@@ -840,10 +838,8 @@ export const table: ApiTable = {
             "\n" +
             "Served from an index in the user's own account which each workspace pushes to; a workspace\n" +
             "shared with the user contributes its outputs from the first time the user opens it (matching\n" +
-            "when it appears in listGadgets()), and stops updating them if their access is revoked.\n" +
-            "Provisional gadgets (still awaiting acceptance of a chat's changes) are never included.\n" +
-            "\n" +
-            "TODO: Pagination, sort options.",
+            "when it appears in `list-gadgets`), and stops updating them if their access is revoked.\n" +
+            "Provisional gadgets (still awaiting acceptance of a chat's changes) are never included.",
           args: [],
           returns: { kind: "value", type: "ListOutputsResult" },
         },
@@ -865,9 +861,7 @@ export const table: ApiTable = {
             "  automatically deleted after some time. Note in particular that calling\n" +
             "  new*Gatekeeper() will not clear the provisional bit (as long as the gatekeeper isn't bound\n" +
             "  into a gadget), so provisional gadgets are useful to allow the user to write an initial\n" +
-            "  chat message without explicitly creating a new gadget.\n" +
-            "\n" +
-            "TODO(multi-gadget): This should be renamed to newWorkspace().",
+            "  chat message without explicitly creating a new gadget.",
           args: [],
           returns: { kind: "stub", node: "Overseer", nullable: false },
         },
@@ -917,9 +911,7 @@ export const table: ApiTable = {
             "`configureObservers` is invoked only when the opening user is a non-owner who must choose\n" +
             "connected accounts for one or more gatekeeper bindings before they can observe the gadget (see\n" +
             "ObserverConfigCallback). It is never called for the owner or an already-configured observer,\n" +
-            "so the common-case open is still a single pipelined round trip.\n" +
-            "\n" +
-            "TODO(multi-gadget): This should be renamed to openWorkspace().",
+            "so the common-case open is still a single pipelined round trip.",
           args: [
             { name: "id", index: 0, encoding: "string", type: "string", doc: "" },
             { name: "shareKey", index: 1, flag: "share-key", encoding: "string", type: "string", doc: "" },
@@ -931,7 +923,7 @@ export const table: ApiTable = {
           doc:
             "Opt into an ambient gatekeeper: mint its connected account for this user (no OAuth flow). Only\n" +
             "works while the vendor's mode is 'optional' (or 'enabled') and the user has no account yet; the\n" +
-            "new account then appears via subscribeConnectedAccounts(). Throws otherwise.",
+            "new account then appears via `subscribe-connected-accounts`. Throws otherwise.",
           args: [{ name: "vendorId", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -939,9 +931,9 @@ export const table: ApiTable = {
           method: "reconnectAccount",
           doc:
             "Re-authenticate a connected account whose credentials have expired (or may be about to\n" +
-            "expire). Returns a flow to open as a disowned popup (as for connectAccount()). Once the OAuth\n" +
+            "expire). Returns a flow to open as a disowned popup (as for `connect-account`). Once the OAuth\n" +
             "flow completes and the popup's /connect/handoff page redeems the handoff via\n" +
-            "completeConnectHandoff(), the account is updated and subscribers are notified with\n" +
+            "`complete-connect-handoff`, the account is updated and subscribers are notified with\n" +
             "credentialsValid: true.",
           args: [{ name: "accountId", index: 0, encoding: "number", type: "number", doc: "" }],
           returns: { kind: "value", type: "ConnectFlowStart" },
@@ -976,7 +968,7 @@ export const table: ApiTable = {
             "\n" +
             "Returns no records while the admin has user search turned off\n" +
             "(`ServerConfig.userSearchEnabled`); inviting by exact username/email via\n" +
-            "`Overseer.addCollaborator()` still works then.",
+            "`add-collaborator` still works then.",
           args: [
             { name: "query", index: 0, encoding: "string", type: "string", doc: "" },
             {
@@ -1164,7 +1156,7 @@ export const table: ApiTable = {
             "A `null` secret keeps the stored value; for a header, that of the stored header with exactly\n" +
             "the same name. Secrets may be kept only while `config.provider` and `config.apiUrl` are\n" +
             "unchanged, since otherwise the client could direct the stored secrets to a server it controls.\n" +
-            "Passing back what `getModelConfig()` returned therefore changes nothing.",
+            "Passing back what `get-model-config` returned therefore changes nothing.",
           args: [
             {
               name: "profile",
@@ -1196,7 +1188,7 @@ export const table: ApiTable = {
     GadgetClient: {
       doc:
         "Capability representing one gadget workpiece within a workspace. Obtained from\n" +
-        "Overseer.createGadget() or Overseer.getGadget(). Workspace-level concerns (code sync, chats,\n" +
+        "`create-gadget` or `get-gadget`. Workspace-level concerns (code sync, chats,\n" +
         "sharing, actions, blueprint listing) stay on Overseer; this covers the per-gadget surface.",
       commands: {
         "apply-blueprint": {
@@ -1215,7 +1207,7 @@ export const table: ApiTable = {
             "\n" +
             "A proposal of kind \"merge\" starts an agent turn in the new chat, to resolve what conflicted\n" +
             "and to check that the two sets of changes work together. `modelId` is the model that runs\n" +
-            "it: as for Overseer.newChat(), one of the IDs in the result of `listModels()`, or null for\n" +
+            "it: as for `new-chat`, one of the IDs in the result of `list-models`, or null for\n" +
             "no agent. No other proposal starts a turn.\n" +
             "\n" +
             "Throws if the blueprint does not exist, or if the gadget is still pending in a chat and so\n" +
@@ -1250,7 +1242,7 @@ export const table: ApiTable = {
             "(including bound provisionally by another chat).\n" +
             "\n" +
             "If `chatId` is provided, the binding is treated like an edit made in the given chat -- it is\n" +
-            "proposed, but someone needs to click \"accept changes\" (call `mergeChanges()`) to make it\n" +
+            "proposed, but someone needs to click \"accept changes\" (call `merge-changes`) to make it\n" +
             "final. Until then it exists only in the given chat.",
           args: [
             { name: "name", index: 0, encoding: "string", type: "string", doc: "" },
@@ -1262,7 +1254,7 @@ export const table: ApiTable = {
         "bind-with-suggested-name": {
           method: "bindWithSuggestedName",
           doc:
-            "Like bind(), but if the target isn't already bound in this gadget, choose a name based on the\n" +
+            "Like `bind`, but if the target isn't already bound in this gadget, choose a name based on the\n" +
             "resource's own suggestion (deduplicated against this gadget's existing binding names). If the\n" +
             "target is already bound, does nothing. Either way, returns the target's binding name.",
           args: [
@@ -1287,7 +1279,7 @@ export const table: ApiTable = {
             "\n" +
             "Steps: generate ID, snapshot code, collect binding metadata, store locally, propagate\n" +
             "to User DO + KV + R2. Maintenance of existing blueprints stays on Overseer (see\n" +
-            "Overseer.updateBlueprint() etc.).",
+            "`update-blueprint` etc.).",
           args: [
             { name: "title", index: 0, flag: "title", encoding: "string", type: "string", doc: "" },
             {
@@ -1385,7 +1377,7 @@ export const table: ApiTable = {
             "For a gadget, this deletes its registry entry (including its binding map) and hooks and\n" +
             "clears its files; gatekeepers it bound survive, possibly no longer bound by any gadget. For\n" +
             "a gatekeeper, this destroys the connection itself -- distinct from merely unbinding it from\n" +
-            "one gadget (GadgetClient.unbind()).",
+            "one gadget (`unbind`).",
           args: [],
           returns: { kind: "value", type: "void" },
         },
@@ -1432,7 +1424,7 @@ export const table: ApiTable = {
           doc:
             "Remove the binding with the given name. This only removes the edge from this gadget -- the\n" +
             "target gatekeeper itself survives (possibly no longer bound by any gadget); use\n" +
-            "GatekeeperClient.remove() to destroy the connection itself.",
+            "`remove` to destroy the connection itself.",
           args: [{ name: "name", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -1486,7 +1478,7 @@ export const table: ApiTable = {
             "For a gadget, this deletes its registry entry (including its binding map) and hooks and\n" +
             "clears its files; gatekeepers it bound survive, possibly no longer bound by any gadget. For\n" +
             "a gatekeeper, this destroys the connection itself -- distinct from merely unbinding it from\n" +
-            "one gadget (GadgetClient.unbind()).",
+            "one gadget (`unbind`).",
           args: [],
           returns: { kind: "value", type: "void" },
         },
@@ -1511,13 +1503,13 @@ export const table: ApiTable = {
         "WorkpieceSummary.commitId), per-chat uncommitted changes (a revisioned stream of code changes per\n" +
         "chat, applied on top of commits; see ChatCodeBase), chats, actions/hooks, sharing, and\n" +
         "blueprint listing. Per-gadget operations live on the GadgetClient sub-capability (see\n" +
-        "createGadget()/getGadget()).",
+        "`create-gadget`/`get-gadget`).",
       commands: {
         "accept-connection-request": {
           method: "acceptConnectionRequest",
           doc:
             "Accept an agent's pending connection request (a \"connectionRequest\" chat message). The caller\n" +
-            "is responsible for having actually created the gatekeeper (via newGatekeeper()) and passes the\n" +
+            "is responsible for having actually created the gatekeeper (via `new-gatekeeper`) and passes the\n" +
             "resulting gatekeeper id. The gatekeeper is surfaced to the agent as a named binding in the\n" +
             "chat's env, under the name the agent chose when it made the request (see\n" +
             "`connectionRequest.bindingName`). This marks the request accepted, updates the inline card,\n" +
@@ -1652,9 +1644,7 @@ export const table: ApiTable = {
           method: "deleteSelf",
           doc:
             "Instruct the workspace to delete itself, removing it from the User's workspace list and\n" +
-            "deleting all data. Further method calls will fail.\n" +
-            "\n" +
-            "TODO: Implement undelete, maybe using PITR...",
+            "deleting all data. Further method calls will fail.",
           args: [],
           returns: { kind: "value", type: "void" },
         },
@@ -1678,9 +1668,9 @@ export const table: ApiTable = {
             "Discard the chat's changes not yet materialized into a durable `changes` message, without\n" +
             "affecting any messages. Pins those changes established (and no materialized message declared)\n" +
             "are removed with them, and ChatCodeBase.generation is bumped destructively, exactly as with\n" +
-            "revertChanges(): clients' content contains the erased changes, so they must rebuild. A late\n" +
+            "`revert-changes`: clients' content contains the erased changes, so they must rebuild. A late\n" +
             "retry of an erased change is still recognized rather than applied as new (see\n" +
-            "submitCodeChange()).",
+            "`submit-code-change`).",
           args: [{ name: "chatId", index: 0, encoding: "number", type: "number", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -1752,7 +1742,7 @@ export const table: ApiTable = {
             "Walk the commit graph from `fromCommit` (that commit first, then its ancestry), returning up\n" +
             "to `depth` commits' metadata -- all reachable commits when `depth` is omitted. Traversal\n" +
             "order for merge commits follows git log's default (reverse chronological). Like\n" +
-            "listTree(), results are immutable and cacheable.",
+            "`list-tree`, results are immutable and cacheable.",
           args: [
             { name: "fromCommit", index: 0, encoding: "string", type: "string", doc: "" },
             { name: "depth", index: 1, flag: "depth", encoding: "number", type: "number", doc: "" },
@@ -1785,7 +1775,7 @@ export const table: ApiTable = {
             "Fetch one page of action history, newest first by id (creation order). \"all\" (the default)\n" +
             "pages every record and a record type pages that type — pending records included, each at its\n" +
             "creation position; `filter: \"pending\"` pages only the currently-pending records — the query\n" +
-            "half of the query-for-state/subscribe-for-deltas contract (see subscribeToActions()).\n" +
+            "half of the query-for-state/subscribe-for-deltas contract (see `subscribe-to-actions`).\n" +
             "\n" +
             "Page size is a server constant. Pages are full until the last: absence of `nextBeforeId`\n" +
             "means the history is exhausted; otherwise it is the id of the last returned entry, to pass\n" +
@@ -1833,7 +1823,7 @@ export const table: ApiTable = {
             "a file in one tree and a directory in the other lists the file and the paths within the\n" +
             "directory. The two commits may come in either order; the list is the same.\n" +
             "\n" +
-            "Like listTree(), only tree objects are read, never blobs, and a subtree with the same id\n" +
+            "Like `list-tree`, only tree objects are read, never blobs, and a subtree with the same id\n" +
             "in both is not read at all, so the cost is proportional to what differs. The result is\n" +
             "immutable and cacheable by the pair of commit IDs.\n" +
             "\n" +
@@ -1923,10 +1913,10 @@ export const table: ApiTable = {
             "directory carrying its own, in git tree order (byte order of names, a directory sorting as\n" +
             "if its name had a trailing `/`). Only tree objects are read -- never blobs -- so the\n" +
             "response is proportional to the commit's entry count. Commits are immutable, so responses\n" +
-            "are cacheable client-side by commit ID. Like readFilesAtCommit(), the read may pull missing\n" +
+            "are cacheable client-side by commit ID. Like `read-files-at-commit`, the read may pull missing\n" +
             "trees through the gatekeeper that provided the commit.\n" +
             "\n" +
-            "Together with readFilesAtCommit() this is how clients read committed code: a workpiece's\n" +
+            "Together with `read-files-at-commit` this is how clients read committed code: a workpiece's\n" +
             "tree at its head or accepted commit (outside any chat, or when the open chat has no pin for\n" +
             "it), and the base content of a chat's pins (see ChatCodeBase), one file at a time as it is\n" +
             "opened or edited.",
@@ -1944,7 +1934,7 @@ export const table: ApiTable = {
             "its chat pin's ChatGadgetPinState.mergedCommit equal to the gadget's current head commit.\n" +
             "If mainline has advanced past any pin, nothing at all is merged and the call returns a\n" +
             "\"stale\" outcome (an expected result, not an exception; see MergeChangesResult): call\n" +
-            "updateChatFromMainline(), resolve any conflicts, and retry. Where the pin's `baseCommit` is\n" +
+            "`update-chat-from-mainline`, resolve any conflicts, and retry. Where the pin's `baseCommit` is\n" +
             "a merge commit not yet accepted, whose first parent is `mergedCommit`, the head moves\n" +
             "through it: to the merge commit itself if the chat changed nothing since, else to a new\n" +
             "commit on top of it.\n" +
@@ -1959,7 +1949,7 @@ export const table: ApiTable = {
             "`epochBoundary`). Subsequent edits re-pin lazily against the new heads. The generation bump\n" +
             "is content-preserving: ChatCodeBase.prior describes the closed stream, and in-flight\n" +
             "submissions rooted in it are transformed onto the new generation rather than discarded (see\n" +
-            "submitCodeChange()), so a client typing through someone's accept loses nothing.\n" +
+            "`submit-code-change`), so a client typing through someone's accept loses nothing.\n" +
             "\n" +
             "A blueprint release the chat proposes to merge into a gadget (see\n" +
             "AiChatMessageBody.blueprintMerges) is accepted with the rest: the gadget's new head gains\n" +
@@ -1989,7 +1979,7 @@ export const table: ApiTable = {
           method: "newAiModelGatekeeper",
           doc:
             "Create a new gatekeeper for an AI model binding. The model can be any returned by\n" +
-            "`AuthenticatedApi.listModels()`. A language model's gatekeeper provides a\n" +
+            "`list-models`. A language model's gatekeeper provides a\n" +
             "`LanguageModelBinding`, a decision model's a `DecisionModelBinding`.",
           args: [{ name: "modelId", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "stub", node: "GatekeeperClient", nullable: false },
@@ -2001,7 +1991,7 @@ export const table: ApiTable = {
             "always creates a visible chat event, even when it does not produce a message for the agent.\n" +
             "Slash-command requests cannot include capsules or attachments.\n" +
             "\n" +
-            "`modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response\n" +
+            "`modelId` is one of the IDs in the result of `list-models`, or null to inhibit AI response\n" +
             "(useful when using chat to talk between humans).\n" +
             "\n" +
             "`formats` records where the message names one of the deployment's standard output formats, so\n" +
@@ -2056,11 +2046,11 @@ export const table: ApiTable = {
             "Try to create a new gatekeeper for this URL.\n" +
             "\n" +
             "`accountId` is the user's connected account to use to access this resource. To determine an\n" +
-            "appropriate account, use `subscribeConnectedAccounts()` with a `filter` for this URL, then\n" +
+            "appropriate account, use `subscribe-connected-accounts` with a `filter` for this URL, then\n" +
             "let the user choose one.\n" +
             "\n" +
             "The new gatekeeper is a workspace-level workpiece; it is not bound into any gadget's `env` by\n" +
-            "default. Use GadgetClient.bind() / bindWithSuggestedName() to expose it to a gadget.",
+            "default. Use `bind` / `bind-with-suggested-name` to expose it to a gadget.",
           args: [
             { name: "accountId", index: 0, encoding: "number", type: "number", doc: "" },
             { name: "resourceUrl", index: 1, encoding: "string", type: "string", doc: "" },
@@ -2213,7 +2203,7 @@ export const table: ApiTable = {
             "Changes not yet materialized into a message are erased\n" +
             "along with the reverted range. Erasing already-applied changes invalidates every client's local\n" +
             "state -- content they may have transformed against is gone -- so ChatCodeBase.generation is\n" +
-            "bumped destructively: in-flight submitCodeChange() calls fail and clients rebuild instead of\n" +
+            "bumped destructively: in-flight `submit-code-change` calls fail and clients rebuild instead of\n" +
             "corrupting the chat.",
           args: [
             { name: "chatId", index: 0, encoding: "number", type: "number", doc: "" },
@@ -2250,7 +2240,7 @@ export const table: ApiTable = {
             "agent does not run.\n" +
             "Slash-command requests cannot include capsules or attachments.\n" +
             "\n" +
-            "`modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response\n" +
+            "`modelId` is one of the IDs in the result of `list-models`, or null to inhibit AI response\n" +
             "(useful when using chat to talk between humans).",
           args: [
             { name: "chatId", index: 0, encoding: "number", type: "number", doc: "" },
@@ -2356,7 +2346,7 @@ export const table: ApiTable = {
           doc:
             "Submit one code change on a chat's branch. This is the only way to edit code: committed code\n" +
             "cannot be written directly -- gadget heads only advance when a chat's changes are accepted\n" +
-            "(see mergeChanges()).\n" +
+            "(see `merge-changes`).\n" +
             "\n" +
             "`submission.change` is expressed against the chat's content as of\n" +
             "`(submission.generation, submission.revision)` -- that is, the submitter has applied every\n" +
@@ -2426,7 +2416,7 @@ export const table: ApiTable = {
             "The subscription delivers live deltas only — nothing pre-existing is replayed. Query for\n" +
             "state, subscribe for deltas: fetch the current pending set via\n" +
             "listActions({filter: \"pending\"}) and resolved history via the other filters. As with\n" +
-            "subscribeToChat(), initiate the subscribe call before those reads — there is no need to\n" +
+            "`subscribe-to-chat`, initiate the subscribe call before those reads — there is no need to\n" +
             "await its return, only to start it first — so nothing can slip between the snapshot the\n" +
             "pages reflect and the stream.\n" +
             "\n" +
@@ -2436,9 +2426,9 @@ export const table: ApiTable = {
             "re-delivered (entries are upserts) -- and the replay arrives in change-time order, not\n" +
             "creation order. If not specified, the subscription starts from the current time.\n" +
             "\n" +
-            "Do NOT use `startAfter` as a way to enumerate historical data. Use `listActions()` instead.\n" +
-            "To ensure no holes between a subscription and historical data, call `subscribeToActions()`\n" +
-            "immediately before `listActions()`, similar to `subscribeToChat()`.",
+            "Do NOT use `startAfter` as a way to enumerate historical data. Use `list-actions` instead.\n" +
+            "To ensure no holes between a subscription and historical data, call `subscribe-to-actions`\n" +
+            "immediately before `list-actions`, similar to `subscribe-to-chat`.",
           args: [
             {
               name: "subscriber",
@@ -2462,9 +2452,9 @@ export const table: ApiTable = {
             "`startAt` is omitted, only new messages will be sent.\n" +
             "\n" +
             "Generally, a client should subscribe to chats immediately on loading the gadget editor. If\n" +
-            "the client needs to call any methods like `listChats()` to backfill content, it should make\n" +
-            "these calls after `subscribeToChat()`, so that there's no chance of missing a message. (It is\n" +
-            "not necessary to wait for `subscribeToChat()` to return -- only to initiate the call before\n" +
+            "the client needs to call any methods like `list-chats` to backfill content, it should make\n" +
+            "these calls after `subscribe-to-chat`, so that there's no chance of missing a message. (It is\n" +
+            "not necessary to wait for `subscribe-to-chat` to return -- only to initiate the call before\n" +
             "other read calls.)",
           args: [
             {
@@ -2526,7 +2516,7 @@ export const table: ApiTable = {
           method: "subscribeToPresence",
           doc:
             "Receive the current viewer roster, then incremental updates as viewers come and go.\n" +
-            "A viewer is present for the lifetime of the openGadget() session.",
+            "A viewer is present for the lifetime of the `open-gadget` session.",
           args: [
             {
               name: "subscriber",
@@ -2634,9 +2624,9 @@ export const table: ApiTable = {
             "text, is too large for a file to hold; the error names the file. Making it smaller on\n" +
             "either side, or undoing the chat's own changes to it, lets the update through.\n" +
             "\n" +
-            "Once the chat is up to date (and mainline hasn't moved again), mergeChanges() succeeds as a\n" +
+            "Once the chat is up to date (and mainline hasn't moved again), `merge-changes` succeeds as a\n" +
             "plain fast-forward through the merge commit. The update can be reverted like any other\n" +
-            "proposed change, which puts the pins back as they were before it (see revertChanges()).",
+            "proposed change, which puts the pins back as they were before it (see `revert-changes`).",
           args: [{ name: "chatId", index: 0, encoding: "number", type: "number", doc: "" }],
           returns: { kind: "value", type: "{ conflictPaths: string[] }" },
         },
@@ -2672,7 +2662,7 @@ export const table: ApiTable = {
           doc:
             "Confirm a finished sign-in flow. Called by the /connect/handoff page in the sign-in popup, which\n" +
             "has no session: `ticket` is the handoff ticket from the page's URL fragment and `nonce` the one\n" +
-            "`startGatekeeperLogin()` returned for the same flow, read from the popup's own sessionStorage.\n" +
+            "`start-gatekeeper-login` returned for the same flow, read from the popup's own sessionStorage.\n" +
             "Marks the attempt's delivered result as confirmed, so that `LoginAttempt.receive()` releases the\n" +
             "token to whoever holds the attempt stub; the popup itself never sees a token. Throws with a\n" +
             "user-facing message when the attempt is unknown, expired, or failed, or the ticket is not the\n" +
@@ -2742,21 +2732,21 @@ export const table: ApiTable = {
           doc:
             "@deprecated Fires after the subscription has caught up to the current time. However, this is\n" +
             "only a useful signal when a subscription is being used to enumerate past actions using a\n" +
-            "distant-past `startAfter`. This is not the correct way to use `subscribeToActions()`; use\n" +
-            "`listActions()` instead.",
+            "distant-past `startAfter`. This is not the correct way to use `subscribe-to-actions`; use\n" +
+            "`list-actions` instead.",
         },
       ],
     },
     AiChatSubscriber: {
       doc:
         "Interface implemented by the client to receive callback notifications whenever there is new\n" +
-        "chat activity. Use Overseer.subscribeToChat() to register a subscriber.",
+        "chat activity. Use `subscribe-to-chat` to register a subscriber.",
       methods: [
         {
           name: "changeApplied",
           params: ["chatId", "generation", "revision", "author", "change", "submission"],
           doc:
-            "Delivers one accepted change of a chat's change stream: a human submitCodeChange(), an agent\n" +
+            "Delivers one accepted change of a chat's change stream: a human `submit-code-change`, an agent\n" +
             "tool edit (broadcast when the tool call completes, superseding the provisional editPreview*\n" +
             "stream of its in-progress content -- see AiChatStreamEvent). Changes must be applied in\n" +
             "revision order within a generation; a gap means events were lost and the client should\n" +
@@ -2769,7 +2759,7 @@ export const table: ApiTable = {
             "absorbed are dropped via the message's `watermark` instead (there is no separate \"cleared\"\n" +
             "event).\n" +
             "\n" +
-            "Changes produced by submitCodeChange() echo the submitter's identity as `submission` (the\n" +
+            "Changes produced by `submit-code-change` echo the submitter's identity as `submission` (the\n" +
             "CodeChangeSubmission's clientId and seq), so the submitting client recognizes its own change\n" +
             "-- in the live feed and in subscribe-replay alike, without depending on ack/broadcast\n" +
             "ordering -- and drops its in-flight buffer instead of re-applying. The echo is informational\n" +
@@ -2801,14 +2791,14 @@ export const table: ApiTable = {
       ],
     },
     ConnectedAccountsSubscriber: {
-      doc: "Subscription callback for AuthenticatedApi.subscribeConnectedAccounts().",
+      doc: "Subscription callback for `subscribe-connected-accounts`.",
       methods: [
         {
           name: "add",
           params: ["id", "description", "vendor", "supportedResources", "credentialsValid", "vendorId"],
           doc:
             "If `credentialsValid` is false, the account's credentials are known to be expired, and the\n" +
-            "UI should call reconnectAccount() to fix this if the user tries to select this account.",
+            "UI should call `reconnect-account` to fix this if the user tries to select this account.",
         },
         {
           name: "ready",
@@ -2837,7 +2827,7 @@ export const table: ApiTable = {
       ],
     },
     NotificationSubscriber: {
-      doc: "Callback used by `AuthenticatedApi.subscribeToNotifications()`.",
+      doc: "Callback used by `subscribe-to-notifications`.",
       methods: [
         {
           name: "notify",
@@ -2860,7 +2850,7 @@ export const table: ApiTable = {
       ],
     },
     WorkpiecesSubscriber: {
-      doc: "Callback interface used to receive workpiece-list updates. See Overseer.subscribeToWorkpieces().",
+      doc: "Callback interface used to receive workpiece-list updates. See `subscribe-to-workpieces`.",
       methods: [
         {
           name: "entry",

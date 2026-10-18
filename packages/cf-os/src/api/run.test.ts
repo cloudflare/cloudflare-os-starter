@@ -3,7 +3,9 @@ import test from "node:test";
 import { table } from "../../generator/__fixtures__/generated/commands.ts";
 import { UsageError } from "../context.ts";
 import { table as realTable } from "./generated/commands.ts";
-import { commandHelp, decodeCalls, dryRunChain, nodeHelp, parseInvocation, type Hop } from "./run.ts";
+import {
+  commandHelp, decodeCalls, dryRunChain, nodeHelp, parseInvocation, parseSearch, searchCommands, untypedHelp, type Hop,
+} from "./run.ts";
 
 const noFiles = {
   readFile: async () => assert.fail("read a file"),
@@ -48,7 +50,7 @@ test("`call` segments continue an untyped capability, taking every token up to t
 });
 
 test("`--` makes the rest positionals, so values that look like flags pass through", () => {
-  const invocation = parseInvocation(table, ["search", "--", "--limit"]);
+  const invocation = parseInvocation(table, ["find-notes", "--", "--limit"]);
   assert.deepEqual((invocation.hops[0] as Extract<Hop, { kind: "command" }>).positionals, ["--limit"]);
 });
 
@@ -57,15 +59,15 @@ function usage(tokens: string[], message: RegExp): void {
 }
 
 test("what the table does not allow is a usage error that says what to run", () => {
-  usage(["nope"], /FixtureAuthedApi has no command "nope"\. Run `cf-os api --help`/);
-  usage(["public", "nope"], /FixturePublicApi has no command "nope"\. Run `cf-os api public --help`/);
-  usage(["search"], /search needs <query>/);
-  usage(["search", "q", "--bogus"], /Unknown option --bogus for search/);
+  usage(["nope"], /FixtureAuthedApi has no command "nope"\. Find one with `cf-os api search "<task>"`, or run `cf-os api --help`/);
+  usage(["public", "nope"], /FixturePublicApi has no command "nope"\. .* run `cf-os api public --help` for FixturePublicApi's\./);
+  usage(["find-notes"], /find-notes needs <query>/);
+  usage(["find-notes", "q", "--bogus"], /Unknown option --bogus for find-notes/);
   usage(["--bogus"], /Unknown option --bogus\./);
-  usage(["search", "q", "--limit"], /--limit needs a value/);
-  usage(["set-mood", "calm", "lock"], /set-mood returns a value, which ends the chain/);
-  usage(["search", "q", "--timeout", "0"], /--timeout must be a positive number/);
-  usage(["search", "q", "--dry-run=yes"], /--dry-run/);
+  usage(["find-notes", "q", "--limit"], /--limit needs a value/);
+  usage(["set-mood", "calm", "lock"], /set-mood returns nothing, which ends the chain/);
+  usage(["find-notes", "q", "--timeout", "0"], /--timeout must be a positive number/);
+  usage(["find-notes", "q", "--dry-run=yes"], /--dry-run/);
 });
 
 test("--help stops the walk at the segment it is in", () => {
@@ -78,8 +80,8 @@ test("--help stops the walk at the segment it is in", () => {
 
 test("calls are decoded with unset optionals undefined, trailing ones trimmed, callbacks and streams as placeholders", async () => {
   const decode = async (tokens: string[]) => decodeCalls(table, parseInvocation(table, tokens), noFiles);
-  assert.deepEqual((await decode(["search", "q", "--arg-url", "u"]))[0].args, ["q", undefined, "u"]);
-  assert.deepEqual((await decode(["search", "q"]))[0].args, ["q"]);
+  assert.deepEqual((await decode(["find-notes", "q", "--arg-url", "u"]))[0].args, ["q", undefined, "u"]);
+  assert.deepEqual((await decode(["find-notes", "q"]))[0].args, ["q"]);
   assert.deepEqual(dryRunChain(await decode(["open-notebook", "n", "subscribe", "--since", "2026-01-01"])), [
     { method: "openNotebook", args: ["n"] },
     { method: "subscribe", args: [{ $callback: "NotesSubscriber" }, "2026-01-01T00:00:00.000Z"] },
@@ -94,24 +96,75 @@ test("calls are decoded with unset optionals undefined, trailing ones trimmed, c
 
 test("help lists a capability's commands and a command's arguments, events and result", () => {
   const root = nodeHelp(realTable, realTable.root, []);
-  assert.match(root, /^Usage: cf-os api <command>/);
+  // The root opens with how an agent finds a command, in three lines.
+  assert.match(root, /^AGENTS: do not walk the commands with --help\. Find the one for a task with\n {2}cf-os api search "<describe the task>"\nwhich prints the five best matches as JSON, each a whole command line; then run `<command> --help`\.\n\nUsage: cf-os api <command>/);
   assert.match(root, new RegExp(`Commands on ${realTable.root}, after signing in:`));
   assert.match(root, /\n {2}open-gadget <id> → Overseer /);
   assert.match(root, /A command marked `→ X` returns capability X: follow it on the same line/);
   assert.doesNotMatch(nodeHelp(table, "FixtureAdmin", ["get-admin"]), /marked `→ X`/);
   assert.match(root, /`cf-os api public <command>` calls PublicApi without signing in/);
   assert.match(root, /--auth <mode> {8}access \(default for https:\/\/\)/);
+  assert.doesNotMatch(root, /API options: `cf-os api --help`/);
+  // `→ call` is explained only where a listed command carries it.
+  assert.match(nodeHelp(realTable, "GadgetClient", ["x"]), /One marked `→ call` returns an untyped capability, finished with `call <method>/);
+  assert.doesNotMatch(root, /`→ call`/);
+
+  // Everywhere but the root, the API options are one line pointing at the root's help, and no banner.
+  const publicHelp = nodeHelp(table, "FixturePublicApi", ["public"]);
+  assert.match(publicHelp, /\n\nAPI options: `cf-os api --help`$/);
+  assert.doesNotMatch(publicHelp, /AGENTS:|--auth <mode>/);
+  assert.match(untypedHelp(["x"]), /\n\nAPI options: `cf-os api --help`$/);
 
   const file = commandHelp(table, "Notebook", "file", ["open-notebook", "n", "file"]);
   assert.match(file, /^Usage: cf-os api open-notebook n file <note> <destination>\n/);
   assert.match(file, /<note> +<json\|@file\|->: Note/);
   assert.match(file, /Returns nothing \(prints null\)\./);
-  const search = commandHelp(table, "FixtureAuthedApi", "search", ["search"]);
-  assert.match(search, /\[--limit <number>\] \[--arg-url <string>\]/);
+  const findNotes = commandHelp(table, "FixtureAuthedApi", "find-notes", ["find-notes"]);
+  assert.match(findNotes, /\[--limit <number>\] \[--arg-url <string>\]/);
   const subscribe = commandHelp(table, "Notebook", "subscribe", ["open-notebook", "n", "subscribe"]);
   assert.match(subscribe, /Events \(one JSON line each/);
   assert.match(subscribe, /removed\(id\)/);
   assert.match(subscribe, /Returns events, one JSON line each on stdout, until --timeout or Ctrl-C\./);
   const upload = commandHelp(table, "Notebook", "upload", ["upload"]);
   assert.match(upload, /--pinned, --no-pinned/);
+  assert.match(upload, /\n\nAPI options: `cf-os api --help`$/);
+  assert.doesNotMatch(upload, /--auth <mode>/);
+});
+
+test("help for a command that returns a capability lists that capability's commands", () => {
+  const open = commandHelp(table, "FixtureAuthedApi", "open-notebook", ["open-notebook"]);
+  assert.match(open, /Returns a capability on Notebook: follow with one of its commands\.\n\nThen, on Notebook:\n/);
+  assert.match(open, /\n {2}file <note> <destination> +An object and an object union\./);
+  assert.match(open, /\n {2}connect → call /);
+  assert.match(open, /One marked `→ call` returns an untyped capability/);
+  assert.doesNotMatch(commandHelp(table, "Notebook", "lock", ["lock"]), /Then, on/);
+  // The real one: open-gadget's help lists Overseer's commands.
+  assert.match(commandHelp(realTable, realTable.root, "open-gadget", ["open-gadget"]), /Then, on Overseer:[^]*\n {2}new-chat <initialMessage> <modelId> /);
+});
+
+test("search ranks commands by the task's words, as whole command lines, best first", () => {
+  const matches = searchCommands(realTable, "start a chat in a workspace");
+  assert.equal(matches.length, 5);
+  assert.deepEqual(matches[0], {
+    command: "cf-os api open-gadget <id> new-chat <initialMessage> <modelId>",
+    summary: matches[0].summary,
+  });
+  assert.match(matches[0].summary, /^Starts a new chat/);
+  assert.equal(searchCommands(realTable, "list chats")[0].command, "cf-os api open-gadget <id> list-chats");
+  // A path through a capability-returning hop carries that hop's arguments; `public` its segment.
+  assert.equal(searchCommands(table, "set banner")[0].command, "cf-os api get-admin set-banner <text>");
+  assert.equal(searchCommands(table, "download")[0].command, "cf-os api public download <id>");
+  assert.equal(searchCommands(table, "file into a notebook")[0].command, "cf-os api open-notebook <id> file <note> <destination>");
+  // Words that pick out nothing match nothing; the output is plain JSON.
+  assert.deepEqual(searchCommands(table, "the of a"), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(matches)), matches);
+});
+
+test("`search` is a search only as the first word that is not an option", () => {
+  assert.deepEqual(parseSearch(["search", "list", "chats"]), { query: "list chats", help: false });
+  assert.deepEqual(parseSearch(["--url", "https://x", "search", "list chats", "--dry-run"]), { query: "list chats", help: false });
+  assert.deepEqual(parseSearch(["search", "-h"]), { query: "", help: true });
+  assert.equal(parseSearch(["open-notebook", "search"]), undefined);
+  assert.equal(parseSearch([]), undefined);
+  assert.throws(() => parseSearch(["search", "x", "--limit", "3"]), (error: Error) => error instanceof UsageError);
 });
