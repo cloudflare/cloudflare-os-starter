@@ -1,0 +1,19 @@
+packages/cf-os/src/commands/deploy.test.ts
+  s_d0f890640bc2ec::t_b620db9dbbd0cf 171-172
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "491914b7a207b112b33c5eb6e3f77037e032cd13",
+  "prompts": {},
+  "sessions": {
+    "s_d0f890640bc2ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9c1a4d8-208c-4dfa-91a7-e9412e935dbd",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
