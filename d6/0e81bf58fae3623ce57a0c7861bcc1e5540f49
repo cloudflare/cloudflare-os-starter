@@ -1,0 +1,21 @@
+README.md
+  s_1cc5b48070891c::t_ff48f77dc0b4ac 66,72,76,84,86-89,100,138,143
+packages/cf-os/README.md
+  s_1cc5b48070891c::t_3964d3d65debc8 30-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d60e81bf58fae3623ce57a0c7861bcc1e5540f49",
+  "prompts": {},
+  "sessions": {
+    "s_1cc5b48070891c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0875d161-18fa-426e-b5d4-0411d9641f76",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
