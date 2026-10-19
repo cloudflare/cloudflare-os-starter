@@ -168,7 +168,8 @@ test("check warns on stderr about a Gatekeeper secret that is not set, and carri
     /\nWarning: acme-gk-github has no CLIENT_SECRET; nobody can connect the github Gatekeeper until it is set:\n/);
   assert.ok(harness.stderr().includes(
     `CLOUDFLARE_ACCOUNT_ID=${FAKE_ACCOUNT} pnpm exec wrangler secret put CLIENT_SECRET --name acme-gk-github`));
-  assert.ok(harness.stderr().includes("https://os.example.com/gatekeeper/github/oauth"));
+  assert.match(harness.stderr(),
+    /^Redirect URI to register with the provider: https:\/\/os\.example\.com\/gatekeeper\/github\/oauth$/m);
   assert.deepEqual(harness.json, []);
   assert.deepEqual(cf.calls.filter((call) => call.args[1] === "secrets").map((call) => call.args),
     [["workers", "secrets", "list", "--script-name", "acme-gk-github"]]);
