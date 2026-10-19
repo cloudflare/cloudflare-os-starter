@@ -99,6 +99,8 @@ When AI is enabled, a human enters `CF_AI_GATEWAY_API_TOKEN` interactively for t
 CLOUDFLARE_ACCOUNT_ID=<account-id> pnpm exec wrangler secret put CF_AI_GATEWAY_API_TOKEN --name <workshop-worker>
 ```
 
+Each optional Gatekeeper that takes OAuth credentials (`gatekeepers` in `deployment.jsonc`) gets its `CLIENT_ID` and `CLIENT_SECRET`, or whatever its inputs are, the same way, on its own Worker, the one `gatekeepers.<slug>.name` names (`<router>-gk-<slug>` by default): `CLOUDFLARE_ACCOUNT_ID=<account-id> pnpm exec wrangler secret put CLIENT_SECRET --name <gatekeeper-worker>`. `pnpm cf-os init` prints those commands with upstream's setup steps and the OAuth redirect URI, and `pnpm cf-os check` warns while one is missing, without failing. Prefer setting them after the first deploy: `secret put` on a Worker that does not exist yet creates a placeholder Worker, while a deploy keeps secrets already set.
+
 Confirm this account selector against current Wrangler documentation. Confirm the account, existing Worker ownership, and Worker name immediately before presenting or running the interactive command. `secret put` immediately deploys a new Worker version; require production approval, record its version ID, and verify it like any other deployment. Verify only that the secret name exists, never its value. If exposure is suspected, stop deployment and rotate or revoke the credential first.
 
 ### Trust Boundary
@@ -172,13 +174,14 @@ Ask once for any decisions not established by existing approved configuration:
 
 1. Evaluation or production, target account, exact hostname, and zone for a custom domain. On a `workers.dev` route, also the exact `publicBaseUrl` origin, which the operator has to supply because nothing in the checkout can derive it.
 2. Access application, intended users, identity provider requirements, administrators, and denied test identity.
-3. Stable names for the Router, Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, and Error Reporter. Only the Router's name appears in the public URL; the Workshop's is the identity every Durable Object belongs to, and Context and Scheduler own Durable Objects of their own — collections and schedules — so renaming either strands its data.
+3. Stable names for the Router, Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, Error Reporter, and each optional Gatekeeper (`<router>-gk-<slug>` by default, as the hosted flow names them). Only the Router's name appears in the public URL; the Workshop's is the identity every Durable Object belongs to, and Context and Scheduler own Durable Objects of their own — collections and schedules — so renaming either strands its data. An optional Gatekeeper's Durable Objects hold its users' connections, so the same holds for it.
 4. New auto-provisioned or existing resource for each of Context KV, Blueprints KV, Avatars KV, and Blueprint Content R2.
 5. Which AI Gateway and which providers; billing/BYOK on the gateway, budget, prompt/response logging, and retention. Disabling `aiGateway` at all is the exception, not the default.
 6. Error Reporter enabled state, environment/release metadata, telemetry sampling, and retention/export policy.
 7. Web Search disabled, optional, or enabled, and who pays for searches: AI Gateway credits on the account, or a Ceramic key on the gateway it actually searches through (`aiGateway.name` when it is in this account, otherwise the account's `default` gateway). The free Workers AI allowance does not cover them, and the mode is set in `/admin` after deploying, not by the deploy.
-8. Custom Gatekeeper disabled, optional, or enabled, and whether its code still matches the low-stakes example.
-9. Rollback tolerance and the person authorized to approve production mutation.
+8. Custom Gatekeeper not deployed (`customGatekeeper.enabled: false`), or deployed and disabled, optional, or enabled in `/admin`, and whether its code still matches the low-stakes example.
+9. Which optional upstream Gatekeepers to deploy (`gatekeepers`, offered by `pnpm cf-os init` from the submodule's catalog), and for each OAuth one, who owns its OAuth application, which scopes it grants, and who sets its secrets. The starter deploys one install per Gatekeeper package; a second install, such as the hosted flow's `google2`, is not supported.
+10. Rollback tolerance and the person authorized to approve production mutation.
 
 Default recommendations for a first evaluation are the default AI configuration (enabled, the account's own gateway, `cloudflare` only, no token), Context Artifacts disabled, new storage, Error Reporter enabled and private, Web Search disabled in `/admin` until billing is confirmed, Custom Gatekeeper disabled until reviewed, narrow Access policy, and operators-only access until verification completes. Do not ask first-time operators about Context Artifacts; discuss it only when the existing configuration enables it or the operator explicitly requests Git-backed Context collections.
 
@@ -194,7 +197,7 @@ Temporary `wrangler.prod.jsonc` files are generated implementation details. Neve
 
 Treat routing, authentication, and `/admin` authorization as separate controls.
 
-The route belongs to the Router alone. The other six Workers are generated with `workers_dev: false`, no routes, and Preview URLs off, so the Router's hostname is the single Access-protected entrance. Verify that in the generated configs rather than assuming it, and treat any additional public route on a backend Worker as an Access bypass.
+The route belongs to the Router alone. Every other Worker is generated with `workers_dev: false`, no routes, and Preview URLs off, so the Router's hostname is the single Access-protected entrance. Verify that in the generated configs rather than assuming it, and treat any additional public route on a backend Worker as an Access bypass.
 
 For production:
 
@@ -259,7 +262,7 @@ A secret existing does not prove its scope, billing, or account is correct. One 
 
 The starter example is credential-free, read-only, auto-provisioned, and permissive to observers because it returns identical low-stakes text to every authenticated user. Those choices are unsafe defaults for account-specific, tenant-specific, or confidential data.
 
-Keep the Custom Gatekeeper disabled in `/admin` until its provenance and authority are reviewed. If it has been customized, load the upstream `write-gatekeeper` skill and stop for operator approval of the agent-facing API before implementation or enablement. Review:
+A deployment that does not want it sets `customGatekeeper.enabled: false`, and no Worker or binding is generated for it. Otherwise, keep the Custom Gatekeeper disabled in `/admin` until its provenance and authority are reviewed. If it has been customized, load the upstream `write-gatekeeper` skill and stop for operator approval of the agent-facing API before implementation or enablement. Review:
 
 - Capability and resource granularity.
 - Every observation and side effect.
@@ -295,7 +298,7 @@ When `cf` is signed in, `pnpm cf-os check` also confirms the following exist in 
 
 Before requesting approval, inventory current deployed version IDs for all affected Workers and verify downstream RPC changes remain compatible with both the old and new Workshop. The deployment is not atomic. Every build has to pass before anything deploys; the Workers then deploy in three waves, each starting only once the one before has finished:
 
-1. Error Reporter (when enabled), Context, Scheduler, Web Search and Custom Gatekeeper, concurrently.
+1. Error Reporter (when enabled), Context, Scheduler, Web Search, Custom Gatekeeper (when enabled) and every optional Gatekeeper, concurrently.
 2. Workshop, which binds every one of them.
 3. Router, which binds the Workshop and every Gatekeeper.
 
@@ -318,15 +321,16 @@ Success requires evidence for every applicable item:
 - Access redirects/denies unauthenticated users, allows the intended identity, and denies the negative test identity.
 - `/admin` allows an administrator and denies an authenticated non-administrator.
 - Signup, connector, Context, and Gatekeeper policies match the approved decisions.
-- Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, and Error Reporter have no public routes and no Preview URLs. Each would be an unauthenticated path around the Router's Access application.
+- Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, every optional Gatekeeper, and Error Reporter have no public routes and no Preview URLs. Each would be an unauthenticated path around the Router's Access application.
 - Existing data remains visible; newly created data persists across a safe reload or redeploy test.
 - Context Artifacts is absent when disabled, or an approved Git-backed collection can be populated and refreshed in the intended stable namespace when enabled.
 - Each Workshop service binding targets the intended service, entrypoint, and props, and each Router service binding targets the intended service with no entrypoint. The Context binding's `sharingDomain` prop matches the boundary the existing collections live under.
-- The Custom Gatekeeper is disabled or behaves according to its reviewed policy; approved reads appear as observations.
+- The Custom Gatekeeper is not deployed, disabled, or behaves according to its reviewed policy; approved reads appear as observations.
+- Each optional Gatekeeper connects: with its secrets set (`pnpm cf-os check` names any missing), one approved identity connects it through its OAuth application, the provider redirects back to `<public origin>/gatekeeper/<slug>/oauth` or the URI `pnpm cf-os init` printed, and the connection appears on the Gatekeepers page. One that takes no credentials connects without them.
 - The model picker lists the configured providers' models, and one approved low-cost request proves the runtime path, with separate evidence for billing ownership, provider/Gateway selection, prompt collection, retention, and log access, plus token scope where a token is required. An empty picker is a failure, not an absence of evidence: see `references/troubleshooting.md`.
 - Existing schedules are still listed and a newly created one fires. Both come from the Scheduler's own Durable Objects, so an empty list on an upgraded or migrated deployment points at its Worker name, not at its storage.
 - An agent's web search returns results. It runs through the configured `aiGateway.name` (the account's `default` gateway when `aiGateway` is disabled or in another account), and needs AI Gateway credits or a Ceramic key on that gateway: the free Workers AI allowance does not cover searches. Who pays, and whether Web Search is enabled, optional or disabled, is an approval decision like any other billing.
-- Router, Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, and Reporter logs are available with the expected sampling.
+- Router, Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, every optional Gatekeeper, and Reporter logs are available with the expected sampling.
 - The Reporter query surface exists; absence of events is not a failure without an explicit capture.
 - No secrets or generated Wrangler files are tracked.
 - Last-known-good deployment IDs and recovery instructions are recorded.

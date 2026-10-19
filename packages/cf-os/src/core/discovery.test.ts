@@ -65,7 +65,7 @@ test("reports what it did not find instead of guessing, and the Gatekeepers that
   const missing = discovery.rows.filter((row) => row.found === null);
   assert.deepEqual(missing.map((row) => row.path), ["workers.websearch.name"]);
   assert.match(missing[0].note!, /deployed before Web Search/);
-  assert.deepEqual(discovery.orphanedGatekeepers, ["acme-gk-github"]);
+  assert.deepEqual(discovery.orphanedGatekeepers.map((gatekeeper) => gatekeeper.name), ["acme-gk-github"]);
   assert.ok(!discovery.edits.some((edit) => edit.path.join(".") === "workers.websearch.name"));
   // Suggestions are not hosted resources: never looked for, never reported missing.
   assert.ok(!discovery.rows.some((row) => /customGatekeeper|errorReporter/.test(row.path)));
@@ -74,7 +74,45 @@ test("reports what it did not find instead of guessing, and the Gatekeepers that
 test("does not count a starter-deployed custom Gatekeeper as orphaned", async () => {
   const account = hostedAccount();
   account.workers.push({ name: "acme-gk-custom" });
-  assert.deepEqual(discover("acme", await inventory(account)).orphanedGatekeepers, ["acme-gk-github"]);
+  assert.deepEqual(discover("acme", await inventory(account)).orphanedGatekeepers.map((gatekeeper) => gatekeeper.name),
+    ["acme-gk-github"]);
+});
+
+test("classifies the other Gatekeepers as deployable, repeat installs, or unknown", async () => {
+  const account = hostedAccount();
+  account.workers.push({ name: "acme-gk-google2" }, { name: "acme-gk-google" }, { name: "acme-gk-email" },
+    { name: "acme-gk-weather" }, { name: "acme-gk-context2" });
+  const discovery = discover("acme", await inventory(account), ["github", "google", "slack"],
+    [{ package: "gatekeeper-email", slug: "email", reason: "upstream marks it not installable" }]);
+  assert.deepEqual(discovery.foundGatekeepers, [
+    { slug: "github", name: "acme-gk-github" },
+    { slug: "google", name: "acme-gk-google" },
+  ]);
+  assert.deepEqual(discovery.orphanedGatekeepers.map(({ name, kind }) => [name, kind]), [
+    ["acme-gk-context2", "repeat"],
+    ["acme-gk-email", "unknown"],
+    ["acme-gk-google2", "repeat"],
+    ["acme-gk-weather", "unknown"],
+  ]);
+  const reasons = Object.fromEntries(discovery.orphanedGatekeepers.map(({ name, reason }) => [name, reason]));
+  assert.match(reasons["acme-gk-google2"], /second install of google; .*one Worker per Gatekeeper package/);
+  assert.match(reasons["acme-gk-email"], /cannot deploy it: upstream marks it not installable/);
+  assert.match(reasons["acme-gk-weather"], /no Gatekeeper in the submodule has the slug weather/);
+  // The deployable ones are written, and shown as found; the rest are not.
+  assert.deepEqual(editsAsFragment(discovery.edits).gatekeepers, {
+    github: { name: "acme-gk-github" },
+    google: { name: "acme-gk-google" },
+  });
+  assert.deepEqual(discovery.rows.filter((row) => row.path.startsWith("gatekeepers.")).map((row) => [row.path, row.found]),
+    [["gatekeepers.github.name", "acme-gk-github"], ["gatekeepers.google.name", "acme-gk-google"]]);
+  // Their vars are not read, and a deploy replaces them: the operator is told to carry them over.
+  assert.match(discovery.notes.join("\n"), /replaces their plain vars with the package's own and BASE_URL\. Copy any var a Worker relies on .* into gatekeepers\.<slug>\.vars before deploying/);
+});
+
+test("says nothing about Gatekeeper vars when it finds no optional Gatekeeper", async () => {
+  const discovery = discover("acme", await inventory(), []);
+  assert.deepEqual(discovery.foundGatekeepers, []);
+  assert.doesNotMatch(discovery.notes.join("\n"), /plain vars/);
 });
 
 test("takes a custom domain from the Access application", async () => {

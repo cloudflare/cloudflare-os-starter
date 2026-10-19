@@ -11,10 +11,12 @@ import {
   scratchProject,
   scriptedPrompter,
   TEMPLATE,
+  testCatalog,
   testContext,
   type Step,
 } from "../test-support.ts";
 import type { Context } from "../context.ts";
+import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import { configure, NO_TERMINAL, run, type InitDeps } from "./init.ts";
 
 const ZONE = { id: "zone-1", name: "example.com", status: "active" };
@@ -40,8 +42,8 @@ function account(overrides: Record<string, FakeReply> = {}): Record<string, Fake
 /** What the recording tools report, by `<command> <args>` prefix: an exit status and output. */
 type ToolReplies = Record<string, { status?: number; stdout?: string }>;
 
-/** Deps that record every tool run and every deploy, instead of running them. */
-function recording(tools: ToolReplies = {}) {
+/** Deps that record every tool run and every deploy, instead of running them, offering `catalog`. */
+function recording(tools: ToolReplies = {}, catalog: GatekeeperCatalog = testCatalog()) {
   const ran: string[] = [];
   const deployed: Context[] = [];
   const deps: InitDeps = {
@@ -56,6 +58,7 @@ function recording(tools: ToolReplies = {}) {
       deployed.push(ctx);
       return 0;
     },
+    catalog: async () => catalog,
   };
   return { deps, ran, deployed };
 }
@@ -65,14 +68,16 @@ async function init(
   t: Parameters<typeof scratchProject>[0],
   script: Step[],
   replies = account(),
-  { flags = {}, tools, values = { out: "init.jsonc" }, offerDeploy }:
-    { flags?: object; tools?: ToolReplies; values?: Record<string, string>; offerDeploy?: boolean } = {},
+  { flags = {}, tools, values = { out: "init.jsonc" }, offerDeploy, catalog, template = TEMPLATE }: {
+    flags?: object; tools?: ToolReplies; values?: Record<string, string>; offerDeploy?: boolean;
+    catalog?: GatekeeperCatalog; template?: string;
+  } = {},
 ) {
-  const root = scratchProject(t, TEMPLATE);
+  const root = scratchProject(t, template);
   const cf = fakeCf(replies);
   const prompter = scriptedPrompter(script);
   const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter, flags });
-  const recorded = recording(tools);
+  const recorded = recording(tools, catalog);
   const code = await configure({ command: "init", values, positionals: [] }, harness.ctx, recorded.deps,
     { offerDeploy });
   assert.deepEqual(prompter.remaining(), [], "the script was not used up");
@@ -86,6 +91,7 @@ const REST: Step[] = [
   ["Admin emails", DEFAULT],
   ["Which AI Gateway", "default"],
   ["Which model providers?", ["cloudflare"]],
+  ["Which Gatekeepers?", DEFAULT],
   ["Organization name", DEFAULT],
   ["What it tells agents", DEFAULT],
 ];
@@ -210,6 +216,7 @@ test("on a takeover, asks again for a Worker it would add that another applicati
     ["Which hosted instance?", "acme"],
     ["Admin emails", DEFAULT],
     ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", DEFAULT],
     ["Custom Gatekeeper Worker name", DEFAULT],
     ["Is acme-gk-custom this deployment's own", true],
     ["Error Reporter Worker name", DEFAULT],
@@ -234,6 +241,7 @@ test("switches to a takeover when the name is a hosted instance", async (t) => {
     ['"acme" looks like a hosted instance', "takeover"],
     ["Admin emails", DEFAULT],
     ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", DEFAULT],
     ["Custom Gatekeeper Worker name", DEFAULT],
     ["Error Reporter Worker name", DEFAULT],
     ["Which model providers?", ["cloudflare", "anthropic"]],
@@ -280,6 +288,7 @@ test("takes over a hosted instance chosen from the menu", async (t) => {
     ["Which hosted instance?", "acme"],
     ["Admin emails", "ops@example.com, me@example.com"],
     ["Web Search Gatekeeper Worker name", "acme-search"],
+    ["Which Gatekeepers?", DEFAULT],
     ["Custom Gatekeeper Worker name", DEFAULT],
     ["Error Reporter Worker name", DEFAULT],
     ["Which model providers?", ["cloudflare"]],
@@ -359,6 +368,7 @@ test("signed out and declining to sign in, asks for everything it cannot look up
     ["Admin emails", "me@example.com"],
     ["Which AI Gateway", "default"],
     ["Which model providers?", ["cloudflare"]],
+    ["Which Gatekeepers?", DEFAULT],
     ["Organization name", DEFAULT],
     ["What it tells agents", DEFAULT],
   ], { "auth whoami": { authenticated: false, error: "Not logged in" } });
@@ -379,6 +389,9 @@ test("refuses without a terminal, naming the commands that take flags instead", 
   assert.equal(harness.stderr(), NO_TERMINAL);
   assert.match(NO_TERMINAL, /cf-os import <instance> --account <id> --out/);
   assert.match(NO_TERMINAL, /cf-os access/);
+  // The Gatekeeper question's config equivalents.
+  assert.match(NO_TERMINAL, /`gatekeepers`/);
+  assert.match(NO_TERMINAL, /`customGatekeeper\.enabled: false`/);
   assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE);
 });
 
@@ -470,4 +483,425 @@ test("asks nothing about deploying when its caller deploys", async (t) => {
   assert.deepEqual(ran, []);
   assert.deepEqual(deployed, []);
   assert.doesNotMatch(stderr(), /Next:/);
+});
+
+/** {@link COMPLETE} up to the Gatekeeper question, which each test answers itself. */
+const UP_TO_GATEKEEPERS: Step[] = [
+  ["What are you setting up?", "new"],
+  ["Base name", "acme-os"],
+  ["Where will people reach it?", "workersDev"],
+  ["Admin emails", DEFAULT],
+  ["Which AI Gateway", "default"],
+  ["Which model providers?", ["cloudflare"]],
+];
+
+test("offers the custom Gatekeeper, preselected, then the catalog's, none required", async (t) => {
+  const { prompter } = await init(t, [...COMPLETE, ["Deploy now?", false]], completeAccount());
+  const asked = prompter.asked.find((question) => question.message.startsWith("Which Gatekeepers?"))!;
+  assert.match(asked.message, /Context, Scheduler and Web Search are always deployed; \/admin turns each off\./);
+  assert.deepEqual(asked.choices, ["custom", "github", "homeassistant", "mcpportal"]);
+  assert.deepEqual(asked.initial, ["custom"]);
+  assert.equal(asked.required, false);
+  assert.equal(asked.hints!.github, "needs CLIENT_ID, CLIENT_SECRET");
+  assert.equal(asked.hints!.homeassistant, "no credentials, one install only");
+});
+
+test("without the custom Gatekeeper, asks nothing about its text and leaves it disabled", async (t) => {
+  const { code, written, prompter } = await init(t, [
+    ...UP_TO_GATEKEEPERS,
+    ["Which Gatekeepers?", []],
+    ["Deploy now?", false],
+  ], completeAccount());
+  assert.equal(code, 0);
+  assert.ok(!prompter.asked.some((question) => /Organization name|What it tells agents/.test(question.message)));
+  const file = written();
+  assert.deepEqual(valueAtPath(file, ["customGatekeeper"]), {
+    enabled: false, name: "<ORGANIZATION_DISPLAY_NAME>", message: "<ORGANIZATION_GUIDANCE>",
+  });
+  assert.equal(valueAtPath(file, ["workers", "customGatekeeper", "name"]), "<CUSTOM_GATEKEEPER_WORKER_NAME>");
+  assert.deepEqual(valueAtPath(file, ["gatekeepers"]), {});
+});
+
+test("records an OAuth Gatekeeper, printing its setup and secret commands on stderr", async (t) => {
+  const { code, written, json, stderr } = await init(t, [
+    ...UP_TO_GATEKEEPERS,
+    ["Which Gatekeepers?", ["custom", "github", "homeassistant"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
+  ], completeAccount());
+  assert.equal(code, 0);
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), {
+    github: { name: "acme-os-gk-github" },
+    homeassistant: { name: "acme-os-gk-homeassistant" },
+  });
+  assert.deepEqual(json, [], "wrote to stdout");
+  const log = stderr();
+  assert.match(log, /The github Gatekeeper \(acme-os-gk-github\) needs an OAuth app/);
+  assert.match(log, /Console: https:\/\/github\.com\/settings\/developers/);
+  assert.match(log, /Redirect URI: https:\/\/acme-os\.acme-sub\.workers\.dev\/gatekeeper\/github\/oauth\n/);
+  for (const secret of ["CLIENT_ID", "CLIENT_SECRET"]) {
+    assert.ok(log.includes(`CLOUDFLARE_ACCOUNT_ID=${FAKE_ACCOUNT} pnpm exec wrangler secret put ${secret} --name acme-os-gk-github`),
+      `no command for ${secret}`);
+  }
+  assert.match(log, /Deploying first is fine/);
+  // Home Assistant takes no credentials, so it has nothing to set.
+  assert.doesNotMatch(log, /homeassistant Gatekeeper .*needs/);
+  // Printed after the file is written, before the deploy question.
+  assert.ok(log.indexOf("Wrote ") < log.indexOf("Redirect URI"));
+});
+
+test("asks again for an optional Gatekeeper's name another application's Worker has", async (t) => {
+  const { written, stderr, prompter } = await init(t, [
+    ...UP_TO_GATEKEEPERS,
+    ["Which Gatekeepers?", ["github", "homeassistant"]],
+    ["github Gatekeeper Worker name", DEFAULT],
+    ["Is acme-os-gk-github this deployment's own", false],
+    ["github Gatekeeper Worker name", "acme-os-github"],
+    ["Deploy now?", false],
+  ], completeAccount({
+    "workers list": [{ name: "other", subdomain: { url: "https://other.acme-sub.workers.dev" } }, { name: "acme-os-gk-github" }],
+  }));
+  assert.equal(prompter.asked.find((question) => question.message.startsWith("github Gatekeeper"))!.initial, "acme-os-gk-github");
+  assert.match(stderr(), /Already in the account: acme-os-gk-github\. Deploying would overwrite it\./);
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), {
+    github: { name: "acme-os-github" },
+    homeassistant: { name: "acme-os-gk-homeassistant" },
+  });
+  assert.match(stderr(), /secret put CLIENT_ID --name acme-os-github\n/);
+});
+
+test("on a rerun, preselects the file's Gatekeepers, keeps their vars, and removes a deselected one", async (t) => {
+  const template = TEMPLATE.replace('"gatekeepers": {},', `"gatekeepers": {
+    "github": { "name": "old-gk-github", "vars": { "TEAM": "acme" } },
+    "homeassistant": { "name": "old-gk-homeassistant" },
+    "weather": { "name": "old-gk-weather" }
+  },`);
+  const { written, prompter, stderr } = await init(t, [
+    ...UP_TO_GATEKEEPERS,
+    ["Which Gatekeepers?", ["custom", "github"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
+  ], completeAccount(), { template });
+  // weather is not on offer: never a choice, so neither preselected nor removed.
+  assert.deepEqual(prompter.asked.find((question) => question.message.startsWith("Which Gatekeepers?"))!.initial,
+    ["custom", "github", "homeassistant"]);
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), {
+    github: { name: "acme-os-gk-github", vars: { TEAM: "acme" } },
+    weather: { name: "old-gk-weather" },
+  });
+  assert.match(stderr(), /\nRemoved: gatekeepers\.homeassistant\n/);
+  assert.match(stderr(), /Wrote \d+ values to init\.jsonc, removing 1 entry, comments intact\./);
+});
+
+test("on a takeover, preselects the instance's Gatekeepers, which keep their secrets", async (t) => {
+  const { written, prompter, stderr } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", DEFAULT],
+    ["Custom Gatekeeper Worker name", DEFAULT],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
+  ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
+  assert.deepEqual(prompter.asked.find((question) => question.message.startsWith("Which Gatekeepers?"))!.initial,
+    ["custom", "github"]);
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), { github: { name: "acme-gk-github" } });
+  assert.match(stderr(), /acme-gk-github already runs in the account and keeps its secrets: a deploy leaves them as they are\. It does replace the Worker's plain vars, with the package's own, BASE_URL and gatekeepers\.github\.vars: copy any the Worker relies on \(GITLAB_URL for a self-managed GitLab, MCP_PORTAL_URL for an MCP portal\) into gatekeepers\.github\.vars before deploying\. Its OAuth app must list https:\/\/acme\.acme-sub\.workers\.dev\/gatekeeper\/github\/oauth as a redirect URI, which follows the public origin: if the instance moves hostname, add the new one\./);
+  assert.doesNotMatch(stderr(), /secret put/);
+  assert.doesNotMatch(stderr(), /Warning: leaving out/);
+});
+
+test("on a takeover that finds no public origin, prints no redirect URI on the template's domain", async (t) => {
+  const hosted = hostedAccount();
+  const { written, stderr } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", ["custom", "github"]],
+    ["Custom Gatekeeper Worker name", DEFAULT],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+  ], {
+    ...account(),
+    ...hosted,
+    "auth whoami": { authenticated: true, email: "me@example.com" },
+    // The router serves no workers.dev URL, and no Access application names the instance.
+    "workers list": (hosted["workers list"] as { name: string }[])
+      .filter(({ name }) => name !== "acme-gk-github")
+      .map(({ name }) => ({ name })),
+    "zero-trust access applications list": [],
+  });
+  assert.deepEqual(valueAtPath(written(), ["workers", "router", "route"]), { customDomain: "os.example.com" });
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), { github: { name: "acme-gk-github" } });
+  const log = stderr();
+  assert.match(log, /No public origin was found for the instance, so <PUBLIC_ORIGIN> stands for it below\. Set workers\.router\.route and publicBaseUrl in init\.jsonc/);
+  assert.match(log, /Redirect URI: <PUBLIC_ORIGIN>\/gatekeeper\/github\/oauth\n/);
+  assert.match(log, /wrangler secret put CLIENT_SECRET --name acme-gk-github/);
+  assert.doesNotMatch(log, /example\.com\/gatekeeper/);
+});
+
+test("on a takeover, warns that leaving out a live Gatekeeper unbinds it, and can drop the custom one", async (t) => {
+  const { written, prompter, stderr } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", []],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Deploy now?", false],
+  ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
+  assert.match(stderr(), /Warning: leaving out acme-gk-github removes its binding, so it disappears from the app along with every user's connection to it\. The Worker keeps running/);
+  assert.ok(!prompter.asked.some((question) => /Custom Gatekeeper Worker name|Organization name/.test(question.message)));
+  const file = written();
+  assert.deepEqual(valueAtPath(file, ["gatekeepers"]), {});
+  assert.equal(valueAtPath(file, ["customGatekeeper", "enabled"]), false);
+});
+
+/** The hosted account, with `extra` Workers beside the instance's. */
+function hostedWith(...extra: string[]): Record<string, FakeReply> {
+  const hosted = hostedAccount();
+  return {
+    ...account(),
+    ...hosted,
+    "auth whoami": { authenticated: true, email: "me@example.com" },
+    "workers list": [...hosted["workers list"] as object[], ...extra.map((name) => ({ name }))],
+  };
+}
+
+/** A takeover of acme that leaves out the custom Gatekeeper and keeps GitHub. */
+const WITHOUT_CUSTOM: Step[] = [
+  ["What are you setting up?", "takeover"],
+  ["Which hosted instance?", "acme"],
+  ["Admin emails", DEFAULT],
+  ["Web Search Gatekeeper Worker name", DEFAULT],
+  ["Which Gatekeepers?", ["github"]],
+  ["Error Reporter Worker name", DEFAULT],
+  ["Which model providers?", ["cloudflare"]],
+  ["Deploy now?", false],
+];
+
+test("on a takeover, warns that leaving out a live custom Gatekeeper unbinds it", async (t) => {
+  const { written, stderr } = await init(t, WITHOUT_CUSTOM, hostedWith("acme-gk-custom"));
+  assert.match(stderr(), /Warning: leaving out acme-gk-custom removes its binding, so it disappears from the app along with every user's connection to it\. The Worker keeps running; `CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef pnpm exec wrangler delete --name acme-gk-custom` removes it\./);
+  assert.doesNotMatch(stderr(), /Warning: leaving out acme-gk-github/);
+  assert.equal(valueAtPath(written(), ["customGatekeeper", "enabled"]), false);
+});
+
+test("on a takeover, names the file's own custom Gatekeeper Worker when leaving it out unbinds it", async (t) => {
+  const own = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"acme"')
+    .replace('"<CUSTOM_GATEKEEPER_WORKER_NAME>"', '"acme-example"');
+  const { stderr } = await init(t, WITHOUT_CUSTOM, hostedWith("acme-example", "acme-gk-custom"), { template: own });
+  assert.match(stderr(), /Warning: leaving out acme-example removes its binding/);
+  assert.doesNotMatch(stderr(), /Warning: leaving out acme-gk-custom/);
+});
+
+/** A takeover of acme that keeps the custom Gatekeeper, naming its Worker `worker`, and GitHub. */
+function withCustom(worker: string | typeof DEFAULT): Step[] {
+  return [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", DEFAULT],
+    ["Custom Gatekeeper Worker name", worker],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
+  ];
+}
+
+/** The instance's own file, naming `acme-example` as its custom Gatekeeper's Worker. */
+const OWN_CUSTOM = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"acme"')
+  .replace('"<CUSTOM_GATEKEEPER_WORKER_NAME>"', '"acme-example"');
+
+test("on a takeover rerun, keeps the custom Gatekeeper on the Worker the file names", async (t) => {
+  const { written, prompter, stderr } = await init(t, withCustom(DEFAULT), hostedWith("acme-example"),
+    { template: OWN_CUSTOM });
+  assert.equal(prompter.asked.find((question) => question.message === "Custom Gatekeeper Worker name")!.initial,
+    "acme-example");
+  assert.ok(!prompter.asked.some((question) => /Is acme-example this deployment's own/.test(question.message)));
+  assert.equal(valueAtPath(written(), ["workers", "customGatekeeper", "name"]), "acme-example");
+  assert.doesNotMatch(stderr(), /Warning: leaving out/);
+});
+
+test("on a takeover rerun, warns that moving the custom Gatekeeper to another Worker unbinds the file's", async (t) => {
+  const { written, stderr } = await init(t, withCustom("acme-custom"), hostedWith("acme-example"),
+    { template: OWN_CUSTOM });
+  assert.equal(valueAtPath(written(), ["workers", "customGatekeeper", "name"]), "acme-custom");
+  assert.match(stderr(), /Warning: leaving out acme-example removes its binding, so it disappears from the app along with every user's connection to it\. The Worker keeps running; `CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef pnpm exec wrangler delete --name acme-example` removes it\./);
+});
+
+test("on a takeover, leaving out the custom Gatekeeper warns of nothing when nothing binds it", async (t) => {
+  // Another router's file: the instance's default name decides, and the account has no such Worker.
+  const { stderr } = await init(t, WITHOUT_CUSTOM, hostedWith("acme-example"), {
+    template: TEMPLATE.replace('"<CUSTOM_GATEKEEPER_WORKER_NAME>"', '"acme-example"'),
+  });
+  assert.doesNotMatch(stderr(), /Warning: leaving out/);
+});
+
+/** The hosted account, its GitHub Gatekeeper's Worker named `acme-github`, as a file's own name can have it. */
+function renamedGithubAccount(): Record<string, FakeReply> {
+  const hosted = hostedAccount();
+  return {
+    ...account(),
+    ...hosted,
+    "auth whoami": { authenticated: true, email: "me@example.com" },
+    "workers list": (hosted["workers list"] as { name: string }[])
+      .map((worker) => worker.name === "acme-gk-github" ? { ...worker, name: "acme-github" } : worker),
+  };
+}
+
+/** A template for router `router` whose `gatekeepers` block names `worker` as the GitHub Gatekeeper's Worker. */
+function githubTemplate(router: string, worker: string): string {
+  return TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', JSON.stringify(router))
+    .replace('"gatekeepers": {},', `"gatekeepers": { "github": { "name": ${JSON.stringify(worker)} } },`);
+}
+
+/** acme's own file, naming the GitHub Gatekeeper's Worker `acme-github`. */
+const RENAMED_GITHUB = githubTemplate("acme", "acme-github");
+
+test("on a takeover, treats the file's own Gatekeeper the account runs as live, under its name", async (t) => {
+  const { written, prompter, stderr } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", DEFAULT],
+    ["Custom Gatekeeper Worker name", DEFAULT],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
+  ], renamedGithubAccount(), { template: RENAMED_GITHUB });
+  assert.deepEqual(prompter.asked.find((question) => question.message.startsWith("Which Gatekeepers?"))!.initial,
+    ["custom", "github"]);
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), { github: { name: "acme-github" } });
+  const log = stderr();
+  assert.match(log, /acme-github already runs in the account and keeps its secrets/);
+  assert.doesNotMatch(log, /secret put|acme-gk-github|Removed: gatekeepers/);
+});
+
+test("on a takeover, warns that leaving out the file's own live Gatekeeper unbinds it", async (t) => {
+  const { written, stderr } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", ["custom"]],
+    ["Custom Gatekeeper Worker name", DEFAULT],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
+  ], renamedGithubAccount(), { template: RENAMED_GITHUB });
+  assert.match(stderr(), /Warning: leaving out acme-github removes its binding/);
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), {});
+});
+
+/** The hosted account, plus another deployment's GitHub Gatekeeper Worker, `other-gk-github`. */
+function otherGithubAccount(): Record<string, FakeReply> {
+  const hosted = hostedAccount();
+  return {
+    ...account(),
+    ...hosted,
+    "auth whoami": { authenticated: true, email: "me@example.com" },
+    "workers list": [...hosted["workers list"] as { name: string }[], { name: "other-gk-github" }],
+  };
+}
+
+/** acme's own file, naming another GitHub Gatekeeper Worker than the instance's, `other-gk-github`. */
+const OTHER_GITHUB = githubTemplate("acme", "other-gk-github");
+
+/** A takeover of `acme` up to the Gatekeeper question, then its defaults, with `pick` for the GitHub Worker. */
+function otherGithubTakeover(pick: string | typeof DEFAULT): Step[] {
+  return [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Worker is this deployment's github Gatekeeper?", pick],
+    ["Which Gatekeepers?", DEFAULT],
+    ["Custom Gatekeeper Worker name", DEFAULT],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
+  ];
+}
+
+test("on a takeover where the file names another GitHub Worker than the instance's, asks, defaulting to the instance's", async (t) => {
+  const { written, prompter, stderr } = await init(t, otherGithubTakeover(DEFAULT), otherGithubAccount(),
+    { template: OTHER_GITHUB });
+  const question = prompter.asked.find((asked) => asked.message.startsWith("Which Worker is"))!;
+  assert.equal(question.initial, "acme-gk-github");
+  assert.deepEqual(question.choices, ["acme-gk-github", "other-gk-github"]);
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), { github: { name: "acme-gk-github" } });
+  const log = stderr();
+  assert.match(log, /The file names other-gk-github as the github Gatekeeper's Worker, but the instance runs acme-gk-github\./);
+  assert.match(log, /acme-gk-github already runs in the account and keeps its secrets/);
+  assert.doesNotMatch(log, /Warning: leaving out/);
+});
+
+test("on a takeover that keeps the file's GitHub Worker over the instance's, warns that the instance's loses its binding", async (t) => {
+  const { written, stderr } = await init(t, otherGithubTakeover("other-gk-github"), otherGithubAccount(),
+    { template: OTHER_GITHUB });
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), { github: { name: "other-gk-github" } });
+  const log = stderr();
+  assert.match(log, /Warning: leaving out acme-gk-github removes its binding/);
+  assert.doesNotMatch(log, /Warning: leaving out other-gk-github/);
+});
+
+test("on a takeover with another deployment's file, leaves the GitHub Worker it names alone", async (t) => {
+  const hosted = hostedAccount();
+  const { written, prompter, stderr } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", DEFAULT],
+    ["Custom Gatekeeper Worker name", DEFAULT],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
+  ], {
+    ...account(),
+    ...hosted,
+    "auth whoami": { authenticated: true, email: "me@example.com" },
+    // acme has no GitHub Gatekeeper; zeta, another deployment in the account, has one.
+    "workers list": (hosted["workers list"] as { name: string }[])
+      .map((worker) => worker.name === "acme-gk-github" ? { ...worker, name: "zeta-gk-github" } : worker),
+  }, { template: githubTemplate("zeta", "zeta-gk-github") });
+  assert.deepEqual(prompter.asked.find((question) => question.message.startsWith("Which Gatekeepers?"))!.initial,
+    ["custom"]);
+  assert.ok(!prompter.asked.some((question) => question.message.startsWith("Which Worker is")));
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), {});
+  const log = stderr();
+  assert.match(log, /The file's workers\.router\.name is not acme, so the Gatekeeper Workers its gatekeepers block names may be another deployment's, and are left alone: zeta-gk-github\./);
+  assert.doesNotMatch(log, /zeta-gk-github already runs|Warning: leaving out/);
+});
+
+test("without a Gatekeeper catalog, still asks about the custom Gatekeeper", async (t) => {
+  const { code, prompter, stderr, written } = await init(t, [...COMPLETE, ["Deploy now?", false]], completeAccount(),
+    { catalog: { offered: [], excluded: [], unavailable: "no submodule install" } });
+  assert.equal(code, 0);
+  assert.deepEqual(prompter.asked.find((question) => question.message.startsWith("Which Gatekeepers?"))!.choices, ["custom"]);
+  assert.match(stderr(), /The Gatekeeper catalog could not be read, so only the example custom Gatekeeper is offered: no submodule install/);
+  assert.equal(valueAtPath(written(), ["customGatekeeper", "enabled"]), true);
 });

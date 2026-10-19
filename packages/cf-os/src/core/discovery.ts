@@ -1,6 +1,7 @@
 // Finds what an existing hosted-deploy instance already runs in an account, as the
 // `deployment.jsonc` values that redeploy over it: Worker names, the storage it is bound to, its AI
-// Gateway, and its Access application. See docs/migrate-from-hosted.md for why each value matters.
+// Gateway, its Access application, and the optional Gatekeepers the starter can deploy over. See
+// docs/migrate-from-hosted.md for why each value matters.
 //
 // Nothing here is guessed. A resource that does not match `matchers()` (naming.ts) is reported as
 // missing and left as it is in the file -- the cost of a wrong guess is a deploy that binds new,
@@ -19,7 +20,8 @@ import {
   type CloudflareClient,
 } from "./client.ts";
 import type { DeploymentEdit } from "./edits.ts";
-import { accessAppName, deployedGatekeeperSuffixes, matchers } from "./naming.ts";
+import type { ExcludedGatekeeper } from "./gatekeepers.ts";
+import { accessAppName, BUILT_IN_GATEKEEPER_SLUGS, matchers } from "./naming.ts";
 
 /** What the account holds, as far as discovery is concerned. */
 export interface Inventory {
@@ -63,6 +65,20 @@ export interface ReportRow {
   note?: string;
 }
 
+/** An `N-gk-<slug>` Worker the starter deploys over: an optional Gatekeeper the catalog offers. */
+export interface FoundGatekeeper {
+  slug: string;
+  /** Its Worker name. */
+  name: string;
+}
+
+/** An `N-gk-*` Worker the starter cannot deploy, and why. */
+export interface OrphanedGatekeeper {
+  name: string;
+  kind: "repeat" | "unknown";
+  reason: string;
+}
+
 /** What {@link discover} concluded. */
 export interface Discovery {
   /**
@@ -73,14 +89,26 @@ export interface Discovery {
   /** The values to write: found ones only. */
   edits: DeploymentEdit[];
   rows: ReportRow[];
-  /** `N-gk-*` Workers the starter does not deploy, which lose their binding on redeploy. */
-  orphanedGatekeepers: string[];
+  /** Optional Gatekeepers the instance runs that the catalog offers, written to `gatekeepers`. */
+  foundGatekeepers: FoundGatekeeper[];
+  /** `N-gk-*` Workers the starter cannot deploy, which lose their binding on redeploy. */
+  orphanedGatekeepers: OrphanedGatekeeper[];
   /** Anything else worth saying: ambiguity, disagreements between sources. */
   notes: string[];
 }
 
-/** Matches `inventory` against instance `n`'s naming. */
-export function discover(n: string, inventory: Inventory): Discovery {
+/**
+ * Matches `inventory` against instance `n`'s naming. Each `N-gk-<slug>` Worker beyond the built-in
+ * ones is deployable when `offeredSlugs` (the catalog's) has its slug; a repeat install when its
+ * slug is one of those, or a built-in's, plus digits, as the hosted deploy names a second install
+ * (`google2`); otherwise unknown, with `excluded`'s reason when the catalog names one.
+ */
+export function discover(
+  n: string,
+  inventory: Inventory,
+  offeredSlugs: readonly string[] = [],
+  excluded: readonly ExcludedGatekeeper[] = [],
+): Discovery {
   const edits: DeploymentEdit[] = [];
   const rows: ReportRow[] = [];
   const notes: string[] = [];
@@ -170,13 +198,43 @@ export function discover(n: string, inventory: Inventory): Discovery {
     edits.push({ path: ["publicBaseUrl"], value: origin.publicBaseUrl });
   }
 
-  const deployed = deployedGatekeeperSuffixes(n);
-  const orphanedGatekeepers = inventory.workers
-    .map((worker) => worker.name)
-    .filter((name) => name.startsWith(`${n}-gk-`) && !deployed.has(name.slice(`${n}-gk-`.length)))
-    .toSorted();
+  const foundGatekeepers: FoundGatekeeper[] = [];
+  const orphanedGatekeepers: OrphanedGatekeeper[] = [];
+  const prefix = `${n}-gk-`;
+  for (const name of inventory.workers.map((worker) => worker.name).filter((candidate) => candidate.startsWith(prefix)).toSorted()) {
+    const slug = name.slice(prefix.length);
+    if (BUILT_IN_GATEKEEPER_SLUGS.includes(slug)) continue;
+    if (offeredSlugs.includes(slug)) {
+      foundGatekeepers.push({ slug, name });
+      continue;
+    }
+    const base = slug.replace(/\d+$/, "");
+    if (base !== slug && (offeredSlugs.includes(base) || BUILT_IN_GATEKEEPER_SLUGS.includes(base))) {
+      orphanedGatekeepers.push({
+        name, kind: "repeat",
+        reason: `a second install of ${base}; the starter deploys one Worker per Gatekeeper package`,
+      });
+      continue;
+    }
+    const reason = excluded.find((candidate) => candidate.slug === slug)?.reason;
+    orphanedGatekeepers.push({
+      name, kind: "unknown",
+      reason: reason ? `the starter cannot deploy it: ${reason}` : `no Gatekeeper in the submodule has the slug ${slug}`,
+    });
+  }
+  for (const { slug, name } of foundGatekeepers) {
+    rows.push({ label: `${slug} Gatekeeper Worker`, found: name, expected: name, path: `gatekeepers.${slug}.name` });
+    edits.push({ path: ["gatekeepers", slug, "name"], value: name });
+  }
+  // Discovery reads Worker names, not their settings, and a deploy replaces a Worker's vars wholesale.
+  if (foundGatekeepers.length) {
+    notes.push("A deploy keeps the found optional Gatekeepers' secrets but replaces their plain vars with " +
+      "the package's own and BASE_URL. Copy any var a Worker relies on (its dashboard settings list them: " +
+      "GITLAB_URL for a self-managed GitLab, MCP_PORTAL_URL for an MCP portal) into " +
+      "gatekeepers.<slug>.vars before deploying.");
+  }
 
   const matched = ["workers.router.name", "workers.workshop.name"]
     .every((path) => rows.some((row) => row.path === path && row.found !== null));
-  return { matched, edits, rows, orphanedGatekeepers, notes };
+  return { matched, edits, rows, foundGatekeepers, orphanedGatekeepers, notes };
 }

@@ -23,10 +23,18 @@ export interface TextOptions {
   validate?: (value: string) => string | undefined;
 }
 
+/** Options for {@link Prompter.multiselect}. */
+export interface MultiselectOptions {
+  /** Whether at least one choice has to be picked. On by default. */
+  required?: boolean;
+}
+
 /** Asks the person at the terminal. Every method throws {@link Cancelled} when they cancel. */
 export interface Prompter {
   select<T extends string>(message: string, choices: Choice<T>[], initial?: T): Promise<T>;
-  multiselect<T extends string>(message: string, choices: Choice<T>[], initial: T[]): Promise<T[]>;
+  multiselect<T extends string>(
+    message: string, choices: Choice<T>[], initial: T[], options?: MultiselectOptions,
+  ): Promise<T[]>;
   text(message: string, options?: TextOptions): Promise<string>;
   confirm(message: string, initial?: boolean): Promise<boolean>;
 }
@@ -63,9 +71,11 @@ export function terminalPrompter(): Prompter | null {
     async select<T extends string>(message: string, choices: Choice<T>[], initial?: T) {
       return answered<T>(await select({ message, options: choices as Option<T>[], initialValue: initial }));
     },
-    async multiselect<T extends string>(message: string, choices: Choice<T>[], initial: T[]) {
+    async multiselect<T extends string>(
+      message: string, choices: Choice<T>[], initial: T[], { required = true }: MultiselectOptions = {},
+    ) {
       return answered<T[]>(await multiselect({
-        message, options: choices as Option<T>[], initialValues: initial, required: true,
+        message, options: choices as Option<T>[], initialValues: initial, required,
       }));
     },
     async text(message, { initial, validate } = {}) {

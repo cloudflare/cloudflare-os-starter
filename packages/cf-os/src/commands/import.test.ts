@@ -5,19 +5,23 @@ import test from "node:test";
 import { cfClient } from "../cf-client.ts";
 import { parseDeployment, valueAtPath } from "../deployment-file.ts";
 import { FAKE_ACCOUNT, fakeCf, type FakeReply } from "../fake-cf.ts";
-import { CANCEL, hostedAccount, scratchProject, scriptedPrompter, TEMPLATE, testContext } from "../test-support.ts";
+import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
+import { CANCEL, hostedAccount, scratchProject, scriptedPrompter, TEMPLATE, testCatalog, testContext } from "../test-support.ts";
 import { run } from "./import.ts";
 
-/** Runs `cf-os import <positionals>` in `root` against `account`. */
+/** Runs `cf-os import <positionals>` in `root` against `account`, with {@link testCatalog} by default. */
 async function importing(
   root: string,
   positionals: string[],
-  { out, account = hostedAccount(), flags = {}, prompter = null }:
-    { out?: string; account?: Record<string, FakeReply>; flags?: object; prompter?: ReturnType<typeof scriptedPrompter> | null } = {},
+  { out, account = hostedAccount(), flags = {}, prompter = null, catalog = testCatalog() }:
+    {
+      out?: string; account?: Record<string, FakeReply>; flags?: object;
+      prompter?: ReturnType<typeof scriptedPrompter> | null; catalog?: GatekeeperCatalog;
+    } = {},
 ) {
   const cf = fakeCf(account);
   const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), flags, prompter });
-  const code = await run({ command: "import", values: { out }, positionals }, harness.ctx);
+  const code = await run({ command: "import", values: { out }, positionals }, harness.ctx, async () => catalog);
   return { code, ...harness, calls: cf.calls };
 }
 
@@ -33,6 +37,38 @@ test("prints the fragment as JSON on stdout and the report on stderr, writing no
   assert.match(stderr(), /found {4}Workshop Worker/);
   assert.match(stderr(), /pnpm cf-os import acme --account [0-9a-f]{32} --out deployment\.jsonc/);
   assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE);
+});
+
+test("includes the optional Gatekeepers the starter can deploy over, and lists the rest with why", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const hosted = hostedAccount();
+  const account = {
+    ...hosted,
+    "workers list": [...hosted["workers list"] as object[], { name: "acme-gk-github2" }, { name: "acme-gk-weather" }],
+  };
+  const { code, json, stderr } = await importing(root, ["acme"], { account, flags: { account: FAKE_ACCOUNT } });
+  assert.equal(code, 0);
+  const fragment = json[0] as Record<string, any>;
+  assert.deepEqual(fragment.gatekeepers, { github: { name: "acme-gk-github" } });
+  assert.match(stderr(), /found {4}github Gatekeeper Worker +acme-gk-github {2}-> gatekeepers\.github\.name/);
+  const report = stderr();
+  const orphaned = report.slice(report.indexOf("Gatekeepers not deployable by the starter"));
+  assert.match(orphaned, /\n {2}acme-gk-github2 {2}a second install of github; the starter deploys one Worker per Gatekeeper package/);
+  assert.match(orphaned, /\n {2}acme-gk-weather {2}no Gatekeeper in the submodule has the slug weather/);
+  assert.doesNotMatch(orphaned, /acme-gk-github\s/);
+  assert.match(report, /customGatekeeper\.enabled: false deploys none/);
+  assert.match(report, /Note: A deploy keeps the found optional Gatekeepers' secrets but replaces their plain vars/);
+});
+
+test("without a catalog, writes no optional Gatekeeper and says why", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const { code, json, stderr } = await importing(root, ["acme"], {
+    flags: { account: FAKE_ACCOUNT }, catalog: { offered: [], excluded: [], unavailable: "no submodule install" },
+  });
+  assert.equal(code, 0);
+  assert.equal((json[0] as Record<string, unknown>).gatekeepers, undefined);
+  assert.match(stderr(), /\n {2}acme-gk-github {2}no Gatekeeper in the submodule has the slug github/);
+  assert.match(stderr(), /Note: The Gatekeeper catalog could not be read, so no optional Gatekeeper is deployable: no submodule install/);
 });
 
 test("--out writes the values into the file and leaves the rest alone", async (t) => {
@@ -57,6 +93,36 @@ test("--out to another path leaves the input untouched", async (t) => {
   assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE);
   const filled = parseDeployment(readFileSync(join(root, "filled.jsonc"), "utf8"));
   assert.equal(valueAtPath(filled, ["workers", "workshop", "name"]), "acme-backend");
+});
+
+/** A template for router `router` whose `gatekeepers` block names beta's GitHub and Home Assistant Workers. */
+function gatekeepersTemplate(router: string): string {
+  return TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', JSON.stringify(router)).replace('"gatekeepers": {},',
+    '"gatekeepers": { "github": { "name": "beta-gk-github" }, "homeassistant": { "name": "beta-gk-homeassistant" } },');
+}
+
+test("--out removes the gatekeepers entries of a file for another router, and says so", async (t) => {
+  const root = scratchProject(t, gatekeepersTemplate("beta"));
+  const { code, json, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT } });
+  assert.equal(code, 0);
+  // github is acme's own Worker; beta's Home Assistant Gatekeeper is left out, not bound to acme.
+  const written = parseDeployment(readFileSync(join(root, "acme.jsonc"), "utf8"));
+  assert.deepEqual(valueAtPath(written, ["gatekeepers"]), { github: { name: "acme-gk-github" } });
+  assert.deepEqual((json[0] as Record<string, any>).gatekeepers, { github: { name: "acme-gk-github" } });
+  assert.match(stderr(), /Note: The file's workers\.router\.name is not acme, so the Gatekeeper Workers its gatekeepers block names may be another deployment's, and are left alone\. --out removes their entries: gatekeepers\.homeassistant \(beta-gk-homeassistant\)\./);
+  assert.match(stderr(), /Wrote \d+ values to acme\.jsonc, removing 1 gatekeepers entry \(local file only/);
+});
+
+test("keeps the gatekeepers entries of the instance's own file", async (t) => {
+  const root = scratchProject(t, gatekeepersTemplate("acme"));
+  const { code, stderr } = await importing(root, ["acme"], { out: "deployment.jsonc", flags: { account: FAKE_ACCOUNT } });
+  assert.equal(code, 0);
+  const written = parseDeployment(readFileSync(join(root, "deployment.jsonc"), "utf8"));
+  assert.deepEqual(valueAtPath(written, ["gatekeepers"]), {
+    github: { name: "acme-gk-github" },
+    homeassistant: { name: "beta-gk-homeassistant" },
+  });
+  assert.doesNotMatch(stderr(), /removing|--out removes/);
 });
 
 test("without an account, lists the ones cf can reach and stops", async (t) => {

@@ -68,6 +68,7 @@ test("once init has configured the file, carries on with the deploy", async (t) 
     ["Admin emails", DEFAULT],
     ["Which AI Gateway", "default"],
     ["Which model providers?", ["cloudflare"]],
+    ["Which Gatekeepers?", DEFAULT],
     ["Organization name", DEFAULT],
     ["What it tells agents", DEFAULT],
   ]);
@@ -78,6 +79,8 @@ test("once init has configured the file, carries on with the deploy", async (t) 
   assert.deepEqual(prompter.remaining(), []);
   assert.match(harness.stderr(), /Continuing with `cf-os deploy`/);
   assert.doesNotMatch(harness.stderr(), /Deploy now\?|Next:/);
+  // The fixture has no upstream packages, so init offered only the custom Gatekeeper, and said why.
+  assert.match(harness.stderr(), /The Gatekeeper catalog could not be read, so only the example custom Gatekeeper is offered/);
 });
 
 /** {@link TEMPLATE} with every placeholder filled in. */

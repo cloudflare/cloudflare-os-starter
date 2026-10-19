@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { testCatalog } from "../test-support.ts";
 import { editsAsFragment } from "./edits.ts";
 import {
   adminsProblem,
   defaultHost,
+  describeEdits,
+  gatekeeperHint,
   gatewayChoices,
   hostProblem,
   nameCollisions,
@@ -25,6 +28,8 @@ function answers(route: NewDeploymentAnswers["route"]): NewDeploymentAnswers {
     admins: ["a@example.com"],
     aiGateway: { name: "default", providers: ["cloudflare", "anthropic"] },
     customGatekeeper: { name: "Acme", message: "Hello." },
+    gatekeepers: {},
+    removedGatekeepers: [],
   };
 }
 
@@ -43,8 +48,43 @@ test("records a new deployment on a custom domain", () => {
     },
     access: { admins: ["a@example.com"] },
     aiGateway: { enabled: true, name: "default", accountId: null, providers: ["cloudflare", "anthropic"] },
-    customGatekeeper: { name: "Acme", message: "Hello." },
+    customGatekeeper: { enabled: true, name: "Acme", message: "Hello." },
   });
+});
+
+test("records the Gatekeepers chosen: the custom one's text only when it is on, one name per slug", () => {
+  const edits = newDeploymentEdits({
+    ...answers({ customDomain: "os.example.com" }),
+    customGatekeeper: null,
+    gatekeepers: { github: "acme-gk-github", mcpportal: "acme-portal" },
+    removedGatekeepers: ["homeassistant"],
+  });
+  const paths = edits.map((edit) => edit.path.join("."));
+  assert.ok(!paths.some((path) => /customGatekeeper\.(name|message)$/.test(path)), "wrote the unused custom Gatekeeper's names");
+  assert.ok(!paths.includes("workers.customGatekeeper.name"));
+  // Only `name` per slug, so vars added by hand stay; a deselected one is removed whole.
+  assert.deepEqual(edits.filter((edit) => edit.path[0] === "customGatekeeper" || edit.path[0] === "gatekeepers"), [
+    { path: ["customGatekeeper", "enabled"], value: false },
+    { path: ["gatekeepers", "github", "name"], value: "acme-gk-github" },
+    { path: ["gatekeepers", "mcpportal", "name"], value: "acme-portal" },
+    { path: ["gatekeepers", "homeassistant"], value: undefined },
+  ]);
+});
+
+test("prints removals apart from the fragment, which cannot show them", () => {
+  const text = describeEdits([
+    { path: ["gatekeepers", "github", "name"], value: "acme-gk-github" },
+    { path: ["gatekeepers", "homeassistant"], value: undefined },
+  ]);
+  const [json, ...removals] = text.split(/\n(?=Removed: )/);
+  assert.deepEqual(JSON.parse(json), { gatekeepers: { github: { name: "acme-gk-github" } } });
+  assert.deepEqual(removals, ["Removed: gatekeepers.homeassistant"]);
+});
+
+test("says what each optional Gatekeeper needs", () => {
+  const [github, homeassistant] = testCatalog().offered;
+  assert.equal(gatekeeperHint(github), "needs CLIENT_ID, CLIENT_SECRET");
+  assert.equal(gatekeeperHint(homeassistant), "no credentials, one install only");
 });
 
 test("gives a workers.dev deployment the public origin the router answers on", () => {
@@ -55,10 +95,13 @@ test("gives a workers.dev deployment the public origin the router answers on", (
   assert.equal(newDeploymentAccessTarget(answers({ workersDevSubdomain: "team" })).host, "acme.team.workers.dev");
 });
 
-test("finds which derived names are taken", () => {
+test("finds which derived names are taken, the chosen optional Gatekeepers' included", () => {
   assert.deepEqual(nameCollisions("acme", [{ name: "acme" }, { name: "acme-errors" }, { name: "other" }]),
     ["acme", "acme-errors"]);
   assert.deepEqual(nameCollisions("fresh", [{ name: "acme" }]), []);
+  const workers = [{ name: "acme-gk-github" }, { name: "acme-gk-slack" }];
+  assert.deepEqual(nameCollisions("acme", workers), []);
+  assert.deepEqual(nameCollisions("acme", workers, ["github", "notion"]), ["acme-gk-github"]);
 });
 
 test("offers os.<zone> and keeps the hostname inside the zone", () => {
@@ -85,18 +128,37 @@ test("offers the default gateway first, whether or not it exists yet", () => {
 
 test("records a takeover's answers, websearch only when asked", () => {
   const display = { name: "Acme", message: "Hello." };
+  const none = { gatekeepers: {}, removedGatekeepers: [] };
   assert.deepEqual(editsAsFragment(takeoverEdits({
-    admins: ["a@example.com"], customGatekeeper: "acme-gk-custom", errorReporter: "acme-errors",
-    providers: ["cloudflare", "anthropic"], display,
+    admins: ["a@example.com"], customGatekeeper: { worker: "acme-gk-custom", display }, errorReporter: "acme-errors",
+    providers: ["cloudflare", "anthropic"], ...none,
   })), {
     access: { admins: ["a@example.com"] },
     workers: { customGatekeeper: { name: "acme-gk-custom" }, errorReporter: { name: "acme-errors" } },
     aiGateway: { providers: ["cloudflare", "anthropic"] },
-    customGatekeeper: display,
+    customGatekeeper: { enabled: true, ...display },
   });
   const withWebsearch = takeoverEdits({
-    admins: ["a@example.com"], websearch: "acme-gk-websearch", customGatekeeper: "c", errorReporter: "e",
-    providers: ["cloudflare"], display,
+    admins: ["a@example.com"], websearch: "acme-gk-websearch", customGatekeeper: { worker: "c", display },
+    errorReporter: "e", providers: ["cloudflare"], ...none,
   });
   assert.ok(withWebsearch.some((edit) => edit.path.join(".") === "workers.websearch.name"));
+});
+
+test("records a takeover without the custom Gatekeeper, keeping a found one and removing a deselected one", () => {
+  assert.deepEqual(editsAsFragment(takeoverEdits({
+    admins: ["a@example.com"], customGatekeeper: null, errorReporter: "acme-errors", providers: ["cloudflare"],
+    gatekeepers: { github: "acme-gk-github" }, removedGatekeepers: [],
+  })), {
+    access: { admins: ["a@example.com"] },
+    workers: { errorReporter: { name: "acme-errors" } },
+    aiGateway: { providers: ["cloudflare"] },
+    customGatekeeper: { enabled: false },
+    gatekeepers: { github: { name: "acme-gk-github" } },
+  });
+  const removing = takeoverEdits({
+    admins: ["a@example.com"], customGatekeeper: null, errorReporter: "e", providers: ["cloudflare"],
+    gatekeepers: {}, removedGatekeepers: ["github"],
+  });
+  assert.deepEqual(removing.filter((edit) => edit.path[0] === "gatekeepers"), [{ path: ["gatekeepers", "github"], value: undefined }]);
 });

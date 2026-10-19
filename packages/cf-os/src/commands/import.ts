@@ -11,11 +11,55 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { configPath, displayPath, UsageError, type CommandArgs, type Context } from "../context.ts";
 import type { CloudflareClient } from "../core/client.ts";
-import { discover, fetchInventory, type Discovery } from "../core/discovery.ts";
-import { editsAsFragment } from "../core/edits.ts";
+import { discover, fetchInventory, type Discovery, type Inventory } from "../core/discovery.ts";
+import { editsAsFragment, valueAtPath, type DeploymentEdit } from "../core/edits.ts";
+import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import { findInstances, WORKER_NAME } from "../core/naming.ts";
 import { parseDeployment, updateDeployment } from "../deployment-file.ts";
+import { loadCatalog } from "../gatekeeper-catalog.ts";
 import { resolveAccount } from "./account.ts";
+
+/**
+ * {@link discover} against the submodule's Gatekeeper catalog, saying so when there is none: every
+ * optional Gatekeeper then reads as not deployable.
+ */
+export function discoverInstance(n: string, inventory: Inventory, catalog: GatekeeperCatalog): Discovery {
+  const discovery = discover(n, inventory, catalog.offered.map((entry) => entry.slug), catalog.excluded);
+  if (catalog.unavailable && discovery.orphanedGatekeepers.length) {
+    discovery.notes.push(`The Gatekeeper catalog could not be read, so no optional Gatekeeper is deployable: ${catalog.unavailable}`);
+  }
+  return discovery;
+}
+
+/**
+ * The file's `gatekeepers` entries to remove when the file is not instance `n`'s: its
+ * `workers.router.name` is another, so it may be another deployment's in the same account, and
+ * binding the Workers it names would deploy over that deployment's Gatekeepers (`cf-os init`'s
+ * takeover leaves them out too). Slugs `discovery` found for `n` stay, as its edits rename them to
+ * the instance's own Workers. Each removal comes with a note naming the Worker left alone.
+ */
+export function foreignGatekeepers(
+  file: Record<string, unknown>,
+  n: string,
+  discovery: Discovery,
+): { removals: DeploymentEdit[]; note?: string } {
+  const block = valueAtPath(file, ["gatekeepers"]);
+  if (valueAtPath(file, ["workers", "router", "name"]) === n || !block || typeof block !== "object" ||
+      Array.isArray(block)) {
+    return { removals: [] };
+  }
+  const slugs = Object.keys(block).filter((slug) => !discovery.foundGatekeepers.some((found) => found.slug === slug));
+  if (!slugs.length) return { removals: [] };
+  const listed = slugs.map((slug) => {
+    const name = valueAtPath(block, [slug, "name"]);
+    return `gatekeepers.${slug}${typeof name === "string" ? ` (${name})` : ""}`;
+  });
+  return {
+    removals: slugs.map((slug) => ({ path: ["gatekeepers", slug], value: undefined })),
+    note: `The file's workers.router.name is not ${n}, so the Gatekeeper Workers its gatekeepers block names ` +
+      `may be another deployment's, and are left alone. --out removes their entries: ${listed.join(", ")}.`,
+  };
+}
 
 /** The human-readable report: a found/missing table, then what is left to do by hand. */
 export function formatReport(n: string, discovery: Discovery): string {
@@ -34,14 +78,16 @@ export function formatReport(n: string, discovery: Discovery): string {
     `  workers.customGatekeeper   a new name, e.g. "${n}-gk-custom"`,
     `  workers.errorReporter      a new name, e.g. "${n}-errors"`,
     "  aiGateway.providers        add anthropic/openai if you stored keys on the gateway",
-    "  customGatekeeper.*         the name and message the example custom Gatekeeper shows agents",
+    "  customGatekeeper.*         the name and message the example custom Gatekeeper shows agents;",
+    "                             customGatekeeper.enabled: false deploys none, and needs neither",
   );
   if (discovery.orphanedGatekeepers.length) {
+    const nameWidth = Math.max(...discovery.orphanedGatekeepers.map((gatekeeper) => gatekeeper.name.length));
     lines.push(
       "",
-      "Wizard-installed Gatekeepers the starter does not deploy. They keep running, but lose their",
-      "binding and disappear from the app (docs/migrate-from-hosted.md, section 8):",
-      ...discovery.orphanedGatekeepers.map((name) => `  ${name}`),
+      "Gatekeepers not deployable by the starter. They keep running, but lose their binding and",
+      "disappear from the app (docs/migrate-from-hosted.md, section 8):",
+      ...discovery.orphanedGatekeepers.map(({ name, reason }) => `  ${name.padEnd(nameWidth)}  ${reason}`),
     );
   }
   if (discovery.notes.length) lines.push("", ...discovery.notes.map((note) => `Note: ${note}`));
@@ -79,8 +125,12 @@ export function checkInstanceName(instance: string | undefined): void {
   }
 }
 
-/** `cf-os import`. */
-export async function run(args: CommandArgs, ctx: Context): Promise<number> {
+/** `cf-os import`, against the catalog `catalog` reads from the project at its root. */
+export async function run(
+  args: CommandArgs,
+  ctx: Context,
+  catalog: (root: string) => Promise<GatekeeperCatalog> = loadCatalog,
+): Promise<number> {
   let instance: string | undefined = args.positionals[0];
   checkInstanceName(instance);
   const out = args.values.out as string | undefined;
@@ -101,7 +151,9 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
     ["pnpm cf-os import <instance>", accountFlag].filter(Boolean).join(" ")) ?? undefined;
   if (!instance) return 1;
 
-  const discovery = discover(instance, await fetchInventory(client, account.id));
+  const discovery = discoverInstance(instance, await fetchInventory(client, account.id), await catalog(ctx.root));
+  const { removals, note } = foreignGatekeepers(file, instance, discovery);
+  if (note) discovery.notes.push(note);
 
   ctx.out.log(`Hosted instance "${instance}" in account ${account.id}:\n`);
   ctx.out.log(formatReport(instance, discovery));
@@ -115,8 +167,10 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
   if (out) {
     const outPath = resolve(ctx.cwd, out);
     const outWhere = displayPath(ctx, outPath);
-    await updateDeployment(inPath, discovery.edits, outPath);
-    ctx.out.log(`\nWrote ${discovery.edits.length} values to ${outWhere} (local file only; nothing in ` +
+    await updateDeployment(inPath, [...discovery.edits, ...removals], outPath);
+    const removed = removals.length
+      ? `, removing ${removals.length} gatekeepers ${removals.length === 1 ? "entry" : "entries"}` : "";
+    ctx.out.log(`\nWrote ${discovery.edits.length} values to ${outWhere}${removed} (local file only; nothing in ` +
       `the account changed). Review it${outPath === inPath ? ` with \`git diff ${outWhere}\`` : ""}, ` +
       "fill in what is listed above, then run `pnpm cf-os deploy`.");
   } else {

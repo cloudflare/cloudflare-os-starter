@@ -32,6 +32,8 @@ export interface Asked {
   hints?: Record<string, string | undefined>;
   /** The default offered. */
   initial?: unknown;
+  /** For multiselect: whether an empty answer is refused. */
+  required?: boolean;
 }
 
 function describeChoices(choices: Choice[]): Pick<Asked, "choices" | "hints"> {
@@ -67,8 +69,14 @@ export function scriptedPrompter(script: Step[]): Prompter & { asked: Asked[]; r
       assert.ok(choices.some((choice) => choice.value === answer), `"${answer}" is not a choice for "${message}"`);
       return answer as never;
     },
-    async multiselect(message, choices, initial) {
-      return next({ kind: "multiselect", message, ...describeChoices(choices), initial }) as never;
+    async multiselect(message, choices, initial, { required = true } = {}) {
+      const answer = next({ kind: "multiselect", message, ...describeChoices(choices), initial, required });
+      assert.ok(Array.isArray(answer), `"${message}" takes a list`);
+      for (const value of answer) {
+        assert.ok(choices.some((choice) => choice.value === value), `"${value}" is not a choice for "${message}"`);
+      }
+      assert.ok(!required || answer.length, `"${message}" needs at least one choice`);
+      return answer as never;
     },
     async text(message, { initial, validate } = {}) {
       const answer = String(next({ kind: "text", message, initial }) ?? "");
