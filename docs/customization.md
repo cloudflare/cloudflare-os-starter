@@ -103,7 +103,7 @@ Each one is an entry under `gatekeepers`, keyed by its slug:
   CLOUDFLARE_ACCOUNT_ID=your-account-id pnpm exec wrangler secret put CLIENT_ID --name acme-os-gk-github
   ```
 
-  `init` prints the provider's console page, upstream's setup steps, the redirect URI and these commands. Deploying first is fine: the Gatekeeper deploys, but nobody can connect it until its secrets are set, and later deploys keep them. `check` and `deploy` warn about each secret still missing, and never fail on one.
+  `init` prints the provider's console page, upstream's setup steps, the redirect URI and these commands. Deploying first is fine: the Gatekeeper deploys, but nobody can connect it until its secrets are set, and later deploys keep them. `check` and `deploy` warn about each secret still missing before they build, `deploy` ends with a one-line reminder while any remain, and neither fails on one.
 - **One install per package.** The hosted flow can install an OAuth Gatekeeper twice, for two OAuth apps (`google2`, say); the starter deploys each package at most once.
 - **Removing an entry unbinds it.** The next deploy drops its two bindings, so the Workshop stops offering it and users' connections to it disappear. Its Worker, and the Durable Objects holding its state, keep running unbound: the CLI never deletes a Worker. To delete it, `CLOUDFLARE_ACCOUNT_ID=your-account-id pnpm exec wrangler delete --name <its Worker name>`.
 

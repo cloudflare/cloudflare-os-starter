@@ -4,8 +4,8 @@
 // (core/deployment.ts), confirm against the account that what the file names exists
 // (core/verify-account.ts), warn about any optional Gatekeeper's secrets not set yet, and build.
 // `check` runs the test suites first and dry-runs each deploy; `deploy` deploys for real, with no
-// confirmation, and repeats the secret warnings for whatever is still missing. The generated
-// configs are removed afterwards either way.
+// confirmation, and ends by recalling any secret warnings, which a deploy cannot have resolved. The
+// generated configs are removed afterwards either way.
 //
 // The builds run concurrently (run-tasks.ts), each command's output printed as one block when it
 // finishes, and the first failure cancels the rest: the deploy is doomed either way, so there is no
@@ -211,30 +211,30 @@ function reportAiGateway(ctx: Context, config: DeploymentConfig): void {
 }
 
 /**
- * Warns about each optional Gatekeeper secret not set yet. Never fails: the Worker deploys without
- * them, and only connecting through it waits on them.
+ * Warns about each optional Gatekeeper secret not set yet, and returns how many warnings it printed.
+ * Never fails: the Worker deploys without them, and only connecting through it waits on them.
  */
-async function warnMissingSecrets(ctx: Context, config: DeploymentConfig, catalog: GatekeeperCatalog): Promise<void> {
-  for (const warning of await gatekeeperSecretWarnings(await ctx.client(), config, catalog)) {
-    ctx.out.log(`\n${warning}`);
-  }
+async function warnMissingSecrets(ctx: Context, config: DeploymentConfig, catalog: GatekeeperCatalog): Promise<number> {
+  const warnings = await gatekeeperSecretWarnings(await ctx.client(), config, catalog);
+  for (const warning of warnings) ctx.out.log(`\n${warning}`);
+  return warnings.length;
 }
 
 /**
  * Fails on anything the deployment file names that the account does not have. Before the build, so
  * a wrong AUD tag or KV ID costs seconds rather than a full build, and well before anything deploys.
- * Then warns about missing Gatekeeper secrets, which fail nothing.
+ * Then warns about missing Gatekeeper secrets, which fail nothing, and returns how many warnings.
  */
 async function checkAccount(
   ctx: Context,
   config: DeploymentConfig,
   where: string,
   catalog: GatekeeperCatalog,
-): Promise<void> {
+): Promise<number> {
   const result = await verifyAccount(await ctx.client(), config, publicOrigin(config));
   if ("skipped" in result) {
     ctx.out.log(`\nSkipped Cloudflare-side checks: ${result.skipped}`);
-    return;
+    return 0;
   }
   if (result.problems.length) {
     throw new Error(
@@ -242,7 +242,7 @@ async function checkAccount(
       result.problems.map((problem) => `  - ${problem}`).join("\n"));
   }
   ctx.out.log("\nCloudflare-side checks passed: Access application, team domain and storage IDs match.");
-  await warnMissingSecrets(ctx, config, catalog);
+  return warnMissingSecrets(ctx, config, catalog);
 }
 
 /**
@@ -299,7 +299,7 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
   }
   const generated = generateConfigs(config, await readBaseConfigs(root), catalog);
   reportAiGateway(ctx, config);
-  await checkAccount(ctx, config, where, catalog);
+  const secretWarnings = await checkAccount(ctx, config, where, catalog);
 
   const generatedPath = (id: WorkerId) => join(root, workerDir(id, catalog), GENERATED_NAME);
   // Every package's, not only those generated this time: a Worker turned off since (the Error
@@ -317,8 +317,12 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
     // Only once every command has settled: mapConcurrent awaits all it started, failed or not.
     await Promise.all(cleanup.map((file) => rm(file, { force: true })));
   }
-  // Again once deployed, for whatever is still missing: every Worker exists now, so this is the
-  // list of secrets to set, and the commands that set them work.
-  if (!check) await warnMissingSecrets(ctx, config, catalog);
+  // A deploy sets no secrets, so the warnings from before the build all still hold. They have
+  // scrolled away behind the build and deploy output by now: one line points back at them.
+  if (!check && secretWarnings) {
+    const one = secretWarnings === 1;
+    ctx.out.log(`\n${one ? "The Gatekeeper secret warning" : `The ${secretWarnings} Gatekeeper secret warnings`} before ` +
+      `the build still ${one ? "applies" : "apply"}; \`pnpm cf-os check\` repeats ${one ? "it" : "them"}.`);
+  }
   return 0;
 }
