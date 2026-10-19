@@ -1,0 +1,59 @@
+.agents/skills/cloudflare-os-operator/references/troubleshooting.md
+  s_d0f890640bc2ec::t_f3442c4efed3c1 133,215
+.agents/skills/cloudflare-os-operator/references/updating.md
+  s_d0f890640bc2ec::t_ae526d42679b73 43,50,59-61,65-68,71
+.agents/skills/cloudflare-os-operator/references/upgrade-and-rollback.md
+  s_d0f890640bc2ec::t_afe843a6f6940d 26
+AGENTS.md
+  s_d0f890640bc2ec::t_02fd391c228200 1
+deployment.jsonc
+  s_d0f890640bc2ec::t_b226afb2d5f5cf 43,48-55,108-109,112
+docs/customization.md
+  s_d0f890640bc2ec::t_2cc08acb1caf60 32,36,45,54,61,80-109,226-227,251,254
+docs/observability.md
+  s_d0f890640bc2ec::t_27edf66b22a520 82
+packages/cf-os/src/commands/deploy.test.ts
+  s_d0f890640bc2ec::t_054970708dbfc2 3,82-91,94,113-135
+packages/cf-os/src/commands/deploy.ts
+  s_d0f890640bc2ec::t_da6d87efa670f6 20,36-37,40,45-47,49,52,55,74-77,135-136,158-163,166-167,231-233,235-240,243-245,258,261,275,282,286-290,292-293,296-297,300
+packages/cf-os/src/commands/init.test.ts
+  s_d0f890640bc2ec::t_d9c3d44f23b286 125,259
+packages/cf-os/src/core/deployment-config.ts
+  s_d0f890640bc2ec::t_64db2f2933fa43 121-122,126-131,135-139,151-161,211-212,215-216
+packages/cf-os/src/core/deployment.test.ts
+  s_d0f890640bc2ec::t_e37d1f52ed7a5e 12,16-19,27,72-74,206,261-262,280,311,336,349,374,376,380,396-397,415-416,430,484,497,515,528,541,554,571,586,599,607,622,641,663,671,678,697,708-716,722-726,732-733,735-737,739-743,759-947
+packages/cf-os/src/core/deployment.ts
+  s_d0f890640bc2ec::t_cfe58d09893460 16-17,34,37-96,131-144,251,254,282-288,312-324,326-327,418-501,603,622-630,632,638-640,645,655-658,726,728,730-737,779-785,791-802,804-805,807,844,862,864-868,885,889-891,899
+packages/cf-os/src/core/edits.ts
+  s_d0f890640bc2ec::t_49926e61debd3d 27-29,37-41
+packages/cf-os/src/core/gatekeepers.ts
+  s_d0f890640bc2ec::t_3a0a402e45ae5d 1-97
+packages/cf-os/src/core/naming.test.ts
+  s_d0f890640bc2ec::t_ab4817acbb55d8 4-12,53-64,78-89
+packages/cf-os/src/core/naming.ts
+  s_d0f890640bc2ec::t_2ebb1b03c86f6f 110,118-129,135-136,138,140-141
+packages/cf-os/src/deployment-file.test.ts
+  s_d0f890640bc2ec::t_978c3e5212b72d 50-83
+packages/cf-os/src/gatekeeper-catalog.test.ts
+  s_d0f890640bc2ec::t_de6c060059c3a1 1-142
+packages/cf-os/src/gatekeeper-catalog.ts
+  s_d0f890640bc2ec::t_e40e27c80a789c 1-111
+packages/cf-os/src/test-support.ts
+  s_d0f890640bc2ec::t_5c413229b14db9 5,8,11-12,139,143-144,152,192-237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "84b5e67c394c3ead23b72f8b6395862a76b0cd60",
+  "prompts": {},
+  "sessions": {
+    "s_d0f890640bc2ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9c1a4d8-208c-4dfa-91a7-e9412e935dbd",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
