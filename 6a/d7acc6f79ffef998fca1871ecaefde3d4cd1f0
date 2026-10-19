@@ -1,0 +1,23 @@
+docs/customization.md
+  s_d0f890640bc2ec::t_4cc1da5d06d843 106
+packages/cf-os/README.md
+  s_d0f890640bc2ec::t_e2dc0af1feca65 23
+packages/cf-os/src/commands/deploy.ts
+  s_d0f890640bc2ec::t_835ad0a2d84849 7-8,214-215,217-220,226,233,237,245,302,320-326
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6ad7acc6f79ffef998fca1871ecaefde3d4cd1f0",
+  "prompts": {},
+  "sessions": {
+    "s_d0f890640bc2ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9c1a4d8-208c-4dfa-91a7-e9412e935dbd",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
