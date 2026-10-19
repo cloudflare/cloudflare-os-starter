@@ -2,9 +2,10 @@
 //
 // Both validate the deployment file, generate every Worker's `wrangler.prod.jsonc`
 // (core/deployment.ts), confirm against the account that what the file names exists
-// (core/verify-account.ts), and build. `check` runs the test suites first and dry-runs each deploy;
-// `deploy` deploys for real, with no confirmation. The generated configs are removed afterwards
-// either way.
+// (core/verify-account.ts), warn about any optional Gatekeeper's secrets not set yet, and build.
+// `check` runs the test suites first and dry-runs each deploy; `deploy` deploys for real, with no
+// confirmation, and repeats the secret warnings for whatever is still missing. The generated
+// configs are removed afterwards either way.
 //
 // The builds run concurrently (run-tasks.ts), each command's output printed as one block when it
 // finishes, and the first failure cancels the rest: the deploy is doomed either way, so there is no
@@ -50,7 +51,7 @@ import {
 } from "../core/deployment.ts";
 import { placeholderPaths } from "../core/edits.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
-import { verifyAccount } from "../core/verify-account.ts";
+import { gatekeeperSecretWarnings, verifyAccount } from "../core/verify-account.ts";
 import { parseDeployment } from "../deployment-file.ts";
 import { loadCatalog } from "../gatekeeper-catalog.ts";
 import { CancelledError, concurrencyLimit, mapConcurrent, runCaptured } from "../run-tasks.ts";
@@ -210,10 +211,26 @@ function reportAiGateway(ctx: Context, config: DeploymentConfig): void {
 }
 
 /**
+ * Warns about each optional Gatekeeper secret not set yet. Never fails: the Worker deploys without
+ * them, and only connecting through it waits on them.
+ */
+async function warnMissingSecrets(ctx: Context, config: DeploymentConfig, catalog: GatekeeperCatalog): Promise<void> {
+  for (const warning of await gatekeeperSecretWarnings(await ctx.client(), config, catalog)) {
+    ctx.out.log(`\n${warning}`);
+  }
+}
+
+/**
  * Fails on anything the deployment file names that the account does not have. Before the build, so
  * a wrong AUD tag or KV ID costs seconds rather than a full build, and well before anything deploys.
+ * Then warns about missing Gatekeeper secrets, which fail nothing.
  */
-async function checkAccount(ctx: Context, config: DeploymentConfig, where: string): Promise<void> {
+async function checkAccount(
+  ctx: Context,
+  config: DeploymentConfig,
+  where: string,
+  catalog: GatekeeperCatalog,
+): Promise<void> {
   const result = await verifyAccount(await ctx.client(), config, publicOrigin(config));
   if ("skipped" in result) {
     ctx.out.log(`\nSkipped Cloudflare-side checks: ${result.skipped}`);
@@ -225,6 +242,7 @@ async function checkAccount(ctx: Context, config: DeploymentConfig, where: strin
       result.problems.map((problem) => `  - ${problem}`).join("\n"));
   }
   ctx.out.log("\nCloudflare-side checks passed: Access application, team domain and storage IDs match.");
+  await warnMissingSecrets(ctx, config, catalog);
 }
 
 /**
@@ -281,7 +299,7 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
   }
   const generated = generateConfigs(config, await readBaseConfigs(root), catalog);
   reportAiGateway(ctx, config);
-  await checkAccount(ctx, config, where);
+  await checkAccount(ctx, config, where, catalog);
 
   const generatedPath = (id: WorkerId) => join(root, workerDir(id, catalog), GENERATED_NAME);
   // Every package's, not only those generated this time: a Worker turned off since (the Error
@@ -299,5 +317,8 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
     // Only once every command has settled: mapConcurrent awaits all it started, failed or not.
     await Promise.all(cleanup.map((file) => rm(file, { force: true })));
   }
+  // Again once deployed, for whatever is still missing: every Worker exists now, so this is the
+  // list of secrets to set, and the commands that set them work.
+  if (!check) await warnMissingSecrets(ctx, config, catalog);
   return 0;
 }

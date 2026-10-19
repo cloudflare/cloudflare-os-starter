@@ -12,7 +12,7 @@ import {
   issuerOf,
   workersDevSubdomainOf,
 } from "./core/client.ts";
-import { FAKE_ACCOUNT, fakeCf, flag, type FakeReply } from "./fake-cf.ts";
+import { FAKE_ACCOUNT, fakeCf, flag, workerSecretsReply, type FakeReply } from "./fake-cf.ts";
 
 test("pins the account and quiets the CLI on every call", () => {
   const { spawn, calls } = fakeCf({ "zero-trust organization get": { auth_domain: "acme.cloudflareaccess.com" } });
@@ -77,6 +77,30 @@ test("maps missing or rejected credentials to the login hint, and other failures
       spawn: () => ({ status: null, stdout: "", stderr: "", error: new Error("ENOENT") }),
     }),
     (error: unknown) => error instanceof CfUnavailableError && /could not run cf: ENOENT/.test(error.message));
+});
+
+/** A client whose `cf workers secrets list` fails with `fail`. */
+function failingSecretsList(fail: string) {
+  return cfClient({ spawn: fakeCf({ "workers secrets list": { fail } }).spawn });
+}
+
+test("lists a Worker's secret names, and reads a Worker the account does not have as null", async () => {
+  const { spawn, calls } = fakeCf({ "workers secrets list": workerSecretsReply({ "acme-gk-github": ["CLIENT_ID"] }) });
+  const client = cfClient({ spawn });
+  assert.deepEqual(await client.listWorkerSecrets(FAKE_ACCOUNT, "acme-gk-github"), ["CLIENT_ID"]);
+  assert.deepEqual(calls[0].args, ["workers", "secrets", "list", "--script-name", "acme-gk-github"]);
+  assert.equal(calls[0].env.CLOUDFLARE_ACCOUNT_ID, FAKE_ACCOUNT);
+  // `cf`'s own words for a missing Worker: the API's code 10007, boxed on stderr.
+  assert.equal(await client.listWorkerSecrets(FAKE_ACCOUNT, "acme-gk-slack"), null);
+  // Any other failure is still one.
+  await assert.rejects(failingSecretsList("[10000] Authentication error").listWorkerSecrets(FAKE_ACCOUNT, "acme-gk-github"),
+    (error: unknown) => error instanceof CfAuthError);
+  await assert.rejects(failingSecretsList("[10013] internal error").listWorkerSecrets(FAKE_ACCOUNT, "acme-gk-github"),
+    (error: unknown) => error instanceof CfError && /\[10013\]/.test(error.message));
+  await assert.rejects(
+    cfClient({ spawn: fakeCf({ "workers secrets list": { name: "CLIENT_ID" } }).spawn })
+      .listWorkerSecrets(FAKE_ACCOUNT, "acme-gk-github"),
+    /expected a JSON array/);
 });
 
 test("lists every page, not just the first", () => {

@@ -20,6 +20,8 @@ import {
 /** One account's contents. Absent lists are empty. */
 export interface MemoryAccount {
   workers?: CfWorker[];
+  /** Secret names by Worker name; a Worker named here is in the account. One only in `workers` has none. */
+  secrets?: Record<string, string[]>;
   kvNamespaces?: CfKvNamespace[];
   buckets?: string[];
   gateways?: CfAiGateway[];
@@ -73,6 +75,12 @@ export function memoryClient(account: MemoryAccount): CloudflareClient & {
     async listWorkers() {
       gate("listWorkers");
       return account.workers ?? [];
+    },
+    async listWorkerSecrets(_accountId, worker) {
+      gate("listWorkerSecrets");
+      const secrets = account.secrets?.[worker];
+      if (secrets) return secrets;
+      return account.workers?.some((candidate) => candidate.name === worker) ? [] : null;
     },
     async workersDevSubdomain() {
       gate("workersDevSubdomain");

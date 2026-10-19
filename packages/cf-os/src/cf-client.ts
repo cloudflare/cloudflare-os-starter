@@ -71,6 +71,13 @@ export interface CfOptions {
  */
 const AUTH_FAILURE = /No authentication token found|Authentication (?:failed|error)|\[(?:9106|9109|10000)\]/i;
 
+/**
+ * The API's code for a Worker the account does not have, which `cf` prints in brackets ahead of the
+ * API's message ("[10007] This Worker does not exist on your account."). Wrangler reads the same
+ * code as its `WORKER_NOT_FOUND_ERR_CODE`.
+ */
+const WORKER_NOT_FOUND = /\[10007\]/;
+
 /** The boxed error `cf` writes to stderr, flattened to one line. */
 function errorText(stderr: string): string {
   return stderr
@@ -186,6 +193,22 @@ export function cfClient(
     },
     async listWorkers(accountId) {
       return listWorkers(accountId);
+    },
+    async listWorkerSecrets(accountId, worker) {
+      // One unpaged list of `{ name, type }`; `--script-name` is `--worker`'s alias.
+      let secrets: { name: string }[];
+      try {
+        secrets = cfJson<{ name: string }[]>(["workers", "secrets", "list", "--script-name", worker], on(accountId));
+      } catch (error) {
+        if (error instanceof CfError && !(error instanceof CfUnavailableError) && WORKER_NOT_FOUND.test(error.message)) {
+          return null;
+        }
+        throw error;
+      }
+      if (!Array.isArray(secrets)) {
+        throw new CfError(`cf workers secrets list --script-name ${worker}: expected a JSON array, got ${typeof secrets}`);
+      }
+      return secrets.map((secret) => secret.name);
     },
     async workersDevSubdomain(accountId) {
       // `cf` has no command for it; every Worker's record carries it.

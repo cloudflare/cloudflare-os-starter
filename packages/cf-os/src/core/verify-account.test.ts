@@ -3,7 +3,8 @@ import test from "node:test";
 import { CfAuthError, CfUnavailableError, type CloudflareClient } from "./client.ts";
 import type { DeploymentConfig } from "./deployment-config.ts";
 import { memoryClient, type MemoryAccount } from "./memory-client.ts";
-import { verifyAccount } from "./verify-account.ts";
+import { testCatalog } from "../test-support.ts";
+import { gatekeeperSecretWarnings, verifyAccount } from "./verify-account.ts";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
 
@@ -172,4 +173,71 @@ test("fails loudly on an API error that is not about credentials", async () => {
   await assert.rejects(
     problems({ ...matchingAccount(), failing: { listKvNamespaces: "[10013] internal error" } }),
     /10013/);
+});
+
+/** {@link config} with GitHub, which takes OAuth secrets, and Home Assistant, which takes none. */
+const withGatekeepers = {
+  ...config,
+  gatekeepers: { github: { name: "acme-gk-github" }, homeassistant: { name: "acme-gk-homeassistant" } },
+} as DeploymentConfig;
+
+const catalog = testCatalog();
+
+const put = (name: string) => `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} pnpm exec wrangler secret put ${name} --name acme-gk-github`;
+
+test("warns about a Gatekeeper secret that is not set, with the command and the redirect URI", async () => {
+  const client = memoryClient({
+    workers: [{ name: "acme-gk-github" }, { name: "acme-gk-homeassistant" }],
+    secrets: { "acme-gk-github": ["CLIENT_ID"] },
+  });
+  const warnings = await gatekeeperSecretWarnings(client, withGatekeepers, catalog);
+  assert.equal(warnings.length, 1);
+  const lines = warnings[0].split("\n");
+  assert.equal(lines[0],
+    "Warning: acme-gk-github has no CLIENT_SECRET; nobody can connect the github Gatekeeper until it is set:");
+  assert.deepEqual(lines.slice(1), [
+    `  ${put("CLIENT_SECRET")}`,
+    // Upstream's template, from the package's deploy-inputs.json, on this deployment's origin.
+    "Redirect URI to register with the provider: https://os.example.com/gatekeeper/github/oauth",
+  ]);
+  // Home Assistant takes no secrets, so it is never looked up.
+  assert.deepEqual(client.calls, ["listWorkerSecrets"]);
+});
+
+test("tells a Gatekeeper not deployed yet to set every secret after the deploy", async () => {
+  const warnings = await gatekeeperSecretWarnings(memoryClient({}), withGatekeepers, catalog);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0],
+    /^Warning: acme-gk-github is not deployed yet; after the deploy, set CLIENT_ID and CLIENT_SECRET, or nobody can connect the github Gatekeeper:\n/);
+  assert.ok(warnings[0].includes(put("CLIENT_ID")) && warnings[0].includes(put("CLIENT_SECRET")));
+  assert.match(warnings[0], /Redirect URI to register with the provider: https:\/\/os\.example\.com\/gatekeeper\/github\/oauth$/);
+});
+
+test("says nothing when every secret is set, or no Gatekeeper takes any", async () => {
+  const complete = memoryClient({ secrets: { "acme-gk-github": ["CLIENT_ID", "CLIENT_SECRET", "UNRELATED"] } });
+  assert.deepEqual(await gatekeeperSecretWarnings(complete, withGatekeepers, catalog), []);
+  assert.deepEqual(complete.calls, ["listWorkerSecrets"]);
+
+  const homeAssistant = memoryClient({});
+  const onlyHomeAssistant = { ...config, gatekeepers: { homeassistant: { name: "acme-gk-homeassistant" } } } as DeploymentConfig;
+  assert.deepEqual(await gatekeeperSecretWarnings(homeAssistant, onlyHomeAssistant, catalog), []);
+  assert.deepEqual(homeAssistant.calls, []);
+  // No optional Gatekeepers at all.
+  assert.deepEqual(await gatekeeperSecretWarnings(homeAssistant, config, catalog), []);
+});
+
+test("skips the secret warnings quietly when signed out or the client cannot run", async () => {
+  assert.deepEqual(await gatekeeperSecretWarnings(memoryClient({ signedOut: true }), withGatekeepers, catalog), []);
+  const unavailable = {
+    ...memoryClient({}),
+    listWorkerSecrets: () => Promise.reject(new CfUnavailableError("could not run cf: ENOENT")),
+  } satisfies CloudflareClient;
+  assert.deepEqual(await gatekeeperSecretWarnings(unavailable, withGatekeepers, catalog), []);
+});
+
+test("turns any other failure to read a Gatekeeper's secrets into a warning, not an error", async () => {
+  const client = memoryClient({ failing: { listWorkerSecrets: "[10013] internal error" } });
+  assert.deepEqual(await gatekeeperSecretWarnings(client, withGatekeepers, catalog), [
+    "Warning: could not read acme-gk-github's secrets to check for CLIENT_ID and CLIENT_SECRET: [10013] internal error",
+  ]);
 });

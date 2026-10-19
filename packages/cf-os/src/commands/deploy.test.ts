@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { cfClient } from "../cf-client.ts";
-import { FAKE_ACCOUNT, fakeCf } from "../fake-cf.ts";
+import { PACKAGE_DIRS } from "../core/deployment.ts";
+import { FAKE_ACCOUNT, fakeCf, workerSecretsReply } from "../fake-cf.ts";
 import { CANCEL, DEFAULT, scratchProject, scriptedPrompter, TEMPLATE, testContext } from "../test-support.ts";
 import { run } from "./deploy.ts";
 import { INSTALL_MARKER } from "./install.ts";
@@ -132,4 +133,40 @@ test("refuses any optional Gatekeeper when the catalog cannot be read", async (t
   const harness = testContext({ root, client: cfClient({ spawn: fakeCf({}).spawn }) });
   await assert.rejects(run({ command: "check", values: {}, positionals: [] }, harness.ctx),
     /deployment\.jsonc: gatekeepers: the Gatekeeper catalog could not be read, so none can be deployed: cloudflare-os\/packages could not be read/);
+});
+
+test("check warns on stderr about a Gatekeeper secret that is not set, and carries on", async (t) => {
+  const root = installedProject(t);
+  // Copies of the real base configs, and of GitHub's package as far as the catalog reads it: the
+  // run writes its generated configs beside them.
+  const repository = join(import.meta.dirname, "..", "..", "..", "..");
+  const github = "cloudflare-os/packages/gatekeeper-github";
+  for (const file of [
+    ...Object.values(PACKAGE_DIRS).map((dir) => `${dir}/wrangler.jsonc`),
+    ...["wrangler.jsonc", "package.json", "deploy-inputs.json"].map((name) => `${github}/${name}`),
+  ]) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    copyFileSync(join(repository, file), join(root, file));
+  }
+  // A directory where GitHub's generated config goes stops the run at that write, just past the
+  // account checks.
+  mkdirSync(join(root, github, "wrangler.prod.jsonc"));
+  writeFileSync(join(root, "deployment.jsonc"),
+    FILLED.replace('"gatekeepers": {}', '"gatekeepers": { "github": { "name": "acme-gk-github" } }'));
+  const cf = fakeCf({
+    "zero-trust organization get": { auth_domain: "acme.cloudflareaccess.com" },
+    "zero-trust access applications list": [{ name: "Cloudflare OS", aud: "aud-1", domain: "os.example.com" }],
+    "workers secrets list": workerSecretsReply({ "acme-gk-github": ["CLIENT_ID"] }),
+  });
+  const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }) });
+  await assert.rejects(run({ command: "check", values: {}, positionals: [] }, harness.ctx), /EISDIR|is a directory/);
+  assert.match(harness.stderr(), /Cloudflare-side checks passed/);
+  assert.match(harness.stderr(),
+    /\nWarning: acme-gk-github has no CLIENT_SECRET; nobody can connect the github Gatekeeper until it is set:\n/);
+  assert.ok(harness.stderr().includes(
+    `CLOUDFLARE_ACCOUNT_ID=${FAKE_ACCOUNT} pnpm exec wrangler secret put CLIENT_SECRET --name acme-gk-github`));
+  assert.ok(harness.stderr().includes("https://os.example.com/gatekeeper/github/oauth"));
+  assert.deepEqual(harness.json, []);
+  assert.deepEqual(cf.calls.filter((call) => call.args[1] === "secrets").map((call) => call.args),
+    [["workers", "secrets", "list", "--script-name", "acme-gk-github"]]);
 });

@@ -101,6 +101,11 @@ export interface CloudflareClient {
   whoami(): Promise<CfWhoami>;
   listAccounts(): Promise<CfAccount[]>;
   listWorkers(accountId: string): Promise<CfWorker[]>;
+  /**
+   * The names of the secrets set on Worker `worker` (their values are never readable), or null when
+   * the account has no Worker by that name yet.
+   */
+  listWorkerSecrets(accountId: string, worker: string): Promise<string[] | null>;
   /** The account's workers.dev subdomain (`<sub>` in `<worker>.<sub>.workers.dev`), when knowable. */
   workersDevSubdomain(accountId: string): Promise<string | null>;
   listKvNamespaces(accountId: string): Promise<CfKvNamespace[]>;

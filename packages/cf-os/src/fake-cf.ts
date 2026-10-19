@@ -75,5 +75,23 @@ export function fakeCf(
   return { spawn, calls };
 }
 
+/** What `cf` prints to stderr, inside its box, for a Worker the account does not have. */
+export const WORKER_NOT_FOUND_FAILURE =
+  "[10007] This Worker does not exist on your account.\n│ 404 Not Found · HTTP /accounts/<account-id>/workers/scripts/<worker>/secrets";
+
+/**
+ * A `workers secrets list` reply from secret names by Worker name, printed as the API's
+ * `{ name, type }` list. A Worker missing from `secrets` fails the way `cf` does for one the account
+ * does not have.
+ */
+export function workerSecretsReply(secrets: Record<string, string[]>): FakeReply {
+  return (args) => {
+    const worker = flag(args, "--script-name") ?? "";
+    return Object.hasOwn(secrets, worker)
+      ? secrets[worker].map((name) => ({ name, type: "secret_text" }))
+      : { fail: WORKER_NOT_FOUND_FAILURE };
+  };
+}
+
 /** The account every fake fixture belongs to. */
 export const FAKE_ACCOUNT = "0123456789abcdef0123456789abcdef";
