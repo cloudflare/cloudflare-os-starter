@@ -1,0 +1,19 @@
+.agents/skills/cloudflare-os-operator/references/updating.md
+  s_4e92f623cbc683::t_2f6146991c318b 36,40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2f21f86bb6effb923c5110c9d981fa49ae0bf7f8",
+  "prompts": {},
+  "sessions": {
+    "s_4e92f623cbc683": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2b424f-f299-4e4b-9e71-84fbd412a00c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+packages/cf-os/src/commands/import.test.ts
+  s_4e92f623cbc683::t_1fc1ef0313606f 82-93
+packages/cf-os/src/commands/import.ts
+  s_4e92f623cbc683::t_95447c32f1812e 108-110,113
+packages/cf-os/src/commands/init.test.ts
+  s_4e92f623cbc683::t_df25cf2b4357a2 202-229
+packages/cf-os/src/commands/init.ts
+  s_4e92f623cbc683::t_b41f0ca888eb03 339-354,360-361,363,377-381
+packages/cf-os/src/core/discovery.ts
+  s_4e92f623cbc683::t_618e895c949c98 68-72,179-181
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9fe1e20978840a46a2a1f71c2f6d2bfb4d6f4a0a",
+  "prompts": {},
+  "sessions": {
+    "s_4e92f623cbc683": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2b424f-f299-4e4b-9e71-84fbd412a00c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

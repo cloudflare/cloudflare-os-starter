@@ -1,0 +1,19 @@
+packages/cf-os/package.json
+  s_4e92f623cbc683::t_c6ec4d153ab836 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "668e457bc1c6452199d4800c2f86eea16273b934",
+  "prompts": {},
+  "sessions": {
+    "s_4e92f623cbc683": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2b424f-f299-4e4b-9e71-84fbd412a00c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

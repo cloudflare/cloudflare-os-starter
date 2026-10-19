@@ -1,0 +1,169 @@
+docs/migrate-from-hosted.md
+  s_4e92f623cbc683::t_56e9363319c226 227-229
+  s_b132cdbd20e17f::t_0f5498ed43d9d6 9-12,39,42-85,95-98,122,143-145,147,158,169-172,178,183,197,206-208,231,237-248,254,261-262,265,268,283-284
+package.json
+  s_4e92f623cbc683::t_c7e529eb7be310 22
+  s_b132cdbd20e17f::t_57eb602f3302b7 10-14,17-19,23,25
+README.md
+  s_b132cdbd20e17f::t_5129b220072933 24-26,65,68-69,71,74-88,96-107,114-115,118-119,161
+pnpm-workspace.yaml
+  s_4e92f623cbc683::t_fad8d1c48c4d96 34-35,42-43
+  s_b132cdbd20e17f::t_5afaa94bf62595 4
+packages/cf-os/src/core/deployment-config.ts
+  s_b132cdbd20e17f::t_0b4fedba64addb 117-118
+  s_b132cdbd20e17f::t_90a038e62793fa 1-3,6,9,15,52,143,151,206
+packages/cf-os/src/core/deployment.test.ts
+  s_4e92f623cbc683::t_d68f1a74042fa9 363-369
+  s_b132cdbd20e17f::t_6cc3617a3c122b 3,6-15,79-81,83-85,88,94,327,371,634,656,664,670-683,690,693-734
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_4e92f623cbc683::t_98e2cd5f62c89a 327
+  s_b132cdbd20e17f::t_47f122e76059cc 18,32,39,45,47-51,54-62,72,119,128,202,204,209,251,286,289,291,295,297-299,301,306,309,365
+packages/custom-gatekeeper/package.json
+  s_4e92f623cbc683::t_df48ad5af03f8e 17
+packages/cf-os/src/core/deployment.ts
+  s_4e92f623cbc683::t_9b90d13838a609 575-579,581
+  s_b132cdbd20e17f::t_bd27eeba23b42c 1-6,17-22,31-39,170-176,208,331,379,447,613-615,628-630,632,639-642,644-647,649-651,654-656,661-666,668-676,679-681
+packages/custom-gatekeeper/vitest.config.ts
+  s_4e92f623cbc683::t_a17b6fbe46de50 1
+pnpm-lock.yaml
+  s_4e92f623cbc683::t_9de88b3d42ed16 9,28,31-32,38,47,106,123,145,200,1623-1624,1626,1634-1635,1654-1656,2344-2346,2352-2357,2385-2386,2393-2394,2396-2398,2492-2493,2549,2551,2553,2969,2984,2989,3402,3404-3409,3424-3425,3664-3667,4003-4004,4132,4134-4136,4139-4140,4143,4146-4147,4154,4157,4168,4253
+  s_b132cdbd20e17f::t_99ee96fc917031 53-58,72-93,167-180,185-187,1885-1889,1938-1946,2190-2192,2492-2494,2509-2528,2531-2539,3556-3567,3650-3659,3987-3988,4253
+docs/customization.md
+  s_4e92f623cbc683::t_d0d64f29c1d950 56,58
+  s_b132cdbd20e17f::t_cb2da522825842 77,89,173,193,214,216,220
+deployment.jsonc
+  s_b132cdbd20e17f::t_e461402d3bc737 49-51
+cloudflare-os
+  s_4e92f623cbc683::t_178f7d38b1e020 1
+  s_4e92f623cbc683::t_e5c92c26fe794b 1
+  s_4e92f623cbc683::t_e9199c255db6b7 1
+  s_4e92f623cbc683::t_b450dc99aa2908 1
+packages/cf-os/src/core/discovery.test.ts
+  s_b132cdbd20e17f::t_a766ae64a937f3 1-107
+packages/cf-os/src/core/verify-account.ts
+  s_b132cdbd20e17f::t_3f071aa340304c 1-110
+packages/cf-os/src/commands/account.ts
+  s_b132cdbd20e17f::t_b2c39b04bf1e22 1-57
+packages/cf-os/src/commands/install.ts
+  s_b132cdbd20e17f::t_cfeb430366c719 1,6-7,15,20-21,37,40,44,74,77,81,109,121,128-133
+packages/cf-os/src/context.ts
+  s_b132cdbd20e17f::t_97ff72363d58d8 1-77
+packages/cf-os/src/core/wizard.ts
+  s_b132cdbd20e17f::t_d7b30271c95135 1-167
+.agents/skills/cloudflare-os-operator/references/troubleshooting.md
+  s_b132cdbd20e17f::t_cad32b9af532bc 57,131,135-140,215,229,237
+packages/cf-os/src/core/wizard.test.ts
+  s_b132cdbd20e17f::t_5694f297694fe8 1-102
+packages/cf-os/src/core/memory-client.ts
+  s_b132cdbd20e17f::t_663650c301e422 1-140
+packages/cf-os/src/core/edits.ts
+  s_b132cdbd20e17f::t_17d3d62481c401 1-63
+vite.config.ts
+  s_b132cdbd20e17f::t_c7f3321471045a 28,83-84,108-110,112,118,121
+packages/cf-os/src/test-support.ts
+  s_b132cdbd20e17f::t_b79b8981b3f9fc 1-185
+packages/cf-os/src/run-tasks.ts
+  s_b132cdbd20e17f::t_758c5ec9992876 1-138
+packages/cf-os/src/tools.ts
+  s_b132cdbd20e17f::t_746ead186dd55c 1-35
+packages/cf-os/src/commands/install.test.ts
+  s_b132cdbd20e17f::t_4685c3cb963f5c 11,13,51,60-61,67,70-72,75-92,97,120-121,132,164,175,211,213,222,237,246-247,250-251,256-269
+packages/cf-os/src/cf-client.ts
+  s_b132cdbd20e17f::t_94075667a05c99 1-239
+packages/cf-os/src/deployment-file.ts
+  s_b132cdbd20e17f::t_d8ba40a1ec2845 1-49
+packages/cf-os/src/core/access.test.ts
+  s_b132cdbd20e17f::t_f53c5734db686b 1-96
+packages/cf-os/package.json
+  s_b132cdbd20e17f::t_d19c0c13b3e60b 1-23
+packages/cf-os/src/prompt.ts
+  s_b132cdbd20e17f::t_badbdd998e626b 1-84
+packages/cf-os/src/project.ts
+  s_b132cdbd20e17f::t_86bb24eb33d83d 1-67
+packages/cf-os/src/main.test.ts
+  s_b132cdbd20e17f::t_2829f709922671 1-168
+packages/cf-os/src/core/naming.test.ts
+  s_b132cdbd20e17f::t_545e55691ecea9 1-58
+packages/cf-os/src/commands/import.ts
+  s_b132cdbd20e17f::t_a7153821f9f053 1-129
+packages/cf-os/README.md
+  s_b132cdbd20e17f::t_d87d3088cead15 1-35
+.agents/skills/cloudflare-os-operator/references/upgrade-and-rollback.md
+  s_b132cdbd20e17f::t_16d3aa49d8b09b 24,31,36,38
+packages/custom-gatekeeper/README.md
+  s_b132cdbd20e17f::t_d11c874ca80c6d 15
+.npmrc
+  s_b132cdbd20e17f::t_3bdc3a5297caf3 1-3
+packages/cf-os/src/core/naming.ts
+  s_b132cdbd20e17f::t_38b32d262c77a1 1-130
+packages/cf-os/src/core/client.ts
+  s_b132cdbd20e17f::t_99af807c69dcd6 1-182
+tsconfig.json
+  s_b132cdbd20e17f::t_edcbed2a68658b 1,3
+packages/cf-os/src/commands/deploy.test.ts
+  s_b132cdbd20e17f::t_d3d4475704988b 1-85
+packages/cf-os/src/fake-cf.ts
+  s_b132cdbd20e17f::t_f692ee71433a5d 1-79
+packages/cf-os/src/commands/init.ts
+  s_b132cdbd20e17f::t_74d0bcea8543b9 1-487
+packages/cf-os/vite.config.ts
+  s_b132cdbd20e17f::t_4db2e16b986dcc 1-51
+packages/cf-os/src/commands/init.test.ts
+  s_b132cdbd20e17f::t_970b88c7ceb0ad 1-400
+packages/cf-os/src/commands/deploy.ts
+  s_b132cdbd20e17f::t_8c388739a1876a 1-260
+packages/cf-os/src/commands/scaffold.test.ts
+  s_b132cdbd20e17f::t_fef54a2c8717d7 1-266
+packages/cf-os/src/commands/import.test.ts
+  s_b132cdbd20e17f::t_c0995b24d39c4f 1-115
+packages/cf-os/src/deployment-file.test.ts
+  s_b132cdbd20e17f::t_2a77ded198188b 1-70
+packages/cf-os/src/commands/access.test.ts
+  s_b132cdbd20e17f::t_1946123041001f 1-88
+packages/cf-os/src/core/access.ts
+  s_b132cdbd20e17f::t_244df0a3cbaec0 1-181
+packages/cf-os/tsconfig.json
+  s_b132cdbd20e17f::t_bafb8a64b070c2 1-3,5,7,9-10,17-18,21
+packages/cf-os/src/pnpm-command.test.ts
+  s_b132cdbd20e17f::t_8b57edbf429699 1-53
+packages/cf-os/src/run-tasks.test.ts
+  s_b132cdbd20e17f::t_859e26da133f64 1-84
+packages/cf-os/src/pnpm-command.ts
+  s_b132cdbd20e17f::t_f7dcc03b42aed2 1-58
+packages/cf-os/src/core/verify-account.test.ts
+  s_b132cdbd20e17f::t_bd526b2a9f195d 1-105
+packages/cf-os/src/core/discovery.ts
+  s_b132cdbd20e17f::t_6bf62a57e17900 1-175
+packages/cf-os/src/cf-client.test.ts
+  s_b132cdbd20e17f::t_6a5989c905268d 1-199
+packages/cf-os/src/commands/access.ts
+  s_b132cdbd20e17f::t_73e2a8858ee5ed 1-48
+packages/cf-os/src/commands/scaffold.ts
+  s_b132cdbd20e17f::t_9876acf3dde419 1-230
+packages/cf-os/src/main.ts
+  s_b132cdbd20e17f::t_c0de428e8c4de2 1-292
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "971afab339f99d5dc00abcf93e4d9674e18d9470",
+  "prompts": {},
+  "sessions": {
+    "s_4e92f623cbc683": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bd2b424f-f299-4e4b-9e71-84fbd412a00c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_b132cdbd20e17f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0afb9b62-173f-4e1a-8578-00df816447c9",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
