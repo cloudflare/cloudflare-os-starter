@@ -1,0 +1,47 @@
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_d0f890640bc2ec::t_2ca18554932b6e 102-103,177,182-184,200,265,301,324,328-329,333
+README.md
+  s_d0f890640bc2ec::t_e260b5dc50d072 50
+docs/migrate-from-hosted.md
+  s_d0f890640bc2ec::t_fcd3510f728459 55-73,87-93,110,120-134,146-148,196-197,288-289,297-310,324-325
+packages/cf-os/README.md
+  s_d0f890640bc2ec::t_bf0863e482baab 20-21,23,36
+packages/cf-os/src/commands/deploy.test.ts
+  s_d0f890640bc2ec::t_26f2821b7f90de 71,82-83
+packages/cf-os/src/commands/import.test.ts
+  s_d0f890640bc2ec::t_b8335ed403b3d7 8-9,12,16-20,24,42-73,98-127
+packages/cf-os/src/commands/import.ts
+  s_d0f890640bc2ec::t_dd5135747ef9f1 14-16,19,22-63,81-82,85,88-90,128-133,154-156,170-173
+packages/cf-os/src/commands/init.test.ts
+  s_d0f890640bc2ec::t_ac88e5279bae9f 14,19,45-46,61,71-74,76,80,94,219,244,291,371,392-394,487-907
+packages/cf-os/src/commands/init.ts
+  s_d0f890640bc2ec::t_ebb53c348f3c5e 12-15,31-36,39,42-43,58,62,66-68,73-74,82-83,89,279-293,295,297,335-341,343-346,349-500,533-535,537-543,547,554-559,565,577-600,602-605,607-608,613-662,755,772,774,776-777,779-780,786,788-790,794
+packages/cf-os/src/core/discovery.test.ts
+  s_d0f890640bc2ec::t_9a14e8dd144d8d 68,77-115
+packages/cf-os/src/core/discovery.ts
+  s_d0f890640bc2ec::t_41238e659d70bd 3-4,23-24,68-81,92-95,100-111,201-235,239
+packages/cf-os/src/core/wizard.test.ts
+  s_d0f890640bc2ec::t_02a6df07bce231 3,8-9,31-32,51-60,62-87,98,102-104,131,133-134,139,142-143,147-164
+packages/cf-os/src/core/wizard.ts
+  s_d0f890640bc2ec::t_2a40ae8f381755 9-11,13-17,19-20,96-127,129,136-137,143-144,149,157,168-173,188,192-198,206,210,213-218,221-232
+packages/cf-os/src/prompt.ts
+  s_d0f890640bc2ec::t_ab511ae72714fc 26-31,35-37,74-76,78
+packages/cf-os/src/test-support.ts
+  s_d0f890640bc2ec::t_9e693fc2038ead 35-36,72-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2e615c4df7e4aee4c004749e0b32eee07a93da5a",
+  "prompts": {},
+  "sessions": {
+    "s_d0f890640bc2ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9c1a4d8-208c-4dfa-91a7-e9412e935dbd",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
