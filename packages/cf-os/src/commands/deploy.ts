@@ -17,7 +17,7 @@
 // serving.
 //
 // Wrangler deploys, not `cf deploy`: `cf deploy` takes no `--config` and works one project per
-// directory, so it cannot deploy seven Workers from generated configs.
+// directory, so it cannot deploy a set of Workers from generated configs.
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -33,17 +33,26 @@ import {
   buildCommands,
   deployOrder,
   deployWaves,
+  gatekeeperSlugs,
+  gatekeeperWorkerId,
   GENERATED_NAME,
   generateConfigs,
+  generatedOutputs,
   PACKAGE_DIRS,
   PlaceholderError,
   publicOrigin,
   validateConfig,
+  validateGatekeepers,
+  workerDir,
+  workerName,
   type PackageKey,
+  type WorkerId,
 } from "../core/deployment.ts";
 import { placeholderPaths } from "../core/edits.ts";
+import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import { verifyAccount } from "../core/verify-account.ts";
 import { parseDeployment } from "../deployment-file.ts";
+import { loadCatalog } from "../gatekeeper-catalog.ts";
 import { CancelledError, concurrencyLimit, mapConcurrent, runCaptured } from "../run-tasks.ts";
 import { check as checkSubmoduleInstall } from "./install.ts";
 
@@ -62,7 +71,10 @@ async function readJsonc<T>(root: string, path: string): Promise<T> {
   return result;
 }
 
-/** Every Worker's upstream base config, read from its package. */
+/**
+ * The base config of every Worker in {@link PACKAGE_DIRS}, read from its package. An optional
+ * Gatekeeper's comes with its catalog entry.
+ */
 async function readBaseConfigs(root: string): Promise<BaseConfigs> {
   const entries = await Promise.all(Object.entries(PACKAGE_DIRS).map(async ([key, dir]) =>
     [key, await readJsonc(root, join(root, dir, "wrangler.jsonc"))] as const));
@@ -120,8 +132,8 @@ async function settle(tasks: Promise<unknown>): Promise<void> {
 }
 
 /** Every chain from `buildCommands`, concurrently. The first failure cancels the rest. */
-async function buildAll(ctx: Context, config: DeploymentConfig): Promise<void> {
-  const chains = buildCommands(config);
+async function buildAll(ctx: Context, config: DeploymentConfig, catalog: GatekeeperCatalog): Promise<void> {
+  const chains = buildCommands(config, catalog);
   const limit = concurrencyLimit();
   ctx.out.log(`\nBuilding ${chains.length} packages, ${Math.min(limit, chains.length)} at a time.`);
   const abort = new AbortController();
@@ -143,11 +155,16 @@ async function buildAll(ctx: Context, config: DeploymentConfig): Promise<void> {
  * refresh token, with no lock: started together, every deploy would spend the same one, and all but
  * the first would fail, or sign wrangler out. Alone, it refreshes once, and the rest read the result.
  */
-async function deployAll(ctx: Context, config: DeploymentConfig, check: boolean): Promise<void> {
+async function deployAll(
+  ctx: Context,
+  config: DeploymentConfig,
+  catalog: GatekeeperCatalog,
+  check: boolean,
+): Promise<void> {
   const waves = check ? [deployOrder(config)] : deployWaves(config);
   for (const [index, wave] of waves.entries()) {
-    ctx.out.log(`\n${check ? "Dry-running the deploys of" : "Deploying"} ${wave.map((key) => config.workers[key]!.name).join(", ")}.`);
-    const deploy = (key: PackageKey) => deployWorker(ctx, PACKAGE_DIRS[key], check ? ["--dry-run"] : []);
+    ctx.out.log(`\n${check ? "Dry-running the deploys of" : "Deploying"} ${wave.map((id) => workerName(config, id)).join(", ")}.`);
+    const deploy = (id: WorkerId) => deployWorker(ctx, workerDir(id, catalog), check ? ["--dry-run"] : []);
     let rest = wave;
     if (!check && index === 0) {
       await settle(deploy(wave[0]));
@@ -211,13 +228,21 @@ async function checkAccount(ctx: Context, config: DeploymentConfig, where: strin
 }
 
 /**
- * The parsed, validated deployment file. Every `validateConfig` message names a config path, so the
- * error says which file those paths live in; the original stays as its `cause`.
+ * The parsed, validated deployment file, its optional Gatekeepers checked against `catalog`. Every
+ * validation message names a config path, so the error says which file those paths live in; the
+ * original stays as its `cause`.
  */
-async function readDeployment(ctx: Context, path: string, where: string): Promise<DeploymentConfig> {
+async function readDeployment(
+  ctx: Context,
+  path: string,
+  where: string,
+  catalog: GatekeeperCatalog,
+): Promise<DeploymentConfig> {
   const config = await readJsonc<DeploymentConfig>(ctx.root, path);
   try {
-    return validateConfig(config);
+    validateConfig(config);
+    validateGatekeepers(config, catalog);
+    return config;
   } catch (error) {
     throw new Error(`${where}: ${(error as Error).message}`, { cause: error });
   }
@@ -230,9 +255,10 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
   requireSubmodule(root);
   const path = configPath(ctx);
   const where = displayPath(ctx, path);
+  const catalog = await loadCatalog(root);
   let config: DeploymentConfig;
   try {
-    config = await readDeployment(ctx, path, where);
+    config = await readDeployment(ctx, path, where, catalog);
   } catch (error) {
     // An unconfigured file, at a terminal: offer the wizard instead of the bare error, then carry on
     // with the file it wrote. Not a confirmation of anything; it only replaces a failure.
@@ -246,29 +272,32 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
     // Still placeholders (Access left for later, say): init has just listed them and the fix.
     if (placeholderPaths(parseDeployment(await readFile(path, "utf8"), where)).length) return 1;
     ctx.out.log(`\nContinuing with \`cf-os ${args.command}\`.`);
-    config = await readDeployment(ctx, path, where);
+    config = await readDeployment(ctx, path, where, catalog);
   }
   // The file's IDs, AUD tag and issuer all belong to its account, so a different one cannot simply
   // take its place: refused, as \`cf-os access\` refuses it.
   if (ctx.flags.account && ctx.flags.account.toLowerCase() !== config.accountId.toLowerCase()) {
     throw new Error(`--account ${ctx.flags.account} is not ${where}'s accountId (${config.accountId}).`);
   }
-  const generated = generateConfigs(config, await readBaseConfigs(root));
+  const generated = generateConfigs(config, await readBaseConfigs(root), catalog);
   reportAiGateway(ctx, config);
   await checkAccount(ctx, config, where);
 
-  const generatedPaths = Object.fromEntries(Object.entries(PACKAGE_DIRS)
-    .map(([key, dir]) => [key, join(root, dir, GENERATED_NAME)])) as Record<PackageKey, string>;
+  const generatedPath = (id: WorkerId) => join(root, workerDir(id, catalog), GENERATED_NAME);
+  // Every package's, not only those generated this time: a Worker turned off since (the Error
+  // Reporter, the custom Gatekeeper) may still hold one from a run that never got to clean up.
+  const cleanup = [...Object.keys(PACKAGE_DIRS) as PackageKey[], ...gatekeeperSlugs(config).map(gatekeeperWorkerId)]
+    .map(generatedPath);
   try {
-    for (const [key, generatedConfig] of Object.entries(generated)) {
-      await writeFile(generatedPaths[key as PackageKey], `${JSON.stringify(generatedConfig, null, 2)}\n`);
+    for (const [id, generatedConfig] of generatedOutputs(generated)) {
+      await writeFile(generatedPath(id), `${JSON.stringify(generatedConfig, null, 2)}\n`);
     }
     if (check) pnpm(root, ["test"]);
-    await buildAll(ctx, config);
-    await deployAll(ctx, config, check);
+    await buildAll(ctx, config, catalog);
+    await deployAll(ctx, config, catalog, check);
   } finally {
     // Only once every command has settled: mapConcurrent awaits all it started, failed or not.
-    await Promise.all(Object.values(generatedPaths).map((generatedPath) => rm(generatedPath, { force: true })));
+    await Promise.all(cleanup.map((file) => rm(file, { force: true })));
   }
   return 0;
 }

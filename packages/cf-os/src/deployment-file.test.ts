@@ -47,6 +47,40 @@ test("adds a key that is not there yet", () => {
   assert.equal(valueAtPath(parseDeployment(edited), ["workers", "websearch", "name"]), "acme-gk-websearch");
 });
 
+test("creates and removes nested gatekeepers entries, comments intact", () => {
+  const withGatekeepers = ANNOTATED.replace('  "context": {', `  // Gatekeepers comment.
+  "gatekeepers": {},
+  "context": {`);
+  const added = applyDeploymentEdits(withGatekeepers, [
+    { path: ["gatekeepers", "github", "name"], value: "acme-gk-github" },
+    { path: ["gatekeepers", "mcpportal", "name"], value: "acme-gk-mcpportal" },
+  ]);
+  assert.deepEqual(valueAtPath(parseDeployment(added), ["gatekeepers"]), {
+    github: { name: "acme-gk-github" },
+    mcpportal: { name: "acme-gk-mcpportal" },
+  });
+  // Vars added by hand survive a name edit, and an undefined value removes the whole entry.
+  const handEdited = added.replace('"name": "acme-gk-mcpportal"',
+    '"name": "acme-gk-mcpportal",\n      // Portal comment.\n      "vars": { "MCP_PORTAL_URL": "https://portal.example.com/mcp" }');
+  const edited = applyDeploymentEdits(handEdited, [
+    { path: ["gatekeepers", "mcpportal", "name"], value: "acme-gk-portal" },
+    { path: ["gatekeepers", "github"], value: undefined },
+  ]);
+  assert.deepEqual(valueAtPath(parseDeployment(edited), ["gatekeepers"]), {
+    mcpportal: { name: "acme-gk-portal", vars: { MCP_PORTAL_URL: "https://portal.example.com/mcp" } },
+  });
+  for (const comment of ["// Account comment.", "// Router comment.", "// Gatekeepers comment.", "// Portal comment."]) {
+    assert.ok(edited.includes(comment), `lost ${comment}`);
+  }
+  // Removing the last one leaves the empty block, not a missing one.
+  const emptied = applyDeploymentEdits(edited, [{ path: ["gatekeepers", "mcpportal"], value: undefined }]);
+  assert.deepEqual(valueAtPath(parseDeployment(emptied), ["gatekeepers"]), {});
+  // Into a file that has no gatekeepers block yet, the block is created.
+  const created = applyDeploymentEdits(ANNOTATED, [{ path: ["gatekeepers", "github", "name"], value: "acme-gk-github" }]);
+  assert.deepEqual(valueAtPath(parseDeployment(created), ["gatekeepers"]), { github: { name: "acme-gk-github" } });
+  assert.ok(created.includes("// Router comment."));
+});
+
 test("refuses to edit a file that does not parse", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "deployment-file-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

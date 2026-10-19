@@ -79,7 +79,7 @@ The Error Reporter intentionally flattens the normalized event and trusted produ
 
 ## Sampling and traces
 
-The deployment controls apply consistently to the Workshop, Context, Scheduler, Web Search, custom Gatekeeper, and Error Reporter:
+The deployment controls apply consistently to the Workshop, Context, Scheduler, Web Search, custom Gatekeeper, every optional Gatekeeper, and Error Reporter:
 
 ```jsonc
 "observability": {

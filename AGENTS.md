@@ -1,4 +1,4 @@
-This repository deploys a self-hosted [Cloudflare OS](https://github.com/cloudflare/cloudflare-os): seven Workers, configured by `deployment.jsonc` and built from the pinned `cloudflare-os` submodule.
+This repository deploys a self-hosted [Cloudflare OS](https://github.com/cloudflare/cloudflare-os): up to seven Workers, plus any optional Gatekeepers a deployment selects, configured by `deployment.jsonc` and built from the pinned `cloudflare-os` submodule.
 
 * `cloudflare-os/`: upstream, pinned by the gitlink. Never edit it here; it changes only by moving the pin.
 * `packages/cf-os`: the `cf-os` CLI (`pnpm cf-os <command>`), which configures, checks, deploys and updates the project. `src/core` is pure logic; Cloudflare API calls go through `src/cf-client.ts`.

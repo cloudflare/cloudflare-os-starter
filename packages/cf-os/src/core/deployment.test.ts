@@ -9,9 +9,14 @@ import {
   deployOrder,
   deployWaves,
   generateConfigs,
+  generatedOutputs,
   PACKAGE_DIRS,
   PlaceholderError,
   validateConfig,
+  validateGatekeepers,
+  workerDir,
+  workerName,
+  type WorkerId,
 } from "./deployment.ts";
 import type {
   BaseConfigs,
@@ -19,6 +24,7 @@ import type {
   GeneratedConfigs,
   ProdWranglerConfig,
 } from "./deployment-config.ts";
+import { testCatalog } from "../test-support.ts";
 
 const validConfig: DeploymentConfig = {
   accountId: "0123456789abcdef0123456789abcdef",
@@ -62,6 +68,9 @@ const validConfig: DeploymentConfig = {
     traces: { enabled: true, headSamplingRate: 0.25 },
   },
 };
+
+/** GitHub, Home Assistant and the MCP portal on offer, Email excluded, as upstream's packages say. */
+const catalog = testCatalog();
 
 /**
  * A copy of {@link validConfig} with `mutate` applied, typed loosely on purpose.
@@ -194,7 +203,7 @@ test("rejects malformed AI Gateway providers and account", () => {
 });
 
 test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", async () => {
-  const generated = generateConfigs(validConfig, await baseConfigs());
+  const generated = generateConfigs(validConfig, await baseConfigs(), catalog);
   const vars = generated.workshop.vars!;
 
   assert.equal(generated.workshop.name, "acme-cloudflare-os-backend");
@@ -249,8 +258,8 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
     binding: "ARTIFACTS",
     namespace: "acme-context-collections",
   }]);
-  assert.equal(generated.customGatekeeper.name, "acme-cloudflare-os-custom");
-  assert.deepEqual(generated.customGatekeeper.vars, {
+  assert.equal(generated.customGatekeeper!.name, "acme-cloudflare-os-custom");
+  assert.deepEqual(generated.customGatekeeper!.vars, {
     CUSTOM_NAME: "Acme",
     CUSTOM_MESSAGE: "Use the company handbook.",
   });
@@ -268,7 +277,7 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
 
 test("gives the router the public route, the frontend, and every service binding", async () => {
   const bases = await baseConfigs();
-  const generated = generateConfigs(validConfig, bases);
+  const generated = generateConfigs(validConfig, bases, catalog);
 
   assert.equal(generated.router.name, "acme-cloudflare-os");
   assert.equal(generated.router.workers_dev, false);
@@ -299,7 +308,7 @@ test("gives the router the public route, the frontend, and every service binding
  */
 test("deploys the ambient Scheduler Gatekeeper the hosted flow preinstalls", async () => {
   const bases = await baseConfigs();
-  const generated = generateConfigs(validConfig, bases);
+  const generated = generateConfigs(validConfig, bases, catalog);
 
   assert.equal(generated.scheduler.name, "acme-cloudflare-os-scheduler");
   // Reached by both, for the two different things a Gatekeeper does: vendor RPC from the backend,
@@ -324,7 +333,7 @@ test("deploys the ambient Scheduler Gatekeeper the hosted flow preinstalls", asy
   assert.equal(generated.scheduler.kv_namespaces, undefined);
   assert.equal(generated.scheduler.secrets, undefined);
 
-  const builds = buildCommands(validConfig).flat()
+  const builds = buildCommands(validConfig, catalog).flat()
     .map(({ args }) => args)
     .filter((args) => args.includes("@gadgets/gatekeeper-scheduler"));
   assert.deepEqual(builds.map((args) => args.at(-1)), ["build:app", "build"]);
@@ -337,7 +346,7 @@ test("deploys the ambient Scheduler Gatekeeper the hosted flow preinstalls", asy
  */
 test("deploys the ambient Web Search Gatekeeper the hosted flow preinstalls", async () => {
   const bases = await baseConfigs();
-  const generated = generateConfigs(validConfig, bases);
+  const generated = generateConfigs(validConfig, bases, catalog);
 
   assert.equal(generated.websearch.name, "acme-cloudflare-os-websearch");
   assert.deepEqual(
@@ -362,13 +371,13 @@ test("deploys the ambient Web Search Gatekeeper the hosted flow preinstalls", as
 
   // It searches through the Workshop's gateway, when the AI binding can reach it; else `default`.
   assert.deepEqual(generated.websearch.vars, { CF_AI_GATEWAY: "cloudflare-os" });
-  const off = generateConfigs(variant((c) => { c.aiGateway.enabled = false; }), bases);
+  const off = generateConfigs(variant((c) => { c.aiGateway.enabled = false; }), bases, catalog);
   assert.equal(off.websearch.vars, undefined);
-  const elsewhere = generateConfigs(variant((c) => { c.aiGateway.accountId = "fedcba9876543210fedcba9876543210"; }), bases);
+  const elsewhere = generateConfigs(variant((c) => { c.aiGateway.accountId = "fedcba9876543210fedcba9876543210"; }), bases, catalog);
   assert.equal(elsewhere.websearch.vars, undefined);
 
   // Built, and so type-checked, with the rest.
-  const builds = buildCommands(validConfig).flat().map(({ args }) => args);
+  const builds = buildCommands(validConfig, catalog).flat().map(({ args }) => args);
   assert.deepEqual(
     builds.filter((args) => args.includes("@gadgets/gatekeeper-websearch")).map((args) => args.at(-1)),
     ["build"]);
@@ -384,10 +393,8 @@ test("rejects a Web Search Worker name shared with another Worker", () => {
 });
 
 test("keeps every Worker behind the router off the public internet", async () => {
-  const generated = generateConfigs(validConfig, await baseConfigs());
-  const workers = Object.entries(generated) as [string, ProdWranglerConfig][];
-
-  for (const [name, worker] of workers) {
+  const generated = generateConfigs(validConfig, await baseConfigs(), catalog);
+  for (const [name, worker] of generatedOutputs(generated)) {
     if (name !== "router") {
       assert.equal(worker.workers_dev, false, `${name} answers on workers.dev`);
       assert.equal(worker.routes, undefined, `${name} carries a public route`);
@@ -405,8 +412,8 @@ test("scopes PUBLIC_BASE_URL and Context sharing to the public origin", async ()
     c.publicBaseUrl = "https://acme-cloudflare-os.acme.workers.dev";
   });
 
-  const derived = generateConfigs(validConfig, await baseConfigs());
-  const explicit = generateConfigs(onWorkersDev, await baseConfigs());
+  const derived = generateConfigs(validConfig, await baseConfigs(), catalog);
+  const explicit = generateConfigs(onWorkersDev, await baseConfigs(), catalog);
 
   assert.equal(derived.workshop.vars!.PUBLIC_BASE_URL, "https://os.example.com");
   assert.equal(
@@ -420,7 +427,7 @@ test("scopes PUBLIC_BASE_URL and Context sharing to the public origin", async ()
 
   // A pinned literal keeps the boundary stable across a hostname change, so it wins.
   const pinned = generateConfigs(
-    variant((c) => { c.context.sharingDomain = "production"; }), await baseConfigs());
+    variant((c) => { c.context.sharingDomain = "production"; }), await baseConfigs(), catalog);
   assert.equal(sharingDomain(pinned), "production");
   assert.equal(pinned.workshop.vars!.PUBLIC_BASE_URL, "https://os.example.com");
 });
@@ -474,7 +481,7 @@ test("rejects a workersDev origin that is not the router's own", async () => {
 
   // The shape wrangler actually serves stays valid, whatever the account subdomain is.
   const generated = generateConfigs(
-    onWorkersDev("https://acme-cloudflare-os.some-account.workers.dev"), await baseConfigs());
+    onWorkersDev("https://acme-cloudflare-os.some-account.workers.dev"), await baseConfigs(), catalog);
   assert.equal(
     generated.workshop.vars!.PUBLIC_BASE_URL, "https://acme-cloudflare-os.some-account.workers.dev");
 
@@ -487,7 +494,7 @@ test("rejects a workersDev origin that is not the router's own", async () => {
 });
 
 test("routes AI Gateway over the Workers AI binding without an API token", async () => {
-  const generated = generateConfigs(validConfig, await baseConfigs());
+  const generated = generateConfigs(validConfig, await baseConfigs(), catalog);
   const vars = generated.workshop.vars!;
 
   assert.equal(vars.CF_AI_GATEWAY_ACCOUNT_ID, validConfig.accountId);
@@ -505,7 +512,7 @@ test("routes AI Gateway over the Workers AI binding without an API token", async
 
 test("requires a token for a gateway in another account", async () => {
   const config = variant((c) => { c.aiGateway.accountId = "fedcba9876543210fedcba9876543210"; });
-  const generated = generateConfigs(config, await baseConfigs());
+  const generated = generateConfigs(config, await baseConfigs(), catalog);
   const vars = generated.workshop.vars!;
 
   assert.equal(vars.CF_AI_GATEWAY_ACCOUNT_ID, "fedcba9876543210fedcba9876543210");
@@ -518,7 +525,7 @@ test("requires a token for a gateway in another account", async () => {
 
 test("treats a differently-cased account ID as the same account", async () => {
   const config = variant((c) => { c.aiGateway.accountId = c.accountId.toUpperCase(); });
-  const generated = generateConfigs(config, await baseConfigs());
+  const generated = generateConfigs(config, await baseConfigs(), catalog);
 
   // Same account written two ways, which the hex pattern accepts: the binding reaches this gateway,
   // so no CF_AI_GATEWAY_USE_BINDING opt-out and no token.
@@ -531,7 +538,7 @@ test("treats a differently-cased account ID as the same account", async () => {
 
 test("requires a token for the google provider", async () => {
   const config = variant((c) => { c.aiGateway.providers = ["cloudflare", "google"]; });
-  const generated = generateConfigs(config, await baseConfigs());
+  const generated = generateConfigs(config, await baseConfigs(), catalog);
 
   assert.deepEqual(generated.workshop.secrets, { required: ["CF_AI_GATEWAY_API_TOKEN"] });
   // Same account, so the binding still carries every other provider.
@@ -544,7 +551,7 @@ test("omits disabled backend error reporting", async () => {
     c.errorReporting = { enabled: false, environment: "<ENVIRONMENT>", release: "<RELEASE>" };
   });
 
-  const generated = generateConfigs(config, await baseConfigs());
+  const generated = generateConfigs(config, await baseConfigs(), catalog);
 
   assert.equal(generated.errorReporter, undefined);
   assert.equal(generated.workshop.services!.some(
@@ -561,7 +568,7 @@ test("omits dormant AI Gateway configuration", async () => {
     };
   });
 
-  const generated = generateConfigs(config, await baseConfigs());
+  const generated = generateConfigs(config, await baseConfigs(), catalog);
   const vars = generated.workshop.vars!;
 
   assert.equal(vars.CF_AI_GATEWAY, undefined);
@@ -576,7 +583,7 @@ test("omits dormant AI Gateway configuration", async () => {
 test("uses the default Context Artifacts namespace when omitted", async () => {
   const config = variant((c) => { delete c.context.artifacts.namespace; });
 
-  const generated = generateConfigs(config, await baseConfigs());
+  const generated = generateConfigs(config, await baseConfigs(), catalog);
 
   assert.deepEqual(generated.context.artifacts, [{
     binding: "ARTIFACTS",
@@ -589,7 +596,7 @@ test("omits disabled Context Artifacts configuration", async () => {
   const bases = await baseConfigs();
   bases.context.artifacts = [{ binding: "ARTIFACTS", namespace: "upstream-default" }];
 
-  const generated = generateConfigs(config, bases);
+  const generated = generateConfigs(config, bases, catalog);
 
   assert.equal(generated.context.artifacts, undefined);
 });
@@ -597,7 +604,7 @@ test("omits disabled Context Artifacts configuration", async () => {
 test("defaults Context Artifacts to disabled when configuration is omitted", async () => {
   const config = variant((c) => { delete c.context.artifacts; });
 
-  const generated = generateConfigs(config, await baseConfigs());
+  const generated = generateConfigs(config, await baseConfigs(), catalog);
 
   assert.equal(generated.context.artifacts, undefined);
 });
@@ -612,7 +619,7 @@ test("generates binding-only storage for automatic provisioning", async () => {
     };
   });
 
-  const generated = generateConfigs(config, await baseConfigs());
+  const generated = generateConfigs(config, await baseConfigs(), catalog);
 
   assert.deepEqual(generated.workshop.kv_namespaces, [
     { binding: "BLUEPRINTS" },
@@ -631,7 +638,7 @@ test("generates binding-only storage for automatic provisioning", async () => {
  * zero and each still deploy.
  */
 test("never lets a deploy replay a cached build artifact", () => {
-  const commands = buildCommands(validConfig).flat();
+  const commands = buildCommands(validConfig, catalog).flat();
   assert.ok(commands.length > 0, "expected at least one build command");
   for (const { args } of commands) {
     const command = args.join(" ");
@@ -653,7 +660,7 @@ test("rebuilds the Context configurator app rather than replaying it", () => {
   // `gatekeeper-context`'s `build` script spawns `vp run --cache build:app` of its own, which the
   // outer --no-cache does not reach. Without this step a deploy ships whatever app.txt the cache
   // last archived.
-  const context = buildCommands(validConfig).flat()
+  const context = buildCommands(validConfig, catalog).flat()
     .map(({ args }) => args)
     .filter((args) => args.includes("@gadgets/gatekeeper-context"));
   assert.deepEqual(context.map((args) => args.at(-1)), ["build:app", "build"]);
@@ -661,14 +668,14 @@ test("rebuilds the Context configurator app rather than replaying it", () => {
 });
 
 test("passes VITE_CF_ACCESS_MODE explicitly rather than inheriting it", () => {
-  const withAccessMode = buildCommands(validConfig).flat().filter(({ env }) => env);
+  const withAccessMode = buildCommands(validConfig, catalog).flat().filter(({ env }) => env);
   assert.deepEqual(withAccessMode.map(({ env }) => env), [{ VITE_CF_ACCESS_MODE: "true" }]);
   // It has to reach the frontend, which inlines it into the bundle, and nothing else.
   assert.match(withAccessMode[0].args.join(" "), /@gadgets\/workshop-frontend/);
 });
 
 test("builds what depends on itself in order, and everything else independently", () => {
-  const chains = buildCommands(validConfig).map((chain) => chain.map(({ args }) => args.join(" ")));
+  const chains = buildCommands(validConfig, catalog).map((chain) => chain.map(({ args }) => args.join(" ")));
   // Each nested `build:app` pair stays one chain, in order: `build` replays what `build:app` wrote.
   for (const pkg of ["@gadgets/gatekeeper-context", "@gadgets/gatekeeper-scheduler"]) {
     const chain = chains.find((commands) => commands.some((command) => command.includes(pkg)));
@@ -687,7 +694,7 @@ test("skips the Error Reporter build when error reporting is disabled", () => {
   const config = variant((c) => {
     c.errorReporting = { enabled: false, environment: "<ENVIRONMENT>", release: null };
   });
-  const commands = buildCommands(config).flat().map(({ args }) => args.join(" "));
+  const commands = buildCommands(config, catalog).flat().map(({ args }) => args.join(" "));
   assert.equal(commands.some((command) => command.includes("error-reporter")), false);
 });
 
@@ -698,25 +705,42 @@ test("tells an unconfigured file apart from a wrong one", () => {
     (error: unknown) => error instanceof Error && !(error instanceof PlaceholderError));
 });
 
+/** {@link validConfig} with GitHub and the MCP portal added, and the custom Gatekeeper off. */
+const withOptional = variant((c) => {
+  c.customGatekeeper.enabled = false;
+  c.gatekeepers = {
+    github: { name: "acme-cloudflare-os-github", vars: { GITHUB_ORG: "acme" } },
+    mcpportal: { name: "acme-cloudflare-os-mcpportal", vars: { MCP_PORTAL_URL: "https://portal.example.com/mcp" } },
+  };
+});
+
 test("deploys the Gatekeepers together, then the Workshop, then the router", () => {
   assert.deepEqual(deployWaves(validConfig),
     [["errorReporter", "context", "scheduler", "websearch", "customGatekeeper"], ["workshop"], ["router"]]);
   assert.deepEqual(deployWaves(variant((config) => { config.errorReporting.enabled = false; })),
     [["context", "scheduler", "websearch", "customGatekeeper"], ["workshop"], ["router"]]);
+  assert.deepEqual(deployWaves(withOptional), [
+    ["errorReporter", "context", "scheduler", "websearch", "gatekeepers.github", "gatekeepers.mcpportal"],
+    ["workshop"],
+    ["router"],
+  ]);
 });
 
 test("deploys every Worker after each one it binds", async () => {
   // Derived from the generated service bindings, so a binding added upstream fails here rather than
   // at a deploy the Workers API rejects for naming a script that does not exist yet.
-  for (const config of [validConfig, variant((c) => { c.errorReporting.enabled = false; })]) {
-    const generated = generateConfigs(config, await baseConfigs());
+  for (const config of [validConfig, variant((c) => { c.errorReporting.enabled = false; }), withOptional]) {
+    const generated = new Map(generatedOutputs(generateConfigs(config, await baseConfigs(), catalog)));
     const waves = deployWaves(config);
-    const waveOf = new Map(waves.flatMap((wave, index) => wave.map((key) => [generated[key]!.name, index] as const)));
+    // Exactly the generated configs deploy, each from its own package.
+    assert.deepEqual(new Set(waves.flat()), new Set(generated.keys()));
+    const waveOf = new Map(waves.flatMap((wave, index) => wave.map((id) => [workerName(config, id), index] as const)));
     for (const [index, wave] of waves.entries()) {
-      for (const key of wave) {
-        for (const { service } of generated[key]!.services ?? []) {
-          assert.ok(waveOf.has(service), `${key} binds ${service}, which no wave deploys`);
-          assert.ok(waveOf.get(service)! < index, `${key} binds ${service}, which deploys in wave ${waveOf.get(service)}`);
+      for (const id of wave) {
+        assert.equal(generated.get(id)!.name, workerName(config, id));
+        for (const { service } of generated.get(id)!.services ?? []) {
+          assert.ok(waveOf.has(service), `${id} binds ${service}, which no wave deploys`);
+          assert.ok(waveOf.get(service)! < index, `${id} binds ${service}, which deploys in wave ${waveOf.get(service)}`);
         }
       }
     }
@@ -731,4 +755,193 @@ test("deploys every Worker before the router that binds them", () => {
     ["context", "scheduler", "websearch", "customGatekeeper", "workshop", "router"]);
   // Every package the deploy reads a base config from is deployed, and nothing else.
   assert.deepEqual(new Set(deployOrder(validConfig)), new Set(Object.keys(PACKAGE_DIRS)));
+});
+
+test("locates and names every Worker by its id", () => {
+  const ids: WorkerId[] = ["router", "customGatekeeper", "gatekeepers.github", "gatekeepers.mcpportal"];
+  assert.deepEqual(ids.map((id) => workerDir(id, catalog)), [
+    "cloudflare-os/packages/router",
+    "packages/custom-gatekeeper",
+    "cloudflare-os/packages/gatekeeper-github",
+    "cloudflare-os/packages/gatekeeper-mcp-portal",
+  ]);
+  assert.deepEqual(ids.map((id) => workerName(withOptional, id)), [
+    "acme-cloudflare-os", "acme-cloudflare-os-custom", "acme-cloudflare-os-github", "acme-cloudflare-os-mcpportal",
+  ]);
+});
+
+test("with the custom Gatekeeper off, deploys nothing of it", async () => {
+  const off = variant((c) => {
+    // Its names are ignored, so their placeholders are too.
+    c.customGatekeeper = { enabled: false, name: "<ORGANIZATION_DISPLAY_NAME>", message: "<ORGANIZATION_GUIDANCE>" };
+    c.workers.customGatekeeper = { name: "<CUSTOM_GATEKEEPER_WORKER_NAME>" };
+  });
+  const generated = generateConfigs(off, await baseConfigs(), catalog);
+  assert.equal(generated.customGatekeeper, undefined);
+  assert.equal(generated.router.services!.some((service) => service.binding === "GATEKEEPER_CUSTOM"), false);
+  assert.equal(generated.workshop.services!.some((service) => service.binding === "GATEKEEPER_CUSTOM"), false);
+  assert.equal(buildCommands(off, catalog).flat().some(({ args }) => args.includes("custom-gatekeeper")), false);
+  assert.equal(deployOrder(off).includes("customGatekeeper"), false);
+
+  // Nor does it need a Worker name at all, or display text.
+  const bare = variant((c) => {
+    c.customGatekeeper = { enabled: false };
+    delete c.workers.customGatekeeper;
+  });
+  assert.equal(generateConfigs(bare, await baseConfigs(), catalog).customGatekeeper, undefined);
+  // Its old name is free for another Worker.
+  assert.doesNotThrow(() => validateConfig(variant((c) => {
+    c.customGatekeeper.enabled = false;
+    c.workers.customGatekeeper.name = c.workers.context.name;
+  })));
+  assert.throws(() => validateConfig(variant((c) => { c.customGatekeeper.enabled = "no"; })),
+    /customGatekeeper.enabled must be a boolean/);
+});
+
+test("with customGatekeeper.enabled absent, deploys the custom Gatekeeper as when it is true", async () => {
+  const absent = variant((c) => { delete c.customGatekeeper.enabled; });
+  const enabled = variant((c) => { c.customGatekeeper.enabled = true; });
+  const bases = await baseConfigs();
+  assert.deepEqual(generateConfigs(absent, bases, catalog), generateConfigs(enabled, bases, catalog));
+  assert.deepEqual(buildCommands(absent, catalog), buildCommands(enabled, catalog));
+  assert.deepEqual(deployWaves(absent), deployWaves(enabled));
+  assert.equal(generateConfigs(absent, bases, catalog).customGatekeeper!.name, "acme-cloudflare-os-custom");
+  // And still requires everything it did.
+  assert.throws(() => validateConfig(variant((c) => { delete c.customGatekeeper.message; })),
+    /Missing required deployment value: customGatekeeper.message/);
+  assert.throws(() => validateConfig(variant((c) => { delete c.workers.customGatekeeper; })),
+    /Missing required deployment value: workers.customGatekeeper.name/);
+});
+
+test("generates an optional Gatekeeper from its upstream config", async () => {
+  const generated = generateConfigs(withOptional, await baseConfigs(), catalog);
+  const github = generated.gatekeepers.github;
+  const base = catalog.offered.find((gatekeeper) => gatekeeper.slug === "github")!.config;
+
+  assert.equal(github.name, "acme-cloudflare-os-github");
+  assert.equal(github.account_id, validConfig.accountId);
+  assert.equal(github.workers_dev, false);
+  assert.equal(github.routes, undefined);
+  assert.equal(github.preview_urls, false);
+  // The operator's vars, and the origin it builds its OAuth redirect from, under its own route.
+  assert.deepEqual(github.vars, { GITHUB_ORG: "acme", BASE_URL: "https://os.example.com/gatekeeper/github" });
+  // Upstream's own vars are kept, the operator's merged over them.
+  assert.deepEqual(generated.gatekeepers.mcpportal.vars, {
+    MCP_ALLOW_INSECURE: "false",
+    MCP_PORTAL_URL: "https://portal.example.com/mcp",
+    BASE_URL: "https://os.example.com/gatekeeper/mcpportal",
+  });
+  // Durable Object history, build command and rules arrive as upstream ships them.
+  assert.ok(base.migrations!.length > 0);
+  assert.deepEqual(github.migrations, base.migrations);
+  assert.deepEqual(github.build, base.build);
+  assert.deepEqual(github.rules, base.rules);
+  assert.equal(github.observability!.head_sampling_rate, 0.5);
+  // No secrets block: a first deploy has none yet, and wrangler would refuse it.
+  assert.equal(github.secrets, undefined);
+  // The catalog's copy is untouched.
+  assert.equal(base.vars, undefined);
+
+  // The router forwards whole requests, so no entrypoint; the Workshop calls it over vendor RPC.
+  assert.deepEqual(generated.router.services!.filter((service) => /GITHUB|MCPPORTAL/.test(service.binding)), [
+    { binding: "GATEKEEPER_GITHUB", service: "acme-cloudflare-os-github" },
+    { binding: "GATEKEEPER_MCPPORTAL", service: "acme-cloudflare-os-mcpportal" },
+  ]);
+  assert.deepEqual(generated.workshop.services!.filter((service) => /GITHUB|MCPPORTAL/.test(service.binding)), [
+    { binding: "GATEKEEPER_GITHUB", service: "acme-cloudflare-os-github", entrypoint: "GatekeeperVendor" },
+    { binding: "GATEKEEPER_MCPPORTAL", service: "acme-cloudflare-os-mcpportal", entrypoint: "GatekeeperVendor" },
+  ]);
+
+  // On a workers.dev route, BASE_URL follows the public origin there.
+  const onWorkersDev = generateConfigs(variant((c) => {
+    Object.assign(c, structuredClone(withOptional));
+    c.workers.router.route = { workersDev: true };
+    c.publicBaseUrl = "https://acme-cloudflare-os.acme.workers.dev";
+  }), await baseConfigs(), catalog);
+  assert.equal(onWorkersDev.gatekeepers.github.vars!.BASE_URL,
+    "https://acme-cloudflare-os.acme.workers.dev/gatekeeper/github");
+  // None selected, none generated.
+  assert.deepEqual(generateConfigs(validConfig, await baseConfigs(), catalog).gatekeepers, {});
+});
+
+test("builds each optional Gatekeeper by its package name, uncached", () => {
+  const chains = buildCommands(withOptional, catalog).map((chain) => chain.map(({ args }) => args.join(" ")));
+  assert.ok(chains.some((chain) => chain.length === 1 &&
+    chain[0] === "--dir cloudflare-os exec vp run -F @gadgets/github-gatekeeper --no-cache build"), chains.join("\n"));
+  assert.ok(chains.some((chain) => chain.length === 1 &&
+    chain[0] === "--dir cloudflare-os exec vp run -F @gadgets/mcp-portal-gatekeeper --no-cache build"), chains.join("\n"));
+});
+
+/** {@link validConfig} with `gatekeepers` set to `gatekeepers`, whatever its shape. */
+function withGatekeepers(gatekeepers: unknown): DeploymentConfig {
+  return variant((c) => { c.gatekeepers = gatekeepers; });
+}
+
+/** Asserts `validateConfig` refuses `gatekeepers` with `message`. */
+function rejects(gatekeepers: unknown, message: RegExp): void {
+  assert.throws(() => validateConfig(withGatekeepers(gatekeepers)), message);
+}
+
+test("rejects a malformed gatekeepers block", () => {
+
+  rejects([], /gatekeepers must be an object/);
+  rejects({ GitHub: { name: "acme-gk-github" } }, /gatekeepers.GitHub: a Gatekeeper slug is/);
+  rejects({ "mcp-portal": { name: "acme-gk-mcp-portal" } }, /gatekeepers.mcp-portal: a Gatekeeper slug is/);
+  rejects({ "1password": { name: "acme-gk-1password" } }, /a Gatekeeper slug is/);
+  rejects({ ["a".repeat(21)]: { name: "acme-gk-long" } }, /a Gatekeeper slug is 1-20/);
+  rejects({ scheduler: { name: "acme-gk-scheduler2" } }, /gatekeepers.scheduler: scheduler is one of the Gatekeepers the starter deploys/);
+  rejects({ custom: { name: "acme-gk-custom2" } }, /gatekeepers.custom: custom is one of/);
+  rejects({ github: "acme-gk-github" }, /gatekeepers.github must be an object/);
+  rejects({ github: { name: 42 } }, /gatekeepers.github.name must be a Worker name/);
+  rejects({ github: {} }, /gatekeepers.github.name must be a Worker name/);
+  rejects({ github: { name: "acme-gk-github", secrets: {} } }, /only name and vars are allowed, not secrets/);
+  rejects({ github: { name: "acme-gk-github", vars: [] } }, /gatekeepers.github.vars must be an object/);
+  rejects({ github: { name: "acme-gk-github", vars: { GITHUB_ORG: 1 } } }, /gatekeepers.github.vars.GITHUB_ORG must be a string/);
+  rejects({ github: { name: "acme-gk-github", vars: { BASE_URL: "https://elsewhere.example.com" } } },
+    /gatekeepers.github.vars.BASE_URL: the deploy sets it/);
+  rejects({ github: { name: "Acme GitHub" } }, /Worker names must use lowercase/);
+  // Names are unique across workers and gatekeepers alike.
+  rejects({ github: { name: validConfig.workers.workshop.name } },
+    /names must be unique: acme-cloudflare-os-backend is used twice/);
+  rejects({ github: { name: "acme-gk-shared" }, mcpportal: { name: "acme-gk-shared" } },
+    /names must be unique: acme-gk-shared is used twice/);
+  // A placeholder is an unconfigured file, as anywhere else.
+  assert.throws(() => validateConfig(withGatekeepers({ github: { name: "<GITHUB_WORKER_NAME>" } })), PlaceholderError);
+
+  assert.doesNotThrow(() => validateConfig(withGatekeepers({})));
+  assert.doesNotThrow(() => validateConfig(withOptional));
+});
+
+test("rejects a Gatekeeper the catalog does not offer, or vars it would not take", () => {
+  const refuses = (gatekeepers: Record<string, unknown>, message: RegExp, against = catalog) =>
+    assert.throws(() => validateGatekeepers(variant((c) => { c.gatekeepers = gatekeepers; }), against), message);
+
+  refuses({ email: { name: "acme-gk-email" } },
+    /gatekeepers.email: the starter cannot deploy gatekeeper-email: upstream marks it not installable\./);
+  refuses({ jira: { name: "acme-gk-jira" } },
+    /gatekeepers.jira: upstream has no such Gatekeeper. Available: github, homeassistant, mcpportal\./);
+  refuses({ github: { name: "acme-gk-github", vars: { CLIENT_SECRET: "s3cret" } } },
+    /gatekeepers.github.vars.CLIENT_SECRET is a secret.*`CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef pnpm exec wrangler secret put CLIENT_SECRET --name acme-gk-github`/);
+  refuses({ github: { name: "acme-gk-github" } },
+    /the Gatekeeper catalog could not be read, so none can be deployed: no submodule/,
+    { offered: [], excluded: [], unavailable: "no submodule" });
+
+  // A required var input has to be there.
+  const requiring = structuredClone(catalog);
+  requiring.offered.find((gatekeeper) => gatekeeper.slug === "mcpportal")!.vars =
+    [{ name: "MCP_PORTAL_URL", kind: "var", label: "Portal URL" }];
+  refuses({ mcpportal: { name: "acme-gk-mcpportal" } },
+    /Missing required deployment value: gatekeepers.mcpportal.vars.MCP_PORTAL_URL \(Portal URL\)/, requiring);
+  assert.doesNotThrow(() => validateGatekeepers(withOptional, requiring));
+
+  // generateConfigs checks the same, rather than generating something the catalog cannot build.
+  return baseConfigs().then((bases) => assert.throws(
+    () => generateConfigs(variant((c) => { c.gatekeepers = { email: { name: "acme-gk-email" } }; }), bases, catalog),
+    /cannot deploy gatekeeper-email/));
+});
+
+test("needs no catalog when no optional Gatekeeper is selected", () => {
+  const unavailable = { offered: [], excluded: [], unavailable: "no submodule" };
+  assert.doesNotThrow(() => validateGatekeepers(validConfig, unavailable));
+  assert.doesNotThrow(() => validateGatekeepers(variant((c) => { c.gatekeepers = {}; }), unavailable));
 });

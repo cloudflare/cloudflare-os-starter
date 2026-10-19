@@ -107,7 +107,7 @@ export function findInstances(workers: CfWorker[]): string[] {
   return [...names].filter((n) => names.has(workerNames(n).workshop)).toSorted();
 }
 
-/** The Gatekeeper suffixes the starter deploys, so any other `N-gk-*` Worker reads as orphaned. */
+/** The `N-gk-*` suffixes of the Gatekeepers the starter always deploys: the source of BUILT_IN_GATEKEEPER_SLUGS. */
 export function deployedGatekeeperSuffixes(n: string): Set<string> {
   const prefix = `${n}-gk-`;
   return new Set(Object.values(workerNames(n))
@@ -115,16 +115,30 @@ export function deployedGatekeeperSuffixes(n: string): Set<string> {
     .map((name) => name.slice(prefix.length)));
 }
 
+/**
+ * The install slugs of the Gatekeepers the starter always deploys (or, for `custom`, deploys unless
+ * it is turned off). None can be an optional Gatekeeper's: each slug is one `GATEKEEPER_<SLUG>`
+ * binding and one `/gatekeeper/<slug>` route.
+ */
+export const BUILT_IN_GATEKEEPER_SLUGS: readonly string[] = [...deployedGatekeeperSuffixes("n")];
+
+/** The Worker name of optional Gatekeeper `slug` for instance `n`, as the hosted flow names it. */
+export function gatekeeperWorkerName(n: string, slug: string): string {
+  return `${n}-gk-${slug}`;
+}
+
 /** A Worker name: lowercase letters, digits and inner hyphens, at most 63 characters. */
 export const WORKER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 /**
  * Why `n` cannot be a base name, or undefined when it can. It has to leave room for the longest
- * suffix in {@link matchers}, since every derived name is a Worker, KV namespace or bucket name too.
+ * suffix in {@link matchers}, and for each selected optional Gatekeeper's `-gk-<slug>`, since every
+ * derived name is a Worker, KV namespace or bucket name too.
  */
-export function baseNameProblem(n: string): string | undefined {
+export function baseNameProblem(n: string, slugs: readonly string[] = []): string | undefined {
   if (!WORKER_NAME.test(n)) return "Use lowercase letters, numbers and hyphens, starting and ending with a letter or number.";
-  const longest = matchers(n).reduce((max, matcher) => Math.max(max, matcher.name.length), 0);
+  const longest = [...matchers(n).map((matcher) => matcher.name), ...slugs.map((slug) => gatekeeperWorkerName(n, slug))]
+    .reduce((max, name) => Math.max(max, name.length), 0);
   if (longest > 63) return `Too long: the longest derived name would be ${longest} characters, over Workers' 63.`;
   return undefined;
 }

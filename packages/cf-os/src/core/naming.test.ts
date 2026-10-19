@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { placeholderPaths } from "./edits.ts";
-import { accessAppName, baseNameProblem, findInstances, matchers, workerNames } from "./naming.ts";
+import {
+  accessAppName,
+  baseNameProblem,
+  BUILT_IN_GATEKEEPER_SLUGS,
+  findInstances,
+  gatekeeperWorkerName,
+  matchers,
+  workerNames,
+} from "./naming.ts";
 
 test("names all seven Workers the hosted way", () => {
   assert.deepEqual(workerNames("acme"), {
@@ -42,6 +50,18 @@ test("accepts a base name only if every derived name is a valid Worker name", ()
   assert.match(baseNameProblem("a".repeat(50))!, /Too long/);
 });
 
+test("names an optional Gatekeeper the hosted way, and leaves room for its slug", () => {
+  assert.equal(gatekeeperWorkerName("acme", "github"), "acme-gk-github");
+  assert.equal(gatekeeperWorkerName("acme", "mcpportal"), "acme-gk-mcpportal");
+  assert.deepEqual([...BUILT_IN_GATEKEEPER_SLUGS].toSorted(), ["context", "custom", "scheduler", "websearch"]);
+  // 43 + "-context-collections" is 63: fine alone, too long once a 20-character slug's
+  // "-gk-<slug>" (24) is selected.
+  const n = "a".repeat(43);
+  assert.equal(baseNameProblem(n), undefined);
+  assert.equal(baseNameProblem(n, ["github"]), undefined);
+  assert.match(baseNameProblem(n, ["github", "a".repeat(20)])!, /Too long: the longest derived name would be 67 characters/);
+});
+
 test("lists the placeholders a deploy would still refuse, and only those", () => {
   const file = {
     accountId: "0123456789abcdef0123456789abcdef",
@@ -55,4 +75,16 @@ test("lists the placeholders a deploy would still refuse, and only those", () =>
     ["workers.errorReporter.name", "access.audience", "access.admins.0", "customGatekeeper.name"]);
   assert.deepEqual(placeholderPaths({ ...file, errorReporting: { enabled: false } }),
     ["access.audience", "access.admins.0", "customGatekeeper.name"]);
+  // The custom Gatekeeper's Worker name and display text, while it is off.
+  const customOff = {
+    ...file,
+    workers: { ...file.workers, customGatekeeper: { name: "<CUSTOM_GATEKEEPER_WORKER_NAME>" } },
+    customGatekeeper: { ...file.customGatekeeper, enabled: false },
+  };
+  assert.deepEqual(placeholderPaths(customOff), ["workers.errorReporter.name", "access.audience", "access.admins.0"]);
+  assert.deepEqual(placeholderPaths({ ...customOff, customGatekeeper: { ...customOff.customGatekeeper, enabled: true } }),
+    ["workers.errorReporter.name", "workers.customGatekeeper.name", "access.audience", "access.admins.0", "customGatekeeper.name"]);
+  // And an optional Gatekeeper's, like any other value.
+  assert.deepEqual(placeholderPaths({ ...customOff, gatekeepers: { github: { name: "<GITHUB_WORKER_NAME>" } } }),
+    ["workers.errorReporter.name", "access.audience", "access.admins.0", "gatekeepers.github.name"]);
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { cfClient } from "../cf-client.ts";
@@ -79,17 +79,19 @@ test("once init has configured the file, carries on with the deploy", async (t) 
   assert.doesNotMatch(harness.stderr(), /Deploy now\?|Next:/);
 });
 
+/** {@link TEMPLATE} with every placeholder filled in. */
+const FILLED = TEMPLATE
+  .replace("<CLOUDFLARE_ACCOUNT_ID>", FAKE_ACCOUNT)
+  .replace(/<([A-Z_]+)_WORKER_NAME>/g, (_, name: string) => `acme-${name.toLowerCase().replace(/_/g, "-")}`)
+  .replace("<TEAM_NAME>", "acme")
+  .replace("<ACCESS_AUDIENCE>", "aud-1")
+  .replace("<ADMIN_EMAIL>", "me@example.com")
+  .replace("<ORGANIZATION_DISPLAY_NAME>", "Acme")
+  .replace("<ORGANIZATION_GUIDANCE>", "Be kind.");
+
 test("refuses an --account other than the file's, before reading the account or building", async (t) => {
   const root = installedProject(t);
-  const filled = TEMPLATE
-    .replace("<CLOUDFLARE_ACCOUNT_ID>", FAKE_ACCOUNT)
-    .replace(/<([A-Z_]+)_WORKER_NAME>/g, (_, name: string) => `acme-${name.toLowerCase().replace(/_/g, "-")}`)
-    .replace("<TEAM_NAME>", "acme")
-    .replace("<ACCESS_AUDIENCE>", "aud-1")
-    .replace("<ADMIN_EMAIL>", "me@example.com")
-    .replace("<ORGANIZATION_DISPLAY_NAME>", "Acme")
-    .replace("<ORGANIZATION_GUIDANCE>", "Be kind.");
-  writeFileSync(join(root, "deployment.jsonc"), filled);
+  writeFileSync(join(root, "deployment.jsonc"), FILLED);
   const cf = fakeCf({});
   const other = "fedcba9876543210fedcba9876543210";
   for (const command of ["check", "deploy"]) {
@@ -107,4 +109,27 @@ test("refuses an --account other than the file's, before reading the account or 
 test("refuses before reading the file when the submodule is not installed", async (t) => {
   const harness = testContext({ root: scratchProject(t, TEMPLATE), prompter: scriptedPrompter([]) });
   await assert.rejects(run({ command: "check", values: {}, positionals: [] }, harness.ctx), /not initialized/);
+});
+
+test("refuses a Gatekeeper the catalog excludes, with upstream's reason, before reading the account", async (t) => {
+  const root = installedProject(t);
+  // The real packages, so the real catalog: Email is a Worker upstream will not install.
+  symlinkSync(join(import.meta.dirname, "..", "..", "..", "..", "cloudflare-os", "packages"),
+    join(root, "cloudflare-os", "packages"), "junction");
+  writeFileSync(join(root, "deployment.jsonc"),
+    FILLED.replace('"gatekeepers": {}', '"gatekeepers": { "email": { "name": "acme-gk-email" } }'));
+  const cf = fakeCf({});
+  const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }) });
+  await assert.rejects(run({ command: "check", values: {}, positionals: [] }, harness.ctx),
+    /^Error: deployment\.jsonc: gatekeepers\.email: the starter cannot deploy gatekeeper-email: upstream marks it not installable\.$/);
+  assert.deepEqual(cf.calls, []);
+});
+
+test("refuses any optional Gatekeeper when the catalog cannot be read", async (t) => {
+  const root = installedProject(t);
+  writeFileSync(join(root, "deployment.jsonc"),
+    FILLED.replace('"gatekeepers": {}', '"gatekeepers": { "github": { "name": "acme-gk-github" } }'));
+  const harness = testContext({ root, client: cfClient({ spawn: fakeCf({}).spawn }) });
+  await assert.rejects(run({ command: "check", values: {}, positionals: [] }, harness.ctx),
+    /deployment\.jsonc: gatekeepers: the Gatekeeper catalog could not be read, so none can be deployed: cloudflare-os\/packages could not be read/);
 });

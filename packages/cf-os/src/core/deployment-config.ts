@@ -118,15 +118,25 @@ export interface DeploymentConfig {
      * disabled or in another account.
      */
     websearch: { name: string };
-    customGatekeeper: { name: string };
+    /** Only required when `customGatekeeper.enabled` is not false. */
+    customGatekeeper?: { name: string };
     /** Only required when `errorReporting.enabled`. */
     errorReporter?: { name: string };
   };
+  /**
+   * Optional upstream Gatekeepers, keyed by the hosted deploy's install slug (`github`,
+   * `mcpportal`). Absent means none. Each one is offered by the catalog `gatekeeper-catalog.ts`
+   * reads from the submodule, and `validateGatekeepers` checks the entries against it.
+   */
+  gatekeepers?: Record<string, GatekeeperEntry>;
   access: AccessConfig;
   aiGateway: AiGatewayConfigInput;
   context: ContextConfig;
-  /** Display text the example custom Gatekeeper serves to agents. */
-  customGatekeeper: { name: string; message: string };
+  /**
+   * The example custom Gatekeeper: whether it is deployed (absent means it is), and the display
+   * text it serves to agents, which only matters when it is.
+   */
+  customGatekeeper: { enabled?: boolean; name: string; message: string };
   /** Private explicit-issue destination. */
   errorReporting: { enabled: boolean; environment?: string; release?: string | null };
   /** Workshop KV/R2. `null` requests Wrangler automatic provisioning. */
@@ -136,6 +146,17 @@ export interface DeploymentConfig {
     blueprintContentBucket: string | null;
   };
   observability: DeploymentObservabilityConfig;
+}
+
+/** One optional Gatekeeper in `deployment.jsonc`'s `gatekeepers` block. */
+export interface GatekeeperEntry {
+  /** Its Worker name. A permanent service identity, like every name in `workers`. */
+  name: string;
+  /**
+   * Plain-text vars merged over its base config's. Never `BASE_URL`, which the deploy sets, and
+   * never a secret: those go to the Worker with `wrangler secret put`.
+   */
+  vars?: Record<string, string>;
 }
 
 /**
@@ -187,9 +208,12 @@ export interface GeneratedConfigs {
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
   websearch: ProdWranglerConfig;
-  customGatekeeper: ProdWranglerConfig;
+  /** Absent when `customGatekeeper.enabled` is false. */
+  customGatekeeper?: ProdWranglerConfig;
   /** Absent when `errorReporting.enabled` is false. */
   errorReporter?: ProdWranglerConfig;
+  /** One per `gatekeepers` entry, by slug. */
+  gatekeepers: Record<string, ProdWranglerConfig>;
 }
 
 /** The upstream base configs the generated ones are derived from. */

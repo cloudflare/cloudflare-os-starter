@@ -122,7 +122,7 @@ test("configures a new deployment on a custom domain, steering around a taken ho
   assert.equal(valueAtPath(file, ["access", "issuer"]), "https://acme.cloudflareaccess.com");
   assert.equal(valueAtPath(file, ["access", "audience"]), "aud-new");
   assert.deepEqual(valueAtPath(file, ["customGatekeeper"]), {
-    name: "Acme", message: "This is Acme's Cloudflare OS deployment.",
+    enabled: true, name: "Acme", message: "This is Acme's Cloudflare OS deployment.",
   });
   // Storage left to automatic provisioning, as the template has it.
   assert.equal(valueAtPath(file, ["resources", "blueprintsKvNamespaceId"]), null);
@@ -256,7 +256,7 @@ test("switches to a takeover when the name is a hosted instance", async (t) => {
   // What the hosted deploy never had is asked for too, so nothing is left as a placeholder.
   assert.deepEqual(valueAtPath(file, ["aiGateway", "providers"]), ["cloudflare", "anthropic"]);
   assert.deepEqual(valueAtPath(file, ["customGatekeeper"]), {
-    name: "Acme", message: "This is Acme's Cloudflare OS deployment.",
+    enabled: true, name: "Acme", message: "This is Acme's Cloudflare OS deployment.",
   });
   assert.match(stderr(), /Next: `pnpm cf-os deploy --config init\.jsonc`\./);
 });

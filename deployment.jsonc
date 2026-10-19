@@ -40,9 +40,18 @@
     // See docs/customization.md#workers-and-routing.
     "websearch": { "name": "<WEBSEARCH_WORKER_NAME>" },
 
+    // The example custom Gatekeeper. Ignored when customGatekeeper.enabled below is false.
     "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
     "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
   },
+
+  // Optional upstream Gatekeepers (GitHub, Google, Slack, ...), keyed by slug, each its own Worker:
+  //   "github": { "name": "<router-name>-gk-github" }
+  // "vars" sets plain-text vars, never BASE_URL (the deploy sets it) or a secret: OAuth
+  // credentials go to the Worker with `wrangler secret put`, and `pnpm cf-os check` warns while
+  // one is missing. `pnpm cf-os init` lists the slugs on offer.
+  // Reference: docs/customization.md#optional-gatekeepers
+  "gatekeepers": {},
 
   // This starter deploys Cloudflare Access mode. Cloudflare OS also supports built-in password
   // accounts and auth Gatekeeper sign-in; see the reference below before switching. The audience
@@ -96,9 +105,11 @@
     // }
   },
 
-  // Displayed to agents when the example custom integration is enabled in /admin.
+  // The example custom integration. false deploys no Worker for it, and name and message (displayed
+  // to agents when it is enabled in /admin) are then ignored.
   // Reference: docs/customization.md#custom-gatekeepers
   "customGatekeeper": {
+    "enabled": true,
     "name": "<ORGANIZATION_DISPLAY_NAME>",
     "message": "<ORGANIZATION_GUIDANCE>"
   },

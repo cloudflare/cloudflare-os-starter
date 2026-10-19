@@ -40,13 +40,14 @@ A dependency's new major can need code changes as well as a version bump, such a
 - Vars a Worker reads that no base config declares, in `env.d.ts` or as `env.X ?? <default>` in its code. Upstream's deploy service sets these itself, so `generateConfigs()` has to as well, and nothing fails without them: Web Search's `CF_AI_GATEWAY` silently falls back to `default`.
 - New bindings.
 - Routes that need adding to lists the starter overrides, such as `assets.run_worker_first`.
+- For the optional Gatekeepers a deployment selects: their configs are upstream's as shipped, plus the common block, the deployment's `vars` and `BASE_URL`. A var upstream's deploy service starts setting for them has to be set in `generateConfigs()` too, and a new `var` input in a package's `deploy-inputs.json` makes `check` ask for `gatekeepers.<slug>.vars.<NAME>`.
 - A change in how upstream produces its configs.
 
 `pnpm cf-os check` generates and validates the configs, so it is the test for this section.
 
 ## A New Upstream Gatekeeper Or Worker *(starter)*
 
-The starter deploys a fixed set of Workers. A Gatekeeper newly added to upstream's `PREINSTALL` (`cloudflare-os/scripts/release/manifest-lib.ts`) needs all of:
+The starter's own Workers are a fixed set. Upstream's other Gatekeepers come from the catalog `packages/cf-os/src/gatekeeper-catalog.ts` builds from the submodule with upstream's release code, so a new one arrives as *optional*: `init` offers it, and nothing deploys it until a deployment selects it under `gatekeepers`. That holds for one newly added to upstream's `PREINSTALL` (`cloudflare-os/scripts/release/manifest-lib.ts`) too, which the hosted flow installs everywhere, unless the catalog excludes it: upstream marking it not installable, a config key or input upstream's own release code rejects, a KV, R2, service or Artifacts binding, or another Worker's name as an input. An excluded one is never offered, and a hand-added `gatekeepers.<slug>` fails `check` with the reason, so it cannot stay optional: making it built-in is the only way to deploy it. Say so in the summary, and leave an offered one optional or, to keep the starter on the hosted topology, make it built-in, which needs all of:
 
 - A `PACKAGE_DIRS` entry.
 - Bindings to it from the Workshop and the router in `generateConfigs()`.
@@ -55,12 +56,19 @@ The starter deploys a fixed set of Workers. A Gatekeeper newly added to upstream
 - A row in `packages/cf-os/src/core/naming.ts`.
 - A `workers` entry in `deployment.jsonc`, and in the template the starter ships.
 - Any secrets it requires.
+- Provisioning for any storage it declares, as `deployment.ts` does for Context's KV.
+
+The naming row also makes its slug a built-in one, so a deployment that had selected it under `gatekeepers` fails `check` until the entry moves to `workers`.
 
 A `gatekeeper-*` package without a `wrangler.jsonc` is a library, not a Worker.
 
+## A Selected Gatekeeper The New Pin Excludes *(starter)*
+
+The catalog fails closed. When the range changes a Gatekeeper a deployment selects so that the catalog excludes it, `pnpm cf-os check` fails on `gatekeepers.<slug>` with the reason: upstream marking it not installable, a config key or input upstream's own release code rejects, a KV, R2, service or Artifacts binding, or another Worker's name as an input. A slug upstream renamed or removed fails as one it has no such Gatekeeper for, listing those it has. Do not work around it in `deployment.jsonc`. Report it to the operator: the deployment cannot take that pin until the starter supports what changed, or the entry is removed, which leaves the Worker running unbound.
+
 ## Build Tooling *(starter)*
 
-Watch for upstream turning a package's `build` script into a Vite+ task, or changing the shape of its vite-plus config. A task and a script with the same name break the task graph. A filter that matches nothing exits 0, so the deploy ships the old bundle. Check that `buildCommands()` still rebuilds every package from source.
+Watch for upstream turning a package's `build` script into a Vite+ task, or changing the shape of its vite-plus config. A task and a script with the same name break the task graph. A filter that matches nothing exits 0, so the deploy ships the old bundle. Check that `buildCommands()` still rebuilds every package from source. An optional Gatekeeper is built in one step, `vp run -F <package name> --no-cache build`, which relies on its `build` task depending on `build:configurator` (`cloudflare-os/scripts/gatekeeper-configurator-vite-config.ts`); if that dependency goes, it needs its own step.
 
 ## Renames
 

@@ -24,14 +24,20 @@ export function isPlaceholder(value: unknown): boolean {
 
 /**
  * Config paths still holding a template placeholder, in file order. Sections a deploy ignores are
- * skipped: the Error Reporter's while error reporting is off, and AI Gateway's beyond `enabled` while
- * it is off -- the same scope `validateConfig` checks placeholders in.
+ * skipped: the Error Reporter's while error reporting is off, the custom Gatekeeper's beyond `enabled`
+ * while it is off, and AI Gateway's beyond `enabled` while it is off -- the same scope
+ * `validateConfig` checks placeholders in.
  */
 export function placeholderPaths(file: Record<string, unknown>): string[] {
   const skip = new Set<string>();
   if (valueAtPath(file, ["errorReporting", "enabled"]) === false) {
     skip.add("workers.errorReporter");
     skip.add("errorReporting");
+  }
+  if (valueAtPath(file, ["customGatekeeper", "enabled"]) === false) {
+    skip.add("workers.customGatekeeper");
+    skip.add("customGatekeeper.name");
+    skip.add("customGatekeeper.message");
   }
   if (valueAtPath(file, ["aiGateway", "enabled"]) === false) skip.add("aiGateway");
   const found: string[] = [];

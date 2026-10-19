@@ -2,11 +2,14 @@
 // scratch project directories. Test support only; not part of the build.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse, type ParseError } from "jsonc-parser";
 import type { Context, GlobalFlags, Output } from "./context.ts";
 import type { CloudflareClient } from "./core/client.ts";
+import type { ProdWranglerConfig } from "./core/deployment-config.ts";
+import type { GatekeeperCatalog } from "./core/gatekeepers.ts";
 import type { FakeReply } from "./fake-cf.ts";
 import { Cancelled, type Choice, type Prompter } from "./prompt.ts";
 
@@ -133,9 +136,12 @@ export const TEMPLATE = `{
     "context": { "name": "<CONTEXT_WORKER_NAME>" },
     "scheduler": { "name": "<SCHEDULER_WORKER_NAME>" },
     "websearch": { "name": "<WEBSEARCH_WORKER_NAME>" },
+    // Ignored when customGatekeeper.enabled is false.
     "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
     "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
   },
+  // Optional upstream Gatekeepers, by slug: { "github": { "name": "acme-gk-github" } }.
+  "gatekeepers": {},
   "access": {
     "issuer": "https://<TEAM_NAME>.cloudflareaccess.com",
     "audience": "<ACCESS_AUDIENCE>",
@@ -143,7 +149,7 @@ export const TEMPLATE = `{
   },
   "aiGateway": { "enabled": true, "name": "default", "accountId": null, "providers": ["cloudflare"] },
   "context": { "sharingDomain": null, "kvNamespaceId": null },
-  "customGatekeeper": { "name": "<ORGANIZATION_DISPLAY_NAME>", "message": "<ORGANIZATION_GUIDANCE>" },
+  "customGatekeeper": { "enabled": true, "name": "<ORGANIZATION_DISPLAY_NAME>", "message": "<ORGANIZATION_GUIDANCE>" },
   "errorReporting": { "enabled": true, "environment": "production", "release": null },
   "resources": {
     "blueprintsKvNamespaceId": null,
@@ -181,5 +187,51 @@ export function hostedAccount(): Record<string, FakeReply> {
     "zero-trust access applications list": [
       { name: "Cloudflare OS acme 1a2b3c4d", aud: "aud-acme", domain: "acme.acme-sub.workers.dev" },
     ],
+  };
+}
+
+/** The repository root, for reading the submodule's packages whatever the working directory. */
+const REPOSITORY = join(import.meta.dirname, "..", "..", "..");
+
+/** An upstream package's file, parsed as `cf-os deploy` parses JSONC, errors included. */
+function upstreamJsonc<T>(path: string): T {
+  const errors: ParseError[] = [];
+  const result = parse(readFileSync(join(REPOSITORY, path), "utf8"), errors, { allowTrailingComma: true }) as T;
+  assert.deepEqual(errors, [], `${path} did not parse cleanly`);
+  return result;
+}
+
+/**
+ * A small Gatekeeper catalog, as `loadCatalog` reads it from the submodule: GitHub, an OAuth one
+ * with upstream's `deploy-inputs.json` setup guidance; Home Assistant, which takes no credentials;
+ * the MCP portal, whose slug folds its package name; and Email, excluded. The configs and inputs
+ * come from the packages themselves, and gatekeeper-catalog.test.ts holds every entry to what the
+ * real catalog says.
+ */
+export function testCatalog(): GatekeeperCatalog {
+  const offered = (slug: string, dir: string, packageName: string, singleton: boolean) => {
+    const packageDir = `cloudflare-os/packages/${dir}`;
+    return {
+      slug,
+      packageDir,
+      packageName,
+      preinstall: false,
+      singleton,
+      secrets: [],
+      vars: [],
+      readme: `${packageDir}/README.md`,
+      config: upstreamJsonc<ProdWranglerConfig>(`${packageDir}/wrangler.jsonc`),
+    };
+  };
+  return {
+    offered: [
+      {
+        ...offered("github", "gatekeeper-github", "@gadgets/github-gatekeeper", false),
+        secrets: upstreamJsonc("cloudflare-os/packages/gatekeeper-github/deploy-inputs.json"),
+      },
+      offered("homeassistant", "gatekeeper-homeassistant", "@gadgets/homeassistant-gatekeeper", true),
+      offered("mcpportal", "gatekeeper-mcp-portal", "@gadgets/mcp-portal-gatekeeper", true),
+    ],
+    excluded: [{ package: "gatekeeper-email", slug: "email", reason: "upstream marks it not installable" }],
   };
 }

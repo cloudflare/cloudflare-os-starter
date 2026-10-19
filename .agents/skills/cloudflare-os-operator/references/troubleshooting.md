@@ -130,7 +130,7 @@ Use an incognito session after config correction. Do not bypass Access to prove 
 
 `generateConfigs()` (`packages/cf-os/src/core/deployment.ts`) writes `preview_urls: false` on all Workers other than the router worker, because a Preview URL is an unauthenticated path around the Access-protected origin. Verify that in the derived config rather than assuming it, check the current Wrangler docs for changed defaults, and never patch the generated config to alter one.
 
-If a Worker other than the Router is publicly reachable, that is an Access bypass, not a routing nicety: the derived config gives the other six `workers_dev: false` and no routes, so an unexpected route means something outside this deploy created it.
+If a Worker other than the Router is publicly reachable, that is an Access bypass, not a routing nicety: the derived config gives every other Worker, optional Gatekeepers included, `workers_dev: false` and no routes, so an unexpected route means something outside this deploy created it.
 
 ### `pnpm cf-os check` says `deployment.jsonc` does not match the account
 
@@ -212,7 +212,7 @@ The Reporter must have no public route. Its events remain visible to authorized 
 
 ## Partial Deployment
 
-The baseline sequence is three waves: Error Reporter, Context, Scheduler, Web Search and Custom Gatekeeper together; then the Workshop; then the Router. Re-read `deployWaves()` in `packages/cf-os/src/core/deployment.ts` for the current waves. A failure inside a wave does not cancel that wave's other deploys -- they finish, and the next wave never starts -- so a failed stage can sit beside completed siblings from the same wave.
+The baseline sequence is three waves: Error Reporter (when enabled), Context, Scheduler, Web Search, Custom Gatekeeper (when enabled) and every optional Gatekeeper together; then the Workshop; then the Router. Re-read `deployWaves()` in `packages/cf-os/src/core/deployment.ts` for the current waves. A failure inside a wave does not cancel that wave's other deploys -- they finish, and the next wave never starts -- so a failed stage can sit beside completed siblings from the same wave.
 
 The Router is last because it binds every other Worker, which shapes recovery: a failure before it leaves the previous Router version serving the public URL against a partly-updated set of backends, so the live site can look healthy while the stack is mixed. A failure *of* the Router leaves the site on its previous version with new backends behind it.
 

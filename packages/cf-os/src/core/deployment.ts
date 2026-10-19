@@ -13,6 +13,8 @@ import type {
   ProdWranglerConfig,
   RouterRoute,
 } from "./deployment-config.ts";
+import type { CatalogGatekeeper, GatekeeperCatalog } from "./gatekeepers.ts";
+import { BUILT_IN_GATEKEEPER_SLUGS } from "./naming.ts";
 
 /**
  * Where each Worker's package lives, relative to the project root, keyed as `deployment.jsonc` keys
@@ -29,8 +31,68 @@ export const PACKAGE_DIRS = {
   errorReporter: "packages/error-reporter",
 } as const;
 
-/** A key of {@link PACKAGE_DIRS}: one deployable Worker. */
+/** A key of {@link PACKAGE_DIRS}: one of the starter's own Workers. */
 export type PackageKey = keyof typeof PACKAGE_DIRS;
+
+/**
+ * One deployable Worker: a {@link PACKAGE_DIRS} key, or `gatekeepers.<slug>` for an optional
+ * Gatekeeper, whose package the catalog locates.
+ */
+export type WorkerId = PackageKey | `gatekeepers.${string}`;
+
+/** The {@link WorkerId} of optional Gatekeeper `slug`. */
+export function gatekeeperWorkerId(slug: string): WorkerId {
+  return `gatekeepers.${slug}`;
+}
+
+/** The slug of an optional Gatekeeper's {@link WorkerId}, or undefined for the starter's own. */
+function slugOf(id: WorkerId): string | undefined {
+  return id.startsWith("gatekeepers.") ? id.slice("gatekeepers.".length) : undefined;
+}
+
+/** The catalog entry for `slug`. `validateGatekeepers` has already checked there is one. */
+function offeredGatekeeper(catalog: GatekeeperCatalog, slug: string): CatalogGatekeeper {
+  const entry = catalog.offered.find((gatekeeper) => gatekeeper.slug === slug);
+  if (!entry) throw new Error(`gatekeepers.${slug} is not in the Gatekeeper catalog.`);
+  return entry;
+}
+
+/** Where Worker `id`'s package lives, relative to the project root. */
+export function workerDir(id: WorkerId, catalog: GatekeeperCatalog): string {
+  const slug = slugOf(id);
+  return slug === undefined ? PACKAGE_DIRS[id as PackageKey] : offeredGatekeeper(catalog, slug).packageDir;
+}
+
+/** Worker `id`'s name in `config`. */
+export function workerName(config: DeploymentConfig, id: WorkerId): string {
+  const slug = slugOf(id);
+  return slug === undefined ? config.workers[id as PackageKey]!.name : config.gatekeepers![slug].name;
+}
+
+/** Every generated config, by the Worker it is for. */
+export function generatedOutputs(generated: GeneratedConfigs): [WorkerId, ProdWranglerConfig][] {
+  const { gatekeepers, ...own } = generated;
+  return [
+    ...(Object.entries(own) as [PackageKey, ProdWranglerConfig | undefined][])
+      .filter((entry): entry is [PackageKey, ProdWranglerConfig] => entry[1] !== undefined),
+    ...Object.entries(gatekeepers).map(([slug, config]) => [gatekeeperWorkerId(slug), config] as [WorkerId, ProdWranglerConfig]),
+  ];
+}
+
+/** Whether the example custom Gatekeeper is deployed. Absent `customGatekeeper.enabled` means it is. */
+export function customGatekeeperEnabled(config: DeploymentConfig): boolean {
+  return config.customGatekeeper?.enabled !== false;
+}
+
+/** The slugs of the optional Gatekeepers `config` selects. */
+export function gatekeeperSlugs(config: DeploymentConfig): string[] {
+  return Object.keys(config.gatekeepers ?? {});
+}
+
+/** The service binding name both the Workshop and the router reach Gatekeeper `slug` by. */
+function gatekeeperBinding(slug: string): string {
+  return `GATEKEEPER_${slug.toUpperCase()}`;
+}
 
 /**
  * The generated config's file name, beside each base `wrangler.jsonc`. One deployment per checkout;
@@ -47,14 +109,11 @@ const requiredPaths = [
   "workers.context.name",
   "workers.scheduler.name",
   "workers.websearch.name",
-  "workers.customGatekeeper.name",
   "access.issuer",
   "access.audience",
   "access.admins",
   "aiGateway.enabled",
   "errorReporting.enabled",
-  "customGatekeeper.name",
-  "customGatekeeper.message",
   "observability.enabled",
   "observability.headSamplingRate",
   "observability.logs.invocationLogs",
@@ -68,6 +127,20 @@ const aiGatewayPaths = [
   "aiGateway.name",
   "aiGateway.providers",
 ];
+
+const customGatekeeperPaths = [
+  "workers.customGatekeeper.name",
+  "customGatekeeper.name",
+  "customGatekeeper.message",
+];
+
+/**
+ * An install slug, mirroring `SLUG_RE` and `MAX_SLUG_LEN` in
+ * cloudflare-os/scripts/release/manifest-lib.ts: the one charset that survives the round trip
+ * through a `GATEKEEPER_<SLUG>` binding name and back to a route.
+ */
+const slugPattern = /^[a-z][a-z0-9]*$/;
+const maxSlugLength = 20;
 
 const errorReportingPaths = [
   "workers.errorReporter.name",
@@ -175,8 +248,10 @@ export class PlaceholderError extends Error {}
  * path it concerns. A file that still holds template placeholders throws {@link PlaceholderError}.
  */
 export function validateConfig(config: DeploymentConfig): DeploymentConfig {
+  const customGatekeeper = customGatekeeperEnabled(config);
   const activePaths = [
     ...requiredPaths,
+    ...(customGatekeeper ? customGatekeeperPaths : []),
     ...(config.aiGateway?.enabled ? aiGatewayPaths : []),
     ...(config.errorReporting?.enabled ? errorReportingPaths : []),
   ];
@@ -204,6 +279,13 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
       errorReporting: { enabled: false },
     };
   }
+  if (!customGatekeeper) {
+    activeConfig = {
+      ...activeConfig,
+      workers: { ...activeConfig.workers, customGatekeeper: undefined },
+      customGatekeeper: { enabled: false } as DeploymentConfig["customGatekeeper"],
+    };
+  }
   const placeholder = JSON.stringify(activeConfig).match(/<[^>]+>/)?.[0];
   if (placeholder) throw new PlaceholderError(`Replace deployment placeholder ${placeholder}.`);
 
@@ -227,13 +309,22 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   if (!accountIdPattern.test(config.accountId)) {
     throw new Error("Cloudflare account IDs must be 32 hexadecimal characters.");
   }
-  const workerNames = Object.entries(config.workers)
-    .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
-    .map(([, worker]) => worker.name);
-  if (new Set(workerNames).size !== workerNames.length) {
+  if (config.customGatekeeper.enabled !== undefined && typeof config.customGatekeeper.enabled !== "boolean") {
+    throw new Error("customGatekeeper.enabled must be a boolean.");
+  }
+  validateGatekeeperEntries(config);
+  const workerNames = [
+    ...Object.entries(config.workers)
+      .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
+      .filter(([key]) => key !== "customGatekeeper" || customGatekeeper)
+      .map(([, worker]) => worker!.name),
+    ...Object.values(config.gatekeepers ?? {}).map((entry) => entry.name),
+  ];
+  const duplicate = workerNames.find((name, index) => workerNames.indexOf(name) !== index);
+  if (duplicate !== undefined) {
     throw new Error(
-      "Router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, and Error Reporter " +
-      "names must be unique.");
+      "Router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, Error Reporter and " +
+      `optional Gatekeeper names must be unique: ${duplicate} is used twice.`);
   }
   if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
@@ -322,6 +413,90 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     throw new Error("Observability trace sampling must be between 0 and 1.");
   }
   return config;
+}
+
+/**
+ * The shape of `gatekeepers`, which needs no catalog: slugs, names and vars. Whether each slug is
+ * one upstream offers is {@link validateGatekeepers}'s question.
+ */
+function validateGatekeeperEntries(config: DeploymentConfig): void {
+  const gatekeepers: unknown = config.gatekeepers;
+  if (gatekeepers === undefined) return;
+  if (!gatekeepers || typeof gatekeepers !== "object" || Array.isArray(gatekeepers)) {
+    throw new Error("gatekeepers must be an object keyed by Gatekeeper slug.");
+  }
+  for (const [slug, entry] of Object.entries(gatekeepers as Record<string, unknown>)) {
+    if (!slugPattern.test(slug) || slug.length > maxSlugLength) {
+      throw new Error(
+        `gatekeepers.${slug}: a Gatekeeper slug is 1-${maxSlugLength} lowercase letters and digits, ` +
+        "starting with a letter. It becomes a GATEKEEPER_<SLUG> binding and a /gatekeeper/<slug> route.");
+    }
+    if (BUILT_IN_GATEKEEPER_SLUGS.includes(slug)) {
+      throw new Error(
+        `gatekeepers.${slug}: ${slug} is one of the Gatekeepers the starter deploys itself; its ` +
+        "Worker is named under workers.");
+    }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`gatekeepers.${slug} must be an object with a name.`);
+    }
+    const unknown = Object.keys(entry).filter((key) => key !== "name" && key !== "vars");
+    if (unknown.length) {
+      throw new Error(`gatekeepers.${slug}: only name and vars are allowed, not ${unknown.join(", ")}.`);
+    }
+    const { name, vars } = entry as { name?: unknown; vars?: unknown };
+    if (typeof name !== "string" || !name) {
+      throw new Error(`gatekeepers.${slug}.name must be a Worker name.`);
+    }
+    if (vars === undefined) continue;
+    if (!vars || typeof vars !== "object" || Array.isArray(vars)) {
+      throw new Error(`gatekeepers.${slug}.vars must be an object of strings.`);
+    }
+    for (const [key, value] of Object.entries(vars)) {
+      if (key === "BASE_URL") {
+        throw new Error(
+          `gatekeepers.${slug}.vars.BASE_URL: the deploy sets it, to <public origin>/gatekeeper/${slug}. ` +
+          "Remove it.");
+      }
+      if (typeof value !== "string") {
+        throw new Error(`gatekeepers.${slug}.vars.${key} must be a string.`);
+      }
+    }
+  }
+}
+
+/**
+ * Checks `config.gatekeepers` against the catalog of what the submodule offers, throwing the first
+ * problem with the config path it concerns. Separate from {@link validateConfig} because the
+ * catalog comes from the disk; a deployment that selects none never needs one.
+ */
+export function validateGatekeepers(config: DeploymentConfig, catalog: GatekeeperCatalog): void {
+  const entries = Object.entries(config.gatekeepers ?? {});
+  if (!entries.length) return;
+  if (catalog.unavailable) {
+    throw new Error(`gatekeepers: the Gatekeeper catalog could not be read, so none can be deployed: ${catalog.unavailable}`);
+  }
+  for (const [slug, entry] of entries) {
+    const offered = catalog.offered.find((gatekeeper) => gatekeeper.slug === slug);
+    if (!offered) {
+      const excluded = catalog.excluded.find((gatekeeper) => gatekeeper.slug === slug);
+      throw new Error(excluded
+        ? `gatekeepers.${slug}: the starter cannot deploy ${excluded.package}: ${excluded.reason}.`
+        : `gatekeepers.${slug}: upstream has no such Gatekeeper. Available: ` +
+          `${catalog.offered.map((gatekeeper) => gatekeeper.slug).join(", ") || "none"}.`);
+    }
+    for (const key of Object.keys(entry.vars ?? {})) {
+      if (offered.secrets.some((input) => input.name === key)) {
+        throw new Error(
+          `gatekeepers.${slug}.vars.${key} is a secret, and this file is committed. Remove it, then ` +
+          `set it with \`CLOUDFLARE_ACCOUNT_ID=${config.accountId} pnpm exec wrangler secret put ${key} --name ${entry.name}\`.`);
+      }
+    }
+    for (const input of offered.vars) {
+      if (entry.vars?.[input.name] === undefined) {
+        throw new Error(`Missing required deployment value: gatekeepers.${slug}.vars.${input.name} (${input.label}).`);
+      }
+    }
+  }
 }
 
 /**
@@ -425,7 +600,7 @@ function setCommon(
   delete config.routes;
   if (route.customDomain) Object.assign(config, routeConfig(route));
   // The router is the Access-protected origin, and a preview URL is an unauthenticated path around
-  // it. Off on every Worker: the six behind the router have no business being publicly reachable
+  // it. Off on every Worker: those behind the router have no business being publicly reachable
   // either.
   config.preview_urls = false;
   config.observability = {
@@ -444,19 +619,30 @@ function setCommon(
   };
 }
 
-/** Every Worker's `wrangler.prod.jsonc`, derived from its base config. Validates `config` first. */
-export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): GeneratedConfigs {
+/**
+ * Every Worker's `wrangler.prod.jsonc`, derived from its base config, an optional Gatekeeper's
+ * from its catalog entry. Validates `config` first.
+ */
+export function generateConfigs(
+  config: DeploymentConfig,
+  bases: BaseConfigs,
+  catalog: GatekeeperCatalog,
+): GeneratedConfigs {
   validateConfig(config);
+  validateGatekeepers(config, catalog);
   const router = structuredClone(bases.router);
   const workshop = structuredClone(bases.workshop);
   const context = structuredClone(bases.context);
   const scheduler = structuredClone(bases.scheduler);
   const websearch = structuredClone(bases.websearch);
-  const customGatekeeper = structuredClone(bases.customGatekeeper);
+  const customGatekeeper = customGatekeeperEnabled(config)
+    ? structuredClone(bases.customGatekeeper)
+    : undefined;
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
   const origin = publicOrigin(config);
+  const optional = Object.entries(config.gatekeepers ?? {});
 
   setCommon(router, config, config.workers.router.name, config.workers.router.route);
   router.services = [
@@ -466,7 +652,10 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     { binding: "GATEKEEPER_CONTEXT", service: config.workers.context.name },
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
     { binding: "GATEKEEPER_WEBSEARCH", service: config.workers.websearch.name },
-    { binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name },
+    ...(customGatekeeper
+      ? [{ binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper!.name }]
+      : []),
+    ...optional.map(([slug, entry]) => ({ binding: gatekeeperBinding(slug), service: entry.name })),
   ];
 
   setCommon(workshop, config, config.workers.workshop.name);
@@ -534,11 +723,18 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       service: config.workers.websearch.name,
       entrypoint: "GatekeeperVendor",
     },
-    {
+    ...(customGatekeeper ? [{
       binding: "GATEKEEPER_CUSTOM",
-      service: config.workers.customGatekeeper.name,
+      service: config.workers.customGatekeeper!.name,
       entrypoint: "GatekeeperVendor",
-    },
+    }] : []),
+    // No props: upstream's deploy service passes none to any Gatekeeper but Context
+    // (`propsByPackage` in cloudflare-os/scripts/release/manifest-lib.ts).
+    ...optional.map(([slug, entry]) => ({
+      binding: gatekeeperBinding(slug),
+      service: entry.name,
+      entrypoint: "GatekeeperVendor",
+    })),
   ];
   workshop.kv_namespaces = [
     { binding: "BLUEPRINTS", ...(config.resources.blueprintsKvNamespaceId
@@ -580,19 +776,35 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   setCommon(websearch, config, config.workers.websearch.name);
   if (gateway && !gateway.crossAccount) websearch.vars = { CF_AI_GATEWAY: config.aiGateway.name };
 
-  setCommon(customGatekeeper, config, config.workers.customGatekeeper.name);
-  customGatekeeper.vars = {
-    CUSTOM_NAME: config.customGatekeeper.name,
-    CUSTOM_MESSAGE: config.customGatekeeper.message,
-  };
+  if (customGatekeeper) {
+    setCommon(customGatekeeper, config, config.workers.customGatekeeper!.name);
+    customGatekeeper.vars = {
+      CUSTOM_NAME: config.customGatekeeper.name,
+      CUSTOM_MESSAGE: config.customGatekeeper.message,
+    };
+  }
 
   if (errorReporter) {
     setCommon(errorReporter, config, config.workers.errorReporter!.name);
   }
 
+  // Base config as upstream ships it -- migrations, rules, build command -- plus the common block,
+  // the operator's vars, and `BASE_URL`, which upstream's optional Gatekeepers build their OAuth
+  // redirect and every absolute link from, and throw without. The value is the one the hosted
+  // release templates (`buildWorkerEntry` in cloudflare-os/scripts/release/manifest-lib.ts).
+  const gatekeepers: Record<string, ProdWranglerConfig> = {};
+  for (const [slug, entry] of optional) {
+    const generated = structuredClone(offeredGatekeeper(catalog, slug).config);
+    setCommon(generated, config, entry.name);
+    generated.vars = { ...generated.vars, ...entry.vars, BASE_URL: `${origin}/gatekeeper/${slug}` };
+    gatekeepers[slug] = generated;
+  }
+
   return {
-    router, workshop, context, scheduler, websearch, customGatekeeper,
+    router, workshop, context, scheduler, websearch,
+    ...(customGatekeeper && { customGatekeeper }),
     ...(errorReporter && { errorReporter }),
+    gatekeepers,
   };
 }
 
@@ -629,7 +841,7 @@ function ownBuild(pkg: string, task = "build"): string[] {
  * `../workshop-frontend/dist`: it is the router's *deploy* that reads those assets, not its build,
  * and every build finishes before anything deploys.
  */
-export function buildCommands(config: DeploymentConfig): BuildCommand[][] {
+export function buildCommands(config: DeploymentConfig, catalog: GatekeeperCatalog): BuildCommand[][] {
   return [
     // `build:app` first, and separately. `gatekeeper-context`'s `build` is a package.json script
     // that spawns `vp run --cache build:app` itself, and the outer `--no-cache` does not reach a
@@ -647,8 +859,13 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[][] {
     ],
     // A type-check only: wrangler's own build command runs capnweb-validate at deploy time.
     [{ args: submoduleBuild("@gadgets/gatekeeper-websearch") }],
-    [{ args: ownBuild("custom-gatekeeper") }],
+    ...(customGatekeeperEnabled(config) ? [[{ args: ownBuild("custom-gatekeeper") }]] : []),
     ...(config.errorReporting.enabled ? [[{ args: ownBuild("error-reporter") }]] : []),
+    // One step each. Every optional Gatekeeper's `build` task depends on `build:configurator`, the
+    // codegen (cloudflare-os/scripts/gatekeeper-configurator-vite-config.ts), and the outer
+    // `--no-cache` reaches that dependency too -- measured: both run with "cache disabled". Their
+    // wrangler `build.command` then runs capnweb-validate at deploy time, as Web Search's does.
+    ...gatekeeperSlugs(config).map((slug) => [{ args: submoduleBuild(offeredGatekeeper(catalog, slug).packageName) }]),
     // Access mode is a build-time constant in the frontend bundle (`src/useAuth.ts`), so it is set
     // here rather than inherited: a bundle built under a different value is wrong, not just stale.
     [{ args: submoduleBuild("@gadgets/workshop-frontend"), env: { VITE_CF_ACCESS_MODE: "true" } }],
@@ -665,11 +882,13 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[][] {
  * and every Gatekeeper, goes last. A failure before the router leaves the previous router version
  * serving.
  */
-export function deployWaves(config: DeploymentConfig): PackageKey[][] {
+export function deployWaves(config: DeploymentConfig): WorkerId[][] {
   return [
     [
       ...(config.errorReporting.enabled ? ["errorReporter" as const] : []),
-      "context", "scheduler", "websearch", "customGatekeeper",
+      "context", "scheduler", "websearch",
+      ...(customGatekeeperEnabled(config) ? ["customGatekeeper" as const] : []),
+      ...gatekeeperSlugs(config).map(gatekeeperWorkerId),
     ],
     ["workshop"],
     ["router"],
@@ -677,6 +896,6 @@ export function deployWaves(config: DeploymentConfig): PackageKey[][] {
 }
 
 /** {@link deployWaves}, flattened: one order the Workers can deploy in, one at a time. */
-export function deployOrder(config: DeploymentConfig): PackageKey[] {
+export function deployOrder(config: DeploymentConfig): WorkerId[] {
   return deployWaves(config).flat();
 }
