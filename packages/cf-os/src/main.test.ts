@@ -285,6 +285,16 @@ test("the packed path never reaches @gadgets/scripts", () => {
   assert.deepEqual(Object.keys(manifest.dependencies), ["@clack/prompts"]);
 });
 
+test("init and secrets load without the submodule, to refuse or fail as they would", () => {
+  // Checked out without it, @gadgets/scripts resolves to nothing: those that read upstream load it
+  // lazily (gatekeeper-catalog.ts, local-bin.ts, cf-client.ts through the context's client).
+  for (const command of ["init", "secrets"]) {
+    const { files, packages } = staticClosure([join(SRC, "commands", `${command}.ts`)]);
+    const reached = [...packages].filter((name) => name.startsWith("@gadgets/"));
+    assert.deepEqual(reached, [], `${command}: reachable from ${[...files].map((file) => relative(SRC, file)).join(", ")}`);
+  }
+});
+
 test("the core is pure: no CLI shell, no cf subprocess, no prompts", () => {
   const core = join(SRC, "core");
   for (const name of readdirSync(core).filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))) {

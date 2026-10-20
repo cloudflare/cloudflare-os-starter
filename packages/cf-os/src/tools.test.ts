@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { defaultCapture, defaultSpawn } from "./tools.ts";
 
@@ -49,4 +52,27 @@ test("reports a command that cannot run as an error, without throwing", async ()
   const result = await defaultCapture()("cf-os-no-such-command", [], { cwd: process.cwd() });
   assert.equal(result.status, null);
   assert.equal((result.error as NodeJS.ErrnoException | undefined)?.code, "ENOENT");
+});
+
+test("stops waiting on a status read when its signal aborts, leaving it to finish without holding the process", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cf-os-capture-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const marker = join(dir, "finished");
+  // The read, left to finish, writes the marker; the process waiting on it stops waiting and exits.
+  const read = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, ""), 1500)`;
+  const script = `
+    import { defaultCapture } from ${JSON.stringify(new URL("./tools.ts", import.meta.url).href)};
+    const stop = new AbortController();
+    const reading = defaultCapture()(process.execPath, ["-e", ${JSON.stringify(read)}], { cwd: process.cwd(), signal: stop.signal });
+    setTimeout(() => stop.abort(), 50);
+    const result = await reading;
+    process.stdout.write(result.error ? "stopped" : "finished");
+  `;
+  const started = performance.now();
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" });
+  assert.equal(run.stdout, "stopped", run.stderr);
+  assert.ok(performance.now() - started < 1400, "waited for the read to finish");
+  assert.ok(!existsSync(marker), "the read finished before it was stopped");
+  for (let waited = 0; !existsSync(marker) && waited < 5000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(existsSync(marker), "the read was killed rather than left to finish");
 });

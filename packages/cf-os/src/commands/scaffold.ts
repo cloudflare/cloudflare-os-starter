@@ -19,7 +19,7 @@ import { basename, join, resolve } from "node:path";
 import { UsageError, type CommandArgs, type Context } from "../context.ts";
 import { delegate, localEntry, type SpawnDelegate } from "../project.ts";
 import { waitOn } from "../prompt.ts";
-import { defaultCapture, defaultSpawn, succeeded, type CaptureTool, type SpawnTool } from "../tools.ts";
+import { defaultCapture, defaultSpawn, succeeded, type CaptureTool, type SpawnTool, type ToolResult } from "../tools.ts";
 
 /** The starter `init` clones by default. */
 export const DEFAULT_TEMPLATE = "https://github.com/cloudflare/cloudflare-os-starter";
@@ -127,16 +127,22 @@ function repositoryCommand(target: string): string {
 }
 
 /**
- * Offers to create a private GitHub repository for the project and push it there, as `origin`.
- * Never fails the scaffold: without `gh`, declined, or failed, it says how to do it by hand.
+ * The GitHub CLI's active account's login on stdout, or nothing when it cannot be used. Not
+ * `gh auth status`: that fails when any stored account's token is stale, even with a working active one.
  */
-async function offerRepository(ctx: Context, deps: ScaffoldDeps, target: string): Promise<void> {
+function githubLogin(deps: ScaffoldDeps, target: string, signal?: AbortSignal): Promise<ToolResult> {
+  return deps.capture("gh", ["api", "user", "-q", ".login"], { cwd: target, signal });
+}
+
+/**
+ * Offers to create a private GitHub repository for the project and push it there, as `origin`.
+ * Never fails the scaffold: without `gh`, declined, or failed, it says how to do it by hand. `login`
+ * is {@link githubLogin}, started earlier.
+ */
+async function offerRepository(ctx: Context, deps: ScaffoldDeps, target: string, login: Promise<ToolResult>): Promise<void> {
   const prompter = ctx.prompter!;
-  // The active account's login, or "" when it cannot be used. Not `gh auth status`: that fails when
-  // any stored account's token is stale, even with a working active one.
-  const whoami = () => waitOn(ctx.prompter, "Checking the GitHub CLI's sign-in",
-    () => deps.capture("gh", ["api", "user", "-q", ".login"], { cwd: target }));
-  const user = await whoami();
+  const whoami = (check: () => Promise<ToolResult>) => waitOn(ctx.prompter, "Checking the GitHub CLI's sign-in", check);
+  const user = await whoami(() => login);
   if (user.error) {
     ctx.out.log(`\n${MANUAL_REPOSITORY}`);
     return;
@@ -145,21 +151,21 @@ async function offerRepository(ctx: Context, deps: ScaffoldDeps, target: string)
     ctx.out.log(`\n${MANUAL_REPOSITORY}`);
     return;
   }
-  let login = succeeded(user) ? user.stdout.trim() : "";
+  let owner = succeeded(user) ? user.stdout.trim() : "";
   // Signed out, `gh auth login` asks its own questions and opens a browser; then check it took.
-  if (!login) {
+  if (!owner) {
     ctx.out.log("\nThe GitHub CLI is not signed in. Signing in with `gh auth login`.\n");
     deps.spawn("gh", ["auth", "login"], { cwd: target, capture: false });
-    const after = await whoami();
-    login = succeeded(after) ? after.stdout.trim() : "";
-    if (!login) {
+    const after = await whoami(() => githubLogin(deps, target));
+    owner = succeeded(after) ? after.stdout.trim() : "";
+    if (!owner) {
       ctx.out.log(`\nThe GitHub CLI still cannot reach your account, so no repository was created. Later, ` +
         `run \`gh auth login\` and \`${repositoryCommand(target)}\` in the project. Or: ${MANUAL_REPOSITORY}`);
       return;
     }
   }
   const name = await prompter.text("Repository (owner/name)", {
-    initial: `${login}/${basename(target)}`,
+    initial: `${owner}/${basename(target)}`,
     validate: (value) => REPOSITORY.test(value) ? undefined : "Use owner/name, such as octocat/my-os.",
   });
   const created = deps.spawn("gh",
@@ -205,8 +211,12 @@ export async function scaffold(args: CommandArgs, ctx: Context, deps: ScaffoldDe
   if (rename.error || rename.status !== 0) throw new Error("Could not rename the origin remote to starter.");
   ctx.out.log("\nThe starter is the `starter` remote. `npx cf-os@latest update` brings in its updates.\n");
 
+  // Read while the install runs, for the repository offered after it at a terminal.
+  const stopLoginCheck = new AbortController();
+  const login = ctx.prompter ? githubLogin(deps, target, stopLoginCheck.signal) : undefined;
   const install = deps.spawn("pnpm", ["install"], { cwd: target, capture: false });
   if (install.error || install.status !== 0) {
+    stopLoginCheck.abort();
     throw new Error(`pnpm install failed in ${target}. Its output is above; fix it, then run ` +
       "`pnpm install` and `pnpm cf-os init` there.");
   }
@@ -221,7 +231,7 @@ export async function scaffold(args: CommandArgs, ctx: Context, deps: ScaffoldDe
       `  pnpm cf-os init${passOn.length ? ` ${passOn.join(" ")}` : ""}`);
     return 0;
   }
-  await offerRepository(ctx, deps, target);
+  await offerRepository(ctx, deps, target, login!);
   const entry = localEntry(target);
   if (!existsSync(entry)) {
     ctx.out.log(`\nCreated ${target}, but this starter has no packages/cf-os to configure it with. Edit ` +

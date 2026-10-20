@@ -140,8 +140,9 @@ test("at a terminal, creates a private repository, then hands over to the new pr
     flags: { profile: "work" },
   });
   assert.equal(code, 0);
-  assert.deepEqual(commands().slice(5), [
+  assert.deepEqual(commands().slice(4), [
     "gh api user -q .login",
+    "pnpm install",
     "gh repo create me/my-os --private --source . --remote origin --push",
   ]);
   assert.ok(ran.slice(5).every((entry) => entry.cwd === target));
@@ -155,7 +156,7 @@ test("at a terminal, creates a private repository, then hands over to the new pr
 
 test("without gh, says how to add a repository by hand, and asks nothing", async (t) => {
   const { commands, configured, stderr } = await scaffolding(t, { replies: { "gh api user": { error: true } }, script: [] });
-  assert.deepEqual(commands().slice(5), ["gh api user -q .login"]);
+  assert.deepEqual(commands().slice(4), ["gh api user -q .login", "pnpm install"]);
   assert.match(stderr(), /git remote add origin <url>/);
   assert.equal(configured.length, 1);
 });
@@ -175,8 +176,9 @@ test("with gh signed out, signs in once asked, then creates the repository", asy
   const harness = testContext({ root: cwd, prompter });
   assert.equal(await scaffold({ command: "init", values: {}, positionals: ["my-os"] }, harness.ctx, tools.deps), 0);
   assert.deepEqual(prompter.remaining(), []);
-  assert.deepEqual(tools.commands().slice(5), [
+  assert.deepEqual(tools.commands().slice(4), [
     "gh api user -q .login",
+    "pnpm install",
     "gh auth login",
     "gh api user -q .login",
     "gh repo create me/my-os --private --source . --remote origin --push",
@@ -192,7 +194,7 @@ test("checks gh's sign-in as it is, at a terminal that draws no spinner", async 
   const harness = testContext({ root: cwd, prompter });
   assert.equal(await scaffold({ command: "init", values: {}, positionals: ["my-os"] }, harness.ctx, tools.deps), 0);
   assert.deepEqual(prompter.remaining(), []);
-  assert.deepEqual(tools.commands().slice(5), ["gh api user -q .login"]);
+  assert.deepEqual(tools.commands().slice(4), ["gh api user -q .login", "pnpm install"]);
 });
 
 test("when the gh sign-in does not take, says how to finish later, and carries on to init", async (t) => {
@@ -200,7 +202,7 @@ test("when the gh sign-in does not take, says how to finish later, and carries o
     replies: { "gh api user": { status: 1 } },
     script: [["Create a private GitHub repository", true]],
   });
-  assert.deepEqual(commands().slice(5), ["gh api user -q .login", "gh auth login", "gh api user -q .login"]);
+  assert.deepEqual(commands().slice(4), ["gh api user -q .login", "pnpm install", "gh auth login", "gh api user -q .login"]);
   assert.match(stderr(), /still cannot reach your account[\s\S]*gh repo create <owner>\/my-os/);
   assert.equal(configured.length, 1);
 });
@@ -210,7 +212,7 @@ test("declined, signs nobody in to gh", async (t) => {
     replies: { "gh api user": { status: 1 } },
     script: [["Create a private GitHub repository", false]],
   });
-  assert.deepEqual(commands().slice(5), ["gh api user -q .login"]);
+  assert.deepEqual(commands().slice(4), ["gh api user -q .login", "pnpm install"]);
 });
 
 test("takes no for an answer", async (t) => {
@@ -277,4 +279,21 @@ test("refuses the wrong pnpm major", async (t) => {
 
 test("without a terminal, needs the directory as an argument", async (t) => {
   await assert.rejects(scaffolding(t, { dir: "" }), /cf-os init <dir>/);
+});
+
+test("checks gh's sign-in while the install runs, and stops the check when the install fails", async (t) => {
+  const cwd = workdir(t);
+  const tools = recording({ ...GH, "pnpm install": { status: 1 } });
+  const signals: (AbortSignal | undefined)[] = [];
+  const capture = tools.deps.capture;
+  tools.deps.capture = (command, args, options) => {
+    signals.push(options.signal);
+    return capture(command, args, options);
+  };
+  const harness = testContext({ root: cwd, prompter: scriptedPrompter([]) });
+  await assert.rejects(scaffold({ command: "init", values: {}, positionals: ["my-os"] }, harness.ctx, tools.deps),
+    /pnpm install failed/);
+  assert.deepEqual(tools.commands().slice(4), ["gh api user -q .login", "pnpm install"]);
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0]?.aborted, true);
 });

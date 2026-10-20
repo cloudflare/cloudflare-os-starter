@@ -187,6 +187,9 @@ test("check warns on stderr about a Gatekeeper secret that is not set, and carri
   assert.deepEqual(harness.json, []);
   assert.deepEqual(cf.calls.filter((call) => call.args[1] === "secrets").map((call) => call.args),
     [["workers", "secrets", "list", "--script-name", "acme-gk-github"]]);
+  // Read beside the account check rather than after it, though printed after its verdict.
+  const at = (words: string) => cf.calls.findIndex((call) => call.args.join(" ").startsWith(words));
+  assert.ok(at("workers secrets list") < at("zero-trust access applications list"), "read after the account check");
 });
 
 test("check and deploy warn about an MCP portal with no endpoint, and deploy it anyway", async (t) => {
@@ -380,7 +383,8 @@ test("the account checks that fail print the same whichever read finishes first"
   };
   const plain = await check();
   assert.match(plain.message, /does not match the account:\n {2}- access\.issuer is .*\n {2}- access\.audience: .*\n {2}- resources\.blueprintsKvNamespaceId: .*\n {2}- resources\.blueprintContentBucket: /);
-  assert.equal(plain.calls, 4);
+  // The four the account check reads, and the GitHub Worker's secrets, read beside them.
+  assert.equal(plain.calls, 5);
   let started = 0;
   assert.deepEqual(await check(() => 60 - 10 * started++), plain);
 });

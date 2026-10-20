@@ -30,12 +30,15 @@ export type SpawnTool = (
 /**
  * One external command, run in `cwd` with its output captured and nothing on its stdin, resolving
  * once it exits: a status read (`wrangler whoami`, `gh api user`) the event loop keeps turning
- * through.
+ * through. `signal` stops waiting on one started ahead that turns out not to be needed: it resolves
+ * at once, and the command is left to finish on its own without holding this process open. Not
+ * killed: a sign-in check may be refreshing a single-use OAuth token, and one cut off mid-refresh
+ * would leave the CLI signed out.
  */
 export type CaptureTool = (
   command: string,
   args: string[],
-  options: { cwd: string; env?: NodeJS.ProcessEnv },
+  options: { cwd: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal },
 ) => Promise<ToolResult>;
 
 /** Whether a tool ran and exited 0. */
@@ -70,7 +73,7 @@ function needsShell(command: string): boolean {
 
 /** {@link CaptureTool} on `spawn`. */
 export function defaultCapture(): CaptureTool {
-  return (command, args, { cwd, env }) => new Promise((resolve) => {
+  return (command, args, { cwd, env, signal }) => new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -91,5 +94,13 @@ export function defaultCapture(): CaptureTool {
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => stderr += chunk);
     child.on("error", (error) => settle({ status: null, stdout, stderr, error }));
     child.on("close", (status) => settle({ status, stdout, stderr }));
+    const detach = () => {
+      child.unref();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      settle({ status: null, stdout, stderr, error: new Error(`${command} ${args.join(" ")}: no longer waited on`) });
+    };
+    if (signal?.aborted) detach();
+    else signal?.addEventListener("abort", detach, { once: true });
   });
 }

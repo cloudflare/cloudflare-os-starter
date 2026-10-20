@@ -24,6 +24,7 @@ import { publicOrigin } from "./core/deployment.ts";
 import { secretSetup, type GatekeeperCatalog } from "./core/gatekeepers.ts";
 import { prose, SECRET_READS_AT_ONCE, startBounded } from "./core/verify-account.ts";
 import { waitOn, type Prompter } from "./prompt.ts";
+import { localBin } from "./local-bin.ts";
 import { succeeded, type SpawnTool } from "./tools.ts";
 
 /** What {@link askAndSetSecrets} and {@link uploadSecrets} run besides the context. */
@@ -102,14 +103,15 @@ export function withRetry(ctx: Context, error: Error, slug: string): string {
  * Wrangler's output goes to stderr. Throws a {@link SecretUploadError} when it fails. The caller
  * makes sure the Worker exists.
  */
-export function putWorkerSecrets(
+export async function putWorkerSecrets(
   spawn: SpawnTool,
   root: string,
   accountId: string,
   worker: string,
   values: Record<string, string>,
-): void {
-  const result = spawn("pnpm", ["exec", "wrangler", "secret", "bulk", "--name", worker], {
+): Promise<void> {
+  const [command, args] = await localBin(root, "wrangler", ["secret", "bulk", "--name", worker]);
+  const result = spawn(command, args, {
     cwd: root,
     capture: false,
     // Wrangler logs each API request, body and all, to its debug log file and with WRANGLER_LOG=debug
@@ -137,7 +139,7 @@ export async function uploadSecrets(
 ): Promise<SetSecrets> {
   const names = Object.keys(values);
   ctx.out.log(`\nSetting ${prose(names, "and")} on ${worker}.`);
-  putWorkerSecrets(deps.spawn, ctx.root, accountId, worker, values);
+  await putWorkerSecrets(deps.spawn, ctx.root, accountId, worker, values);
   const present = await waitOn(ctx.prompter, `Confirming ${worker}'s secrets`,
     () => deps.client.listWorkerSecrets(accountId, worker));
   const absent = names.filter((name) => !present?.includes(name));

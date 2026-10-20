@@ -30,7 +30,9 @@ import { join, relative } from "node:path";
 import { resolveBinEntry } from "@gadgets/scripts/bin-entry";
 import { pnpmCommand } from "../pnpm-command.ts";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
+import { prefetch } from "../cached-reads.ts";
 import { configPath, displayPath, type CommandArgs, type Context } from "../context.ts";
+import type { CloudflareClient } from "../core/client.ts";
 import type { BaseConfigs, BuildCommand, DeploymentConfig } from "../core/deployment-config.ts";
 import {
   aiGatewayPlan,
@@ -217,22 +219,29 @@ function reportAiGateway(ctx: Context, config: DeploymentConfig): void {
 }
 
 /**
- * Warns about each optional Gatekeeper secret not set yet. Never fails: the Worker deploys without
- * them, and only connecting through it waits on them. The Gatekeepers in `pending` are left out:
- * their secrets are set once the deploy is done.
+ * The warnings about each optional Gatekeeper secret not set yet, their reads started. The
+ * Gatekeepers in `pending` are left out: their secrets are set once the deploy is done.
  */
-async function warnMissingSecrets(
+function secretWarnings(
   ctx: Context,
+  client: CloudflareClient,
   config: DeploymentConfig,
   catalog: GatekeeperCatalog,
   pending: PendingSecrets[],
-): Promise<void> {
+): Promise<string[]> {
   const unset = Object.entries(config.gatekeepers ?? {})
     .filter(([slug]) => !pending.some(({ gatekeeper }) => gatekeeper === slug));
-  const client = await ctx.client();
-  const warnings = await waitOn(ctx.prompter, "Checking the Gatekeepers' secrets", () =>
-    gatekeeperSecretWarnings(client, { ...config, gatekeepers: Object.fromEntries(unset) }, catalog, configFlag(ctx)));
-  for (const warning of warnings) ctx.out.log(`\n${warning}`);
+  return gatekeeperSecretWarnings(client, { ...config, gatekeepers: Object.fromEntries(unset) }, catalog, configFlag(ctx));
+}
+
+/**
+ * Prints {@link secretWarnings}' `warnings`. Never fails: the Worker deploys without the secrets, and
+ * only connecting through it waits on them.
+ */
+async function warnMissingSecrets(ctx: Context, warnings: Promise<string[]>, pending: PendingSecrets[]): Promise<void> {
+  for (const warning of await waitOn(ctx.prompter, "Checking the Gatekeepers' secrets", () => warnings)) {
+    ctx.out.log(`\n${warning}`);
+  }
   for (const { worker, values } of pending) {
     ctx.out.log(`\n${worker}'s ${prose(Object.keys(values), "and")} will be set once it is deployed.`);
   }
@@ -251,6 +260,9 @@ async function checkAccount(
   pending: PendingSecrets[],
 ): Promise<void> {
   const client = await ctx.client();
+  // Read beside the account check, though printed only once it passes.
+  const warnings = secretWarnings(ctx, client, config, catalog, pending);
+  prefetch(warnings);
   const result = await waitOn(ctx.prompter, "Checking the account against the deployment file",
     () => verifyAccount(client, config, publicOrigin(config)));
   if ("skipped" in result) {
@@ -263,7 +275,7 @@ async function checkAccount(
       result.problems.map((problem) => `  - ${problem}`).join("\n"));
   }
   ctx.out.log("\nCloudflare-side checks passed: Access application, team domain and storage IDs match.");
-  await warnMissingSecrets(ctx, config, catalog, pending);
+  await warnMissingSecrets(ctx, warnings, pending);
 }
 
 /**

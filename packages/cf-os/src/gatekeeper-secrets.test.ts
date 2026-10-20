@@ -131,12 +131,12 @@ test("reports it when wrangler secret bulk fails", async () => {
   assert.deepEqual((await result).failed, ["github"]);
   assert.match(stderr(), /The github Gatekeeper's OAuth credentials were not set: `wrangler secret bulk --name acme-gk-github` failed\. Its output is above\. `pnpm cf-os secrets github` tries again\./);
   const { spawn, ran } = recordingSpawn({}, { status: 1 });
-  assert.throws(() => putWorkerSecrets(spawn, "/project", FAKE_ACCOUNT, "acme-gk-github", { CLIENT_ID: ID }),
+  await assert.rejects(putWorkerSecrets(spawn, "/project", FAKE_ACCOUNT, "acme-gk-github", { CLIENT_ID: ID }),
     /wrangler secret bulk --name acme-gk-github` failed/);
   assert.equal(ran.length, 1);
 });
 
-test("keeps Wrangler from logging the request that carries the values, whatever the shell sets", (t) => {
+test("keeps Wrangler from logging the request that carries the values, whatever the shell sets", async (t) => {
   const before = process.env.WRANGLER_LOG_SANITIZE;
   t.after(() => {
     if (before === undefined) delete process.env.WRANGLER_LOG_SANITIZE;
@@ -144,7 +144,7 @@ test("keeps Wrangler from logging the request that carries the values, whatever 
   });
   process.env.WRANGLER_LOG_SANITIZE = "false";
   const { spawn, ran } = recordingSpawn({});
-  putWorkerSecrets(spawn, "/project", FAKE_ACCOUNT, "acme-gk-github", { CLIENT_ID: ID });
+  await putWorkerSecrets(spawn, "/project", FAKE_ACCOUNT, "acme-gk-github", { CLIENT_ID: ID });
   assert.equal(ran[0].env?.WRANGLER_LOG_SANITIZE, "true");
 });
 

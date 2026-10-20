@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { cfClient } from "../cf-client.ts";
@@ -207,7 +207,7 @@ test("configures a new deployment on a custom domain, steering around a taken ho
   assert.equal(JSON.parse(flag(create.args, "--body")!).domain, "cf-os.example.com");
 });
 
-test("asks what is being set up before reading the account's Workers", async (t) => {
+test("lists the accounts beside the sign-in check, and the Workers while asking what is being set up", async (t) => {
   const root = scratchProject(t, TEMPLATE);
   const cf = fakeCf(account());
   const prompter = scriptedPrompter([["What are you setting up?", CANCEL]]);
@@ -215,7 +215,8 @@ test("asks what is being set up before reading the account's Workers", async (t)
   await assert.rejects(configure({ command: "init", values: { out: "init.jsonc" }, positionals: [] }, ctx, recording().deps),
     Cancelled);
   assert.deepEqual(prompter.remaining(), []);
-  assert.ok(!cf.calls.some((call) => call.args.join(" ").startsWith("workers list")), "listed the Workers");
+  // Cancelled at the first question, so whatever was read started before any answer.
+  assert.deepEqual(cf.calls.map(commandOf).toSorted(), ["accounts list", "auth whoami", "workers list"]);
 });
 
 test("derives the workers.dev subdomain, and reuses an Access application already covering it", async (t) => {
@@ -451,7 +452,7 @@ test("signed out and declining to sign in, asks for everything it cannot look up
     ["What it tells agents", DEFAULT],
   ], { "auth whoami": { authenticated: false, error: "Not logged in" } });
   assert.equal(code, 0);
-  assert.deepEqual(ran, [], "signed in anyway");
+  assert.ok(!ran.some((line) => line.includes("auth login")), "signed in anyway");
   assert.match(stderr(), /cf is not signed in/);
   assert.match(stderr(), /pnpm cf-os access/);
   const file = written();
@@ -519,7 +520,8 @@ test("offers no deploy while placeholders are left", async (t) => {
     ["No Access application covers", "skip"],
   ]);
   assert.equal(code, 0);
-  assert.deepEqual(ran, [], "checked Wrangler for a deploy it did not offer");
+  // Only Wrangler's sign-in check, started at the outset in case there is a deploy to offer.
+  assert.deepEqual(ran, ["pnpm exec wrangler whoami --json"]);
   assert.deepEqual(deployed, []);
 });
 
@@ -551,19 +553,35 @@ test("offers the cf sign-in when signed out, and looks the account up once signe
   assert.equal(await configure({ command: "init", values: { out: "init.jsonc" }, positionals: [] }, harness.ctx,
     recorded.deps), 0);
   assert.deepEqual(prompter.remaining(), []);
-  assert.equal(recorded.ran[0], "pnpm exec cf auth login --profile work");
+  assert.ok(recorded.ran.includes("pnpm exec cf auth login --profile work"));
   assert.ok(cf.calls.some((call) => call.args.join(" ").startsWith("workers list")), "no account lookups");
   assert.doesNotMatch(harness.stderr(), /cf is not signed in/);
-  // Checked again after the sign-in, not answered from before it.
+  // Checked again after the sign-in, not answered from before it, and the accounts listed again.
   assert.equal(cf.calls.filter((call) => call.args.join(" ").startsWith("auth whoami")).length, 2);
+  assert.equal(callsOf(cf.calls, "accounts list").length, 2);
 });
 
-test("asks nothing about deploying when its caller deploys", async (t) => {
-  const { code, ran, deployed, stderr } = await init(t, COMPLETE, completeAccount(), { offerDeploy: false });
-  assert.equal(code, 0);
-  assert.deepEqual(ran, []);
-  assert.deepEqual(deployed, []);
-  assert.doesNotMatch(stderr(), /Next:/);
+test("asks nothing about deploying when its caller deploys, and ends Wrangler's sign-in check", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const cf = fakeCf(completeAccount());
+  const prompter = scriptedPrompter(COMPLETE);
+  const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter });
+  const recorded = recording();
+  const signals: (AbortSignal | undefined)[] = [];
+  const capture = recorded.deps.capture;
+  recorded.deps.capture = (command, args, options) => {
+    signals.push(options.signal);
+    return capture(command, args, options);
+  };
+  assert.equal(await configure({ command: "init", values: { out: "init.jsonc" }, positionals: [] }, harness.ctx,
+    recorded.deps, { offerDeploy: false }), 0);
+  assert.deepEqual(prompter.remaining(), []);
+  assert.deepEqual(recorded.ran, ["pnpm exec wrangler whoami --json"]);
+  assert.deepEqual(recorded.deployed, []);
+  assert.doesNotMatch(harness.stderr(), /Next:/);
+  // Started at the outset; with nothing to deploy it is not left running.
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0]?.aborted, true);
 });
 
 /** {@link COMPLETE} up to the Gatekeeper question, which each test answers itself. */
@@ -1305,8 +1323,10 @@ test("starts each read once an answer makes it certain, while later questions ar
   // The gateways take a while, so the reads chained after the organization's start meanwhile.
   const { calls, prompter } = await init(t, [...COMPLETE, ["Deploy now?", false]], completeAccount(),
     { delay: (args) => args.join(" ").startsWith("ai-gateway gateways list") ? 20 : 0 });
-  // Both ways a new deployment can go read these, so they start as soon as it is chosen.
-  assert.deepEqual(startedAt(calls, "workers list"), ["What are you setting up?"]);
+  // Beside the sign-in check, and while "What are you setting up?" is open: before any answer.
+  assert.deepEqual(startedAt(calls, "accounts list"), []);
+  assert.deepEqual(startedAt(calls, "workers list"), []);
+  // Both ways a new deployment can go read this, so it starts as soon as it is chosen.
   assert.deepEqual(startedAt(calls, "zero-trust organization get"), ["What are you setting up?"]);
   // Once the base name is settled, before the route and admin questions it waits behind.
   assert.deepEqual(startedAt(calls, "ai-gateway gateways list"), ["What are you setting up?", BASE_NAME]);
@@ -1353,16 +1373,11 @@ test("reads nothing for a path not taken", async (t) => {
   const none = await init(t, [["What are you setting up?", "takeover"]]);
   assert.equal(none.code, 1);
   assert.match(none.stderr(), /No hosted instances in account/);
-  assert.deepEqual(none.calls.filter((call) => (call.at as string[]).length).map(commandOf), ["workers list"]);
+  assert.deepEqual(none.calls.map(commandOf).toSorted(), ["accounts list", "auth whoami", "workers list"]);
 
-  // The account's name is known only from the list; without the custom Gatekeeper nothing needs it.
-  const flags = { account: FAKE_ACCOUNT };
-  const without = await init(t, [...UP_TO_GATEKEEPERS, ["Which Gatekeepers?", []], ["Deploy now?", false]],
-    completeAccount(), { flags });
-  assert.deepEqual(callsOf(without.calls, "accounts list"), []);
-  const named = await init(t, [...COMPLETE, ["Deploy now?", false]], completeAccount(), { flags });
-  // Started as soon as the custom Gatekeeper is chosen.
-  assert.equal(startedAt(named.calls, "accounts list").at(-1), named.prompter.answered.find((message) => message.startsWith("Which Gatekeepers?")));
+  // With the account passed, the list still names it, for the custom Gatekeeper's default name.
+  const named = await init(t, [...COMPLETE, ["Deploy now?", false]], completeAccount(), { flags: { account: FAKE_ACCOUNT } });
+  assert.deepEqual(startedAt(named.calls, "accounts list"), []);
   assert.equal(named.prompter.asked.find(({ message }) => message.startsWith("Organization name"))!.initial, "Acme");
 });
 
@@ -1516,4 +1531,19 @@ test("shows a step waiting on a read only while it is still in flight", async (t
   const settled = await init(t, script);
   assert.ok(!settled.prompter.waited.includes("Listing the account's AI Gateways"));
   assert.ok(settled.prompter.waited.includes("Listing the account's zones"));
+});
+
+test("runs the project's own Wrangler with node rather than through pnpm exec", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const installed = join(root, "node_modules", "wrangler");
+  mkdirSync(join(installed, "bin"), { recursive: true });
+  writeFileSync(join(installed, "package.json"), JSON.stringify({ name: "wrangler", bin: { wrangler: "./bin/wrangler.js" } }));
+  writeFileSync(join(installed, "bin", "wrangler.js"), "");
+  const cf = fakeCf(completeAccount());
+  const prompter = scriptedPrompter(COMPLETE);
+  const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter });
+  const recorded = recording();
+  assert.equal(await configure({ command: "init", values: { out: "init.jsonc" }, positionals: [] }, harness.ctx,
+    recorded.deps, { offerDeploy: false }), 0);
+  assert.deepEqual(recorded.ran, [`${process.execPath} ${realpathSync(join(installed, "bin", "wrangler.js"))} whoami --json`]);
 });

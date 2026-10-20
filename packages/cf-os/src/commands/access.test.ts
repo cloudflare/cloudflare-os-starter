@@ -128,3 +128,30 @@ test("at a terminal, shows one spinner over the lookup, and prints the same", as
     assert.deepEqual(shown.calls.map(({ args }) => args), plain.calls.map(({ args }) => args));
   }
 });
+
+test("lists the applications while the organization is read, and still stops at a missing team domain", async (t) => {
+  const account: Record<string, FakeReply> = {
+    "zero-trust organization get": organization,
+    "zero-trust access applications list": [{ name: "Existing", aud: "aud-existing", domain: "os.example.com" }],
+  };
+  const cf = fakeCf(account, {
+    delay: (args) => args.join(" ").startsWith("zero-trust organization get") ? 60 : 0,
+    stamp: () => performance.now(),
+  });
+  const harness = testContext({ root: scratchProject(t, READY), client: cfClient({ spawn: cf.spawn }) });
+  assert.equal(await run({ command: "access", values: {}, positionals: [] }, harness.ctx), 0);
+  // Each read once, the organization first, and the applications without waiting for it.
+  assert.deepEqual(cf.calls.map(({ args }) => args.slice(0, 3).join(" ")),
+    ["zero-trust organization get", "zero-trust access applications"]);
+  const [organizationAt, applicationsAt] = cf.calls.map(({ at }) => at as number);
+  assert.ok(applicationsAt - organizationAt < 30, "listed the applications once the organization was in");
+
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  await assert.rejects(access(scratchProject(t, READY), { ...account, "zero-trust organization get": {} }),
+    /has no team domain/);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(unhandled, []);
+});

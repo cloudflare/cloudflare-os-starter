@@ -18,8 +18,8 @@
 // Until the file is written, Esc goes back to the previous question (back.ts). Going back runs the
 // questions before it again, with the reads between them, which a cache answers; so nothing is
 // created before the last question: the Access step asks both its questions first. At a terminal, a
-// step waiting on `cf` shows a spinner, and reads certain to be needed start early, in the background,
-// while later questions are answered.
+// step waiting on `cf` shows a spinner, and reads start early, in the background, while earlier
+// questions are answered, whether or not the answers turn out to need them.
 //
 // Interactive only. Without a terminal it refuses, pointing at `import` and `access`, which take
 // every answer as a flag or from the file. Signed out of `cf`, it still runs: the account-aware
@@ -67,8 +67,9 @@ import {
 import { parseDeployment, updateDeployment } from "../deployment-file.ts";
 import { loadCatalog } from "../gatekeeper-catalog.ts";
 import { askAndSetSecrets, readSecretsAhead, secretsCommand, type PendingSecrets } from "../gatekeeper-secrets.ts";
+import { localBin } from "../local-bin.ts";
 import { type Prompter, waitOn } from "../prompt.ts";
-import { defaultCapture, defaultSpawn, succeeded, type CaptureTool, type SpawnTool } from "../tools.ts";
+import { defaultCapture, defaultSpawn, succeeded, type CaptureTool, type SpawnTool, type ToolResult } from "../tools.ts";
 import { accountFlag, resolveAccount, type ResolvedAccount } from "./account.ts";
 import { discoverInstance, formatReport, pickInstance } from "./import.ts";
 
@@ -183,11 +184,6 @@ function prefetchAfterName(session: Session): void {
   prefetch(reads.getOrganization(account.id).then((organization) => organization.auth_domain
     ? reads.listAccessApps(account.id).then(() => reads.listIdentityProviders(account.id))
     : undefined));
-}
-
-/** The account list, for the example custom Gatekeeper's default name, once it is chosen and the name is unknown. */
-function prefetchAccountName(session: Session, choice: GatekeeperChoice): void {
-  if (choice.custom && !session.account.name && session.reads) prefetch(session.reads.listAccounts());
 }
 
 function workerNameProblem(name: string): string | undefined {
@@ -419,7 +415,6 @@ async function newDeployment(session: Session, file: Record<string, unknown>, ca
     ...valueAtPath(file, ["customGatekeeper", "enabled"]) === false ? [] : [CUSTOM_GATEKEEPER_CHOICE],
     ...listed,
   ]);
-  prefetchAccountName(session, choice);
   const customGatekeeper = choice.custom ? await askDisplay(session, file) : null;
   const gatekeepers = await nameGatekeepers(session, workers, name, choice.slugs);
 
@@ -694,7 +689,6 @@ async function takeover(
     "Web Search Gatekeeper Worker name (the instance has none; the deploy creates it)", names.websearch);
   const { found, passedOver } = await liveGatekeepers(session, instance, file, inventory.workers, catalog, discovery.foundGatekeepers);
   const choice = await askGatekeepers(session, catalog, [CUSTOM_GATEKEEPER_CHOICE, ...found.map(({ slug }) => slug)]);
-  prefetchAccountName(session, choice);
   const liveCustom = liveCustomGatekeeper(file, instance, inventory.workers);
   const unbinds = (name: string) => ctx.out.log(`Warning: leaving out ${name} removes its binding, so it ` +
     "disappears from the app along with every user's connection to it. The Worker keeps running; " +
@@ -869,17 +863,17 @@ async function offerCfSignIn(ctx: Context, deps: InitDeps): Promise<boolean> {
     "Sign in to cf? It opens a browser. init uses it to look up your account; you can skip it and type answers instead.",
     true)) return false;
   const profile = ctx.flags.profile ? ["--profile", ctx.flags.profile] : [];
-  return succeeded(deps.spawn("pnpm", ["exec", "cf", "auth", "login", ...profile], { cwd: ctx.root, capture: false }));
+  return succeeded(deps.spawn(...await localBin(ctx.root, "cf", ["auth", "login", ...profile]), { cwd: ctx.root, capture: false }));
 }
 
-/** `wrangler login`, offered when Wrangler, which does the deploying, is signed out. */
-async function offerWranglerSignIn(ctx: Context, deps: InitDeps): Promise<void> {
-  // `wrangler whoami --json` exits non-zero when signed out.
-  const check = await waitOn(ctx.prompter, "Checking the Wrangler sign-in",
-    () => deps.capture("pnpm", ["exec", "wrangler", "whoami", "--json"], { cwd: ctx.root }));
-  if (succeeded(check)) return;
+/**
+ * `wrangler login`, offered when Wrangler, which does the deploying, is signed out: `check` is
+ * `wrangler whoami --json`, started earlier, which exits non-zero when signed out.
+ */
+async function offerWranglerSignIn(ctx: Context, deps: InitDeps, check: Promise<ToolResult>): Promise<void> {
+  if (succeeded(await waitOn(ctx.prompter, "Checking the Wrangler sign-in", () => check))) return;
   if (await ctx.prompter!.confirm("Sign in to Wrangler? It opens a browser. Wrangler deploys the Workers.", true)) {
-    deps.spawn("pnpm", ["exec", "wrangler", "login"], { cwd: ctx.root, capture: false });
+    deps.spawn(...await localBin(ctx.root, "wrangler", ["login"]), { cwd: ctx.root, capture: false });
   }
 }
 
@@ -916,89 +910,107 @@ export async function configure(
   const outPath = out ? resolve(ctx.cwd, out) : inPath;
   const file = parseDeployment(await readFile(inPath, "utf8"), where);
 
-  let { client, email } = await signedIn(ctx);
-  if (!client && await offerCfSignIn(ctx, deps)) ({ client, email } = await signedIn(ctx));
-  if (!client) {
-    ctx.out.log("cf is not signed in, so nothing can be looked up in your account: you will type the " +
-      "values, and Access is left for later. To sign in first: `pnpm exec cf auth login`.\n");
-  }
-
-  const catalog = await deps.catalog(ctx.root);
-  const cache = client && cachedReads(client);
-  // Every question up to the write, which Esc goes back through.
-  const { account, configured } = await withBack(prompter, ctx.out, async (asker, askOut) => {
-    const askCtx: Context = { ...ctx, prompter: asker, out: askOut };
-    // Through this run's asker, which draws nothing while answers are replayed.
-    const reader = cache && cache.loud(asker);
-    const chosen = await chooseAccount(askCtx, asker, reader, file, where);
-    const session: Session = { ctx: askCtx, prompter: asker, client: reader, reads: cache && cache.quiet,
-      pending: () => Boolean(cache?.pending()), account: chosen, email };
-
-    // Asked before any lookup: each is a `cf` run, and only the answer says which are needed.
-    const mode = reader
-      ? await asker.select("What are you setting up?", [
-        { value: "new" as const, label: "A new deployment" },
-        { value: "takeover" as const, label: "Take over a hosted instance", hint: "one the hosted deploy created" },
-      ])
-      : "new";
-
-    if (mode === "takeover") {
-      prefetchTakeover(session);
-      return { account: chosen, configured: await takeover(session, file, catalog) };
+  // Wrangler's sign-in, needed only to deploy, checked from the start rather than after the file is
+  // written; on the way out, no longer waited on if nothing used it.
+  const stopWranglerCheck = new AbortController();
+  const wranglerSignIn = deps.capture(...await localBin(ctx.root, "wrangler", ["whoami", "--json"]),
+    { cwd: ctx.root, signal: stopWranglerCheck.signal });
+  try {
+    // Listed beside the sign-in check: the account question reads the list, and so does the example
+    // custom Gatekeeper's default name. Signed out, the list fails; after a sign-in it is read again.
+    const raw = await ctx.client();
+    let cache = cachedReads(raw);
+    prefetch(cache.quiet.listAccounts());
+    let { client, email } = await signedIn(ctx);
+    if (!client && await offerCfSignIn(ctx, deps)) {
+      cache = cachedReads(raw);
+      prefetch(cache.quiet.listAccounts());
+      ({ client, email } = await signedIn(ctx));
     }
-    prefetchNew(session);
-    const outcome = await newDeployment(session, file, catalog);
-    return {
-      account: chosen,
-      configured: "takeover" in outcome ? await takeover(session, file, catalog, outcome.takeover) : outcome,
-    };
-  });
-  if (!configured) return 1;
-  const { edits } = configured;
-  if (account.isNew && !edits.some((edit) => edit.path[0] === "accountId")) {
-    edits.unshift({ path: ["accountId"], value: account.id });
-  }
+    if (!client) {
+      ctx.out.log("cf is not signed in, so nothing can be looked up in your account: you will type the " +
+        "values, and Access is left for later. To sign in first: `pnpm exec cf auth login`.\n");
+    }
 
-  const outWhere = displayPath(ctx, outPath);
-  ctx.out.log(`\n${outWhere} values:\n${describeEdits(edits)}`);
-  await updateDeployment(inPath, edits, outPath);
-  const removed = edits.filter((edit) => edit.value === undefined).length;
-  ctx.out.log(`\nWrote ${edits.length - removed} values to ${outWhere}` +
-    `${removed ? `, removing ${removed} ${removed === 1 ? "entry" : "entries"}` : ""}, comments intact.`);
-  if (outPath === inPath) ctx.out.log(`${outWhere} belongs in your repository: commit it.`);
+    const catalog = await deps.catalog(ctx.root);
+    // Every question up to the write, which Esc goes back through.
+    const { account, configured } = await withBack(prompter, ctx.out, async (asker, askOut) => {
+      const askCtx: Context = { ...ctx, prompter: asker, out: askOut };
+      // Through this run's asker, which draws nothing while answers are replayed.
+      const reader = client && cache.loud(asker);
+      const chosen = await chooseAccount(askCtx, asker, reader, file, where);
+      const session: Session = { ctx: askCtx, prompter: asker, client: reader, reads: client && cache.quiet,
+        pending: () => cache.pending(), account: chosen, email };
 
-  const written = parseDeployment(await readFile(outPath, "utf8"), outWhere);
-  const config = written as unknown as DeploymentConfig;
-  const selected = selectedGatekeepers(config, catalog, configured.live);
-  const { originFound } = configured;
-  reportLiveGatekeepers(ctx, config, outWhere, catalog, selected, originFound);
-  const next = nextStep(written, outWhere, outPath === inPath ? "" : ` --config ${outWhere}`);
-  // What runs against the written file, and the commands it prints, read the file written.
-  const outCtx: Context = { ...ctx, flags: { ...ctx.flags, config: outPath } };
-  if (placeholderPaths(written).length || !offerDeploy) {
-    reportSecretsLater(outCtx, config, catalog, selected, originFound);
-    if (placeholderPaths(written).length) ctx.out.log(next);
-    return 0;
+      // While the question is open: either answer reads the account's Workers.
+      if (session.reads) prefetch(session.reads.listWorkers(chosen.id));
+      const mode = reader
+        ? await asker.select("What are you setting up?", [
+          { value: "new" as const, label: "A new deployment" },
+          { value: "takeover" as const, label: "Take over a hosted instance", hint: "one the hosted deploy created" },
+        ])
+        : "new";
+
+      if (mode === "takeover") {
+        prefetchTakeover(session);
+        return { account: chosen, configured: await takeover(session, file, catalog) };
+      }
+      prefetchNew(session);
+      const outcome = await newDeployment(session, file, catalog);
+      return {
+        account: chosen,
+        configured: "takeover" in outcome ? await takeover(session, file, catalog, outcome.takeover) : outcome,
+      };
+    });
+    if (!configured) return 1;
+    const { edits } = configured;
+    if (account.isNew && !edits.some((edit) => edit.path[0] === "accountId")) {
+      edits.unshift({ path: ["accountId"], value: account.id });
+    }
+
+    const outWhere = displayPath(ctx, outPath);
+    ctx.out.log(`\n${outWhere} values:\n${describeEdits(edits)}`);
+    await updateDeployment(inPath, edits, outPath);
+    const removed = edits.filter((edit) => edit.value === undefined).length;
+    ctx.out.log(`\nWrote ${edits.length - removed} values to ${outWhere}` +
+      `${removed ? `, removing ${removed} ${removed === 1 ? "entry" : "entries"}` : ""}, comments intact.`);
+    if (outPath === inPath) ctx.out.log(`${outWhere} belongs in your repository: commit it.`);
+
+    const written = parseDeployment(await readFile(outPath, "utf8"), outWhere);
+    const config = written as unknown as DeploymentConfig;
+    const selected = selectedGatekeepers(config, catalog, configured.live);
+    const { originFound } = configured;
+    reportLiveGatekeepers(ctx, config, outWhere, catalog, selected, originFound);
+    const next = nextStep(written, outWhere, outPath === inPath ? "" : ` --config ${outWhere}`);
+    // What runs against the written file, and the commands it prints, read the file written.
+    const outCtx: Context = { ...ctx, flags: { ...ctx.flags, config: outPath } };
+    if (placeholderPaths(written).length || !offerDeploy) {
+      reportSecretsLater(outCtx, config, catalog, selected, originFound);
+      if (placeholderPaths(written).length) ctx.out.log(next);
+      return 0;
+    }
+    // A Worker the account runs can take its secrets now; a new one only once the deploy creates it.
+    const oauth = (live: boolean) => selected.filter((gatekeeper) => gatekeeper.oauth && gatekeeper.live === live)
+      .map(({ slug }) => slug);
+    // Listed before the Wrangler sign-in is offered, through a fresh client: the cache is for the questions.
+    const ahead = oauth(true).length ? readSecretsAhead(await ctx.client(), config, catalog, oauth(true)) : undefined;
+    await offerWranglerSignIn(ctx, deps, wranglerSignIn);
+    const live = await askSecrets(outCtx, deps, config, catalog, oauth(true), "now", originFound, ahead);
+    if (!await prompter.confirm("Deploy now?", true)) {
+      reportSecretsLater(outCtx, config, catalog, selected, originFound);
+      ctx.out.log(next);
+      return live.failed.length ? 1 : 0;
+    }
+    const fresh = await askSecrets(outCtx, deps, config, catalog, oauth(false), "deferred", originFound);
+    const code = await deps.deploy(outCtx, { secrets: fresh.pending });
+    const failed = [...live.failed, ...fresh.failed];
+    if (!failed.length) return code;
+    // Repeated after the deploy's log, which would otherwise bury each failure's own line.
+    for (const slug of failed) {
+      ctx.out.log(`\nThe ${slug} Gatekeeper's OAuth credentials were not set: \`${secretsCommand(outCtx, slug)}\` sets them.`);
+    }
+    return Math.max(code, 1);
+  } finally {
+    stopWranglerCheck.abort();
   }
-  // A Worker the account runs can take its secrets now; a new one only once the deploy creates it.
-  const oauth = (live: boolean) => selected.filter((gatekeeper) => gatekeeper.oauth && gatekeeper.live === live)
-    .map(({ slug }) => slug);
-  // Listed while Wrangler's sign-in is checked, through a fresh client: the cache is for the questions.
-  const ahead = oauth(true).length ? readSecretsAhead(await ctx.client(), config, catalog, oauth(true)) : undefined;
-  await offerWranglerSignIn(ctx, deps);
-  const live = await askSecrets(outCtx, deps, config, catalog, oauth(true), "now", originFound, ahead);
-  if (!await prompter.confirm("Deploy now?", true)) {
-    reportSecretsLater(outCtx, config, catalog, selected, originFound);
-    ctx.out.log(next);
-    return live.failed.length ? 1 : 0;
-  }
-  const fresh = await askSecrets(outCtx, deps, config, catalog, oauth(false), "deferred", originFound);
-  const code = await deps.deploy(outCtx, { secrets: fresh.pending });
-  const failed = [...live.failed, ...fresh.failed];
-  if (!failed.length) return code;
-  // Repeated after the deploy's log, which would otherwise bury each failure's own line.
-  for (const slug of failed) {
-    ctx.out.log(`\nThe ${slug} Gatekeeper's OAuth credentials were not set: \`${secretsCommand(outCtx, slug)}\` sets them.`);
-  }
-  return Math.max(code, 1);
 }
