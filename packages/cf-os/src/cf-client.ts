@@ -193,7 +193,7 @@ export async function cfJson<T>(
   } catch {
     throw new CfError(`${label}: printed something other than JSON: ${result.stdout.slice(0, 200)}`);
   }
-  // Defensive: beta.17 prints the bare result, but the API's envelope is what a raw passthrough
+  // Defensive: beta.19 prints the bare result, but the API's envelope is what a raw passthrough
   // would print, and nothing in it is useful here.
   if (parsed && typeof parsed === "object" && "success" in parsed && "result" in parsed) {
     return parsed.result as T;

@@ -66,6 +66,7 @@ minimumReleaseAgeExclude:
   - capnweb-validate
   - workerd
   - "@cloudflare/workerd-*"
+  - cf
 
 allowBuilds:
   '@google/genai': true

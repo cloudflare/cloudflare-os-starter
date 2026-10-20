@@ -22,7 +22,7 @@
     "@cloudflare/vitest-plugin": "catalog:",
     "cf-os": "workspace:*",
     "@types/node": "26.1.0",
-    "cf": "1.0.0-beta.17",
+    "cf": "1.0.0-beta.19",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:",
