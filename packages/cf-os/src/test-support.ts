@@ -24,7 +24,7 @@ export type Step = [expected: string | RegExp, answer: unknown];
 
 /** A recorded prompt. */
 export interface Asked {
-  kind: "select" | "multiselect" | "text" | "confirm";
+  kind: "select" | "multiselect" | "text" | "password" | "confirm";
   message: string;
   /** Choice values offered, for select and multiselect. */
   choices?: string[];
@@ -34,6 +34,8 @@ export interface Asked {
   initial?: unknown;
   /** For multiselect: whether an empty answer is refused. */
   required?: boolean;
+  /** For password: why the prompt's validation refused the answer, which then asked again. */
+  refused?: string;
 }
 
 function describeChoices(choices: Choice[]): Pick<Asked, "choices" | "hints"> {
@@ -46,7 +48,9 @@ function describeChoices(choices: Choice[]): Pick<Asked, "choices" | "hints"> {
 /**
  * A {@link Prompter} answering from `script`, in order. Each prompt must match its step's expected
  * message, every text answer must pass the prompt's own validation, and a prompt past the end of the
- * script fails the test -- so a script is also an assertion about what was asked.
+ * script fails the test -- so a script is also an assertion about what was asked. A password answer
+ * the validation refuses is asked again, as the terminal does, from the next step; the record never
+ * holds a password answer.
  */
 export function scriptedPrompter(script: Step[]): Prompter & { asked: Asked[]; remaining: () => Step[] } {
   const steps = [...script];
@@ -83,6 +87,15 @@ export function scriptedPrompter(script: Step[]): Prompter & { asked: Asked[]; r
       const problem = validate?.(answer);
       assert.equal(problem, undefined, `"${answer}" fails "${message}": ${problem}`);
       return answer;
+    },
+    async password(message, { validate } = {}) {
+      for (;;) {
+        const record: Asked = { kind: "password", message };
+        const answer = String(next(record) ?? "");
+        const problem = validate?.(answer);
+        if (problem === undefined) return answer;
+        record.refused = problem;
+      }
     },
     async confirm(message, initial = true) {
       return next({ kind: "confirm", message, initial }) as boolean;
@@ -209,6 +222,22 @@ function upstreamJsonc<T>(path: string): T {
   return result;
 }
 
+/** Upstream package `dir`'s catalog entry, as `loadCatalog` reads it, with the OAuth inputs it reads when `oauth`. */
+function offeredGatekeeper(slug: string, dir: string, packageName: string, singleton: boolean, oauth = false) {
+  const packageDir = `cloudflare-os/packages/${dir}`;
+  return {
+    slug,
+    packageDir,
+    packageName,
+    preinstall: false,
+    singleton,
+    secrets: oauth ? upstreamJsonc<GatekeeperCatalog["offered"][number]["secrets"]>(`${packageDir}/deploy-inputs.json`) : [],
+    vars: [],
+    readme: `${packageDir}/README.md`,
+    config: upstreamJsonc<ProdWranglerConfig>(`${packageDir}/wrangler.jsonc`),
+  };
+}
+
 /**
  * A small Gatekeeper catalog, as `loadCatalog` reads it from the submodule: GitHub, an OAuth one
  * with upstream's `deploy-inputs.json` setup guidance; Home Assistant, which takes no credentials;
@@ -217,29 +246,19 @@ function upstreamJsonc<T>(path: string): T {
  * real catalog says.
  */
 export function testCatalog(): GatekeeperCatalog {
-  const offered = (slug: string, dir: string, packageName: string, singleton: boolean) => {
-    const packageDir = `cloudflare-os/packages/${dir}`;
-    return {
-      slug,
-      packageDir,
-      packageName,
-      preinstall: false,
-      singleton,
-      secrets: [],
-      vars: [],
-      readme: `${packageDir}/README.md`,
-      config: upstreamJsonc<ProdWranglerConfig>(`${packageDir}/wrangler.jsonc`),
-    };
-  };
   return {
     offered: [
-      {
-        ...offered("github", "gatekeeper-github", "@gadgets/github-gatekeeper", false),
-        secrets: upstreamJsonc("cloudflare-os/packages/gatekeeper-github/deploy-inputs.json"),
-      },
-      offered("homeassistant", "gatekeeper-homeassistant", "@gadgets/homeassistant-gatekeeper", true),
-      offered("mcpportal", "gatekeeper-mcp-portal", "@gadgets/mcp-portal-gatekeeper", true),
+      offeredGatekeeper("github", "gatekeeper-github", "@gadgets/github-gatekeeper", false, true),
+      offeredGatekeeper("homeassistant", "gatekeeper-homeassistant", "@gadgets/homeassistant-gatekeeper", true),
+      offeredGatekeeper("mcpportal", "gatekeeper-mcp-portal", "@gadgets/mcp-portal-gatekeeper", true),
     ],
     excluded: [{ package: "gatekeeper-email", slug: "email", reason: "upstream marks it not installable" }],
   };
+}
+
+/** {@link testCatalog} with GitLab too: a second OAuth Gatekeeper, for runs that set more than one. */
+export function testCatalogWithGitlab(): GatekeeperCatalog {
+  const catalog = testCatalog();
+  catalog.offered.push(offeredGatekeeper("gitlab", "gatekeeper-gitlab", "@gadgets/gitlab-gatekeeper", false, true));
+  return catalog;
 }

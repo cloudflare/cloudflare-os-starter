@@ -17,7 +17,7 @@ export interface CatalogGatekeeper {
   preinstall: boolean;
   /** Upstream allows one install per instance. */
   singleton: boolean;
-  /** Inputs its Worker reads as secrets, set with `wrangler secret put`. */
+  /** Inputs its Worker reads as secrets, set by `cf-os secrets` or with `wrangler secret put`. */
   secrets: DeployInput[];
   /** Inputs its Worker reads as plain vars, set in `gatekeepers.<slug>.vars`. */
   vars: DeployInput[];
@@ -52,9 +52,9 @@ export interface SecretSetup {
   steps: string[];
   /** The OAuth redirect URI to register with the provider. */
   redirectUri: string;
-  /** One `wrangler secret put` per secret input. */
+  /** One `wrangler secret put` per secret input: the way to set them by hand, without `cf-os secrets`. */
   commands: { name: string; command: string }[];
-  /** All of the above, as lines to print. */
+  /** The console page, the steps and the redirect URI, as lines to print. Not the commands. */
   lines: string[];
 }
 
@@ -62,8 +62,8 @@ export interface SecretSetup {
  * How to set `entry`'s secrets on Worker `worker`, deployed as `slug` at `origin`: upstream's
  * `deploy-inputs.json` guidance when the package ships one, and the `wrangler secret put` commands.
  * `CLOUDFLARE_ACCOUNT_ID` pins the account the way the deploys are pinned, since `wrangler secret
- * put` takes only `--name`. Upstream's steps are written for the hosted wizard's form; the commands
- * are where the values go here.
+ * put` takes only `--name`. Upstream's steps are written for the hosted wizard's form; here the
+ * values go to `cf-os secrets`'s prompts, or to those commands.
  */
 export function secretSetup(
   entry: CatalogGatekeeper,
@@ -90,8 +90,6 @@ export function secretSetup(
     ...(consoleUrl ? [`Console: ${consoleUrl}`] : []),
     ...steps.map((step, index) => `${index + 1}. ${step}`),
     `Redirect URI: ${redirectUri}`,
-    "Then set each secret on the Worker:",
-    ...commands.map(({ command }) => `  ${command}`),
   ] : [];
   return { ...(consoleUrl ? { consoleUrl } : {}), steps, redirectUri, commands, lines };
 }

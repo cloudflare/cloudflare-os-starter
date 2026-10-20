@@ -16,6 +16,10 @@
 // and only the next wave is held back. With the router last, any failure leaves the previous router
 // serving.
 //
+// Secrets `cf-os init` asked for come in memory, never from a flag or a file, and are set once every
+// Worker has deployed (gatekeeper-secrets.ts): a secret cannot go on a Worker that does not exist
+// yet. A failed deploy sets none, and says how to set them once it is fixed.
+//
 // Wrangler deploys, not `cf deploy`: `cf deploy` takes no `--config` and works one project per
 // directory, so it cannot deploy a set of Workers from generated configs.
 
@@ -50,10 +54,12 @@ import {
 } from "../core/deployment.ts";
 import { placeholderPaths } from "../core/edits.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
-import { gatekeeperSecretWarnings, verifyAccount } from "../core/verify-account.ts";
+import { gatekeeperSecretWarnings, prose, verifyAccount } from "../core/verify-account.ts";
 import { parseDeployment } from "../deployment-file.ts";
 import { loadCatalog } from "../gatekeeper-catalog.ts";
+import { configFlag, secretsCommand, uploadSecrets, withRetry, type PendingSecrets } from "../gatekeeper-secrets.ts";
 import { CancelledError, concurrencyLimit, mapConcurrent, runCaptured } from "../run-tasks.ts";
+import { defaultSpawn, type SpawnTool } from "../tools.ts";
 import { check as checkSubmoduleInstall } from "./install.ts";
 
 // `allowTrailingComma` because wrangler accepts them and upstream uses them: the Scheduler's base
@@ -211,11 +217,23 @@ function reportAiGateway(ctx: Context, config: DeploymentConfig): void {
 
 /**
  * Warns about each optional Gatekeeper secret not set yet. Never fails: the Worker deploys without
- * them, and only connecting through it waits on them.
+ * them, and only connecting through it waits on them. The Gatekeepers in `pending` are left out:
+ * their secrets are set once the deploy is done.
  */
-async function warnMissingSecrets(ctx: Context, config: DeploymentConfig, catalog: GatekeeperCatalog): Promise<void> {
-  for (const warning of await gatekeeperSecretWarnings(await ctx.client(), config, catalog)) {
+async function warnMissingSecrets(
+  ctx: Context,
+  config: DeploymentConfig,
+  catalog: GatekeeperCatalog,
+  pending: PendingSecrets[],
+): Promise<void> {
+  const unset = Object.entries(config.gatekeepers ?? {})
+    .filter(([slug]) => !pending.some(({ gatekeeper }) => gatekeeper === slug));
+  for (const warning of await gatekeeperSecretWarnings(await ctx.client(),
+    { ...config, gatekeepers: Object.fromEntries(unset) }, catalog, configFlag(ctx))) {
     ctx.out.log(`\n${warning}`);
+  }
+  for (const { worker, values } of pending) {
+    ctx.out.log(`\n${worker}'s ${prose(Object.keys(values), "and")} will be set once it is deployed.`);
   }
 }
 
@@ -229,6 +247,7 @@ async function checkAccount(
   config: DeploymentConfig,
   where: string,
   catalog: GatekeeperCatalog,
+  pending: PendingSecrets[],
 ): Promise<void> {
   const result = await verifyAccount(await ctx.client(), config, publicOrigin(config));
   if ("skipped" in result) {
@@ -241,7 +260,7 @@ async function checkAccount(
       result.problems.map((problem) => `  - ${problem}`).join("\n"));
   }
   ctx.out.log("\nCloudflare-side checks passed: Access application, team domain and storage IDs match.");
-  await warnMissingSecrets(ctx, config, catalog);
+  await warnMissingSecrets(ctx, config, catalog, pending);
 }
 
 /**
@@ -265,8 +284,76 @@ async function readDeployment(
   }
 }
 
-/** `cf-os check` / `cf-os deploy`. */
-export async function run(args: CommandArgs, ctx: Context): Promise<number> {
+/** What `cf-os check` and `cf-os deploy` hand off, so tests can record it instead. */
+export interface DeployDeps {
+  /** Every package's build ({@link buildAll}). */
+  build(ctx: Context, config: DeploymentConfig, catalog: GatekeeperCatalog): Promise<void>;
+  /** The deploys, or with `check` their dry runs ({@link deployAll}). */
+  deploy(ctx: Context, config: DeploymentConfig, catalog: GatekeeperCatalog, check: boolean): Promise<void>;
+  /** `wrangler secret bulk`, for the secrets `init` asked for. */
+  spawn: SpawnTool;
+}
+
+function defaultDeps(): DeployDeps {
+  return { build: buildAll, deploy: deployAll, spawn: defaultSpawn() };
+}
+
+/**
+ * `cf-os check` / `cf-os deploy`. `secrets` are the values `cf-os init` asked for, passed in memory
+ * by its in-process deploy, and set once every Worker has deployed.
+ */
+export async function run(
+  args: CommandArgs,
+  ctx: Context,
+  { secrets = [] }: { secrets?: PendingSecrets[] } = {},
+  deps: DeployDeps = defaultDeps(),
+): Promise<number> {
+  let config: DeploymentConfig | number;
+  try {
+    config = await buildAndDeploy(args, ctx, secrets, deps);
+  } catch (error) {
+    for (const { gatekeeper } of secrets) {
+      ctx.out.log(`\nThe ${gatekeeper} Gatekeeper's OAuth credentials were not set, as the deploy did not finish: ` +
+        `once it is fixed, \`${secretsCommand(ctx, gatekeeper)}\` sets them.`);
+    }
+    throw error;
+  }
+  if (typeof config === "number") return config;
+  return setSecrets(ctx, deps, config.accountId, secrets);
+}
+
+/**
+ * Sets each of `pending` on its Worker, one at a time: each `wrangler secret bulk` may refresh
+ * Wrangler's sign-in, which is single-use (see {@link deployAll}). Whatever stops one, the deploy is
+ * done and the values are gone with this process, so each failure names the `cf-os secrets` command
+ * that tries again, and the run exits 1.
+ */
+async function setSecrets(ctx: Context, deps: DeployDeps, accountId: string, pending: PendingSecrets[]): Promise<number> {
+  if (!pending.length) return 0;
+  const client = await ctx.client();
+  let failed = false;
+  for (const secrets of pending) {
+    try {
+      await uploadSecrets(ctx, { client, spawn: deps.spawn }, accountId, secrets);
+    } catch (error) {
+      failed = true;
+      ctx.out.log(`\nDeployed, but the ${secrets.gatekeeper} Gatekeeper's OAuth credentials were not set: ` +
+        withRetry(ctx, error as Error, secrets.gatekeeper));
+    }
+  }
+  return failed ? 1 : 0;
+}
+
+/**
+ * Everything up to and including the deploys: the validated deployment file once they succeed, or
+ * the exit code of an `init` run in its place that left nothing to deploy.
+ */
+async function buildAndDeploy(
+  args: CommandArgs,
+  ctx: Context,
+  secrets: PendingSecrets[],
+  deps: DeployDeps,
+): Promise<DeploymentConfig | number> {
   const check = args.command === "check";
   const root = ctx.root;
   requireSubmodule(root);
@@ -298,7 +385,7 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
   }
   const generated = generateConfigs(config, await readBaseConfigs(root), catalog);
   reportAiGateway(ctx, config);
-  await checkAccount(ctx, config, where, catalog);
+  await checkAccount(ctx, config, where, catalog, secrets);
 
   const generatedPath = (id: WorkerId) => join(root, workerDir(id, catalog), GENERATED_NAME);
   // Every package's, not only those generated this time: a Worker turned off since (the Error
@@ -310,11 +397,11 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
       await writeFile(generatedPath(id), `${JSON.stringify(generatedConfig, null, 2)}\n`);
     }
     if (check) pnpm(root, ["test"]);
-    await buildAll(ctx, config, catalog);
-    await deployAll(ctx, config, catalog, check);
+    await deps.build(ctx, config, catalog);
+    await deps.deploy(ctx, config, catalog, check);
   } finally {
     // Only once every command has settled: mapConcurrent awaits all it started, failed or not.
     await Promise.all(cleanup.map((file) => rm(file, { force: true })));
   }
-  return 0;
+  return config;
 }

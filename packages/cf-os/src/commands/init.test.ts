@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { cfClient } from "../cf-client.ts";
 import { parseDeployment, valueAtPath } from "../deployment-file.ts";
-import { FAKE_ACCOUNT, fakeCf, flag, type FakeReply } from "../fake-cf.ts";
+import { FAKE_ACCOUNT, fakeCf, flag, workerSecretsReply, type FakeReply } from "../fake-cf.ts";
 import {
   DEFAULT,
   hostedAccount,
@@ -17,9 +17,17 @@ import {
 } from "../test-support.ts";
 import type { Context } from "../context.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
+import type { PendingSecrets } from "../gatekeeper-secrets.ts";
 import { configure, NO_TERMINAL, run, type InitDeps } from "./init.ts";
 
 const ZONE = { id: "zone-1", name: "example.com", status: "active" };
+
+/** Obviously fake OAuth credentials. */
+const ID = "gh-id-123";
+const SECRET = "gh-secret-456";
+
+/** Both secrets GitHub reads. */
+const GITHUB_SECRETS = ["CLIENT_ID", "CLIENT_SECRET"];
 
 /** A signed-in account with one zone, an existing Worker to read the workers.dev subdomain off. */
 function account(overrides: Record<string, FakeReply> = {}): Record<string, FakeReply> {
@@ -35,6 +43,10 @@ function account(overrides: Record<string, FakeReply> = {}): Record<string, Fake
     "zero-trust access applications list": [],
     "zero-trust access applications create": (args) => ({ ...JSON.parse(flag(args, "--body")!), aud: "aud-new" }),
     "zero-trust identity-providers list": [{ id: "idp", type: "github" }],
+    // The GitHub Gatekeeper Workers the takeover fixtures run, every secret set; any other is not deployed.
+    "workers secrets list": workerSecretsReply({
+      "acme-gk-github": GITHUB_SECRETS, "acme-github": GITHUB_SECRETS, "other-gk-github": GITHUB_SECRETS,
+    }),
     ...overrides,
   };
 }
@@ -42,25 +54,38 @@ function account(overrides: Record<string, FakeReply> = {}): Record<string, Fake
 /** What the recording tools report, by `<command> <args>` prefix: an exit status and output. */
 type ToolReplies = Record<string, { status?: number; stdout?: string }>;
 
-/** Deps that record every tool run and every deploy, instead of running them, offering `catalog`. */
-function recording(tools: ToolReplies = {}, catalog: GatekeeperCatalog = testCatalog()) {
+/**
+ * Deps that record every tool run and every deploy, instead of running them, offering `catalog`.
+ * `wrangler secret bulk` adds the names on its stdin to the Worker's entry in `secrets`, as the
+ * account would.
+ */
+function recording(tools: ToolReplies = {}, catalog: GatekeeperCatalog = testCatalog(), secrets: Record<string, string[]> = {}) {
   const ran: string[] = [];
+  const inputs: { line: string; input: string; accountId?: string }[] = [];
   const deployed: Context[] = [];
+  const deployOptions: ({ secrets?: PendingSecrets[] } | undefined)[] = [];
   const deps: InitDeps = {
-    spawn: (command, args) => {
+    spawn: (command, args, { env, input }) => {
       const line = [command, ...args].join(" ");
       ran.push(line);
       const key = Object.keys(tools).filter((candidate) => line.startsWith(candidate))
         .toSorted((a, b) => b.length - a.length)[0];
-      return { status: key ? tools[key].status ?? 0 : 0, stdout: key ? tools[key].stdout ?? "" : "" };
+      const status = key ? tools[key].status ?? 0 : 0;
+      if (input !== undefined) {
+        inputs.push({ line, input, accountId: env?.CLOUDFLARE_ACCOUNT_ID });
+        const worker = args[args.indexOf("--name") + 1];
+        if (status === 0) secrets[worker] = [...secrets[worker] ?? [], ...Object.keys(JSON.parse(input))];
+      }
+      return { status, stdout: key ? tools[key].stdout ?? "" : "" };
     },
-    deploy: async (ctx) => {
+    deploy: async (ctx, options) => {
       deployed.push(ctx);
+      deployOptions.push(options);
       return 0;
     },
     catalog: async () => catalog,
   };
-  return { deps, ran, deployed };
+  return { deps, ran, inputs, deployed, deployOptions };
 }
 
 /** Runs `cf-os init --out init.jsonc` in a scratch project, answering from `script`. */
@@ -68,16 +93,18 @@ async function init(
   t: Parameters<typeof scratchProject>[0],
   script: Step[],
   replies = account(),
-  { flags = {}, tools, values = { out: "init.jsonc" }, offerDeploy, catalog, template = TEMPLATE }: {
+  { flags = {}, tools, values = { out: "init.jsonc" }, offerDeploy, catalog, template = TEMPLATE, secrets }: {
     flags?: object; tools?: ToolReplies; values?: Record<string, string>; offerDeploy?: boolean;
     catalog?: GatekeeperCatalog; template?: string;
+    /** The account's Worker secrets, which `wrangler secret bulk` adds to: replies' must read the same object. */
+    secrets?: Record<string, string[]>;
   } = {},
 ) {
   const root = scratchProject(t, template);
   const cf = fakeCf(replies);
   const prompter = scriptedPrompter(script);
   const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter, flags });
-  const recorded = recording(tools, catalog);
+  const recorded = recording(tools, catalog, secrets);
   const code = await configure({ command: "init", values, positionals: [] }, harness.ctx, recorded.deps,
     { offerDeploy });
   assert.deepEqual(prompter.remaining(), [], "the script was not used up");
@@ -522,33 +549,89 @@ test("without the custom Gatekeeper, asks nothing about its text and leaves it d
   assert.deepEqual(valueAtPath(file, ["gatekeepers"]), {});
 });
 
-test("records an OAuth Gatekeeper, printing its setup and secret commands on stderr", async (t) => {
-  const { code, written, json, stderr } = await init(t, [
-    ...UP_TO_GATEKEEPERS,
-    ["Which Gatekeepers?", ["custom", "github", "homeassistant"]],
-    ["Organization name", DEFAULT],
-    ["What it tells agents", DEFAULT],
-    ["Deploy now?", false],
-  ], completeAccount());
+/** {@link UP_TO_GATEKEEPERS}, then the custom Gatekeeper, GitHub and Home Assistant, which takes no credentials. */
+const WITH_GITHUB: Step[] = [
+  ...UP_TO_GATEKEEPERS,
+  ["Which Gatekeepers?", ["custom", "github", "homeassistant"]],
+  ["Organization name", DEFAULT],
+  ["What it tells agents", DEFAULT],
+];
+
+/**
+ * What init says, for a new GitHub Gatekeeper, when nothing is deployed now: the command names the
+ * file written, init.jsonc (`--out`), as `cf-os secrets` would otherwise read deployment.jsonc.
+ */
+const SECRETS_LATER = "\nAfter deploying, `pnpm cf-os secrets github --config init.jsonc` sets the github Gatekeeper's " +
+  "OAuth credentials (redirect URI: https://acme-os.acme-sub.workers.dev/gatekeeper/github/oauth).";
+
+/** Asserts no secret value, and no `wrangler secret put` command, reached the output. */
+function assertNoSecretsShown(log: string, json: unknown[]): void {
+  assert.doesNotMatch(log, /secret put/);
+  for (const where of [log, JSON.stringify(json)]) {
+    assert.ok(!where.includes(ID) && !where.includes(SECRET), `a secret value leaked into ${where}`);
+  }
+}
+
+test("records an OAuth Gatekeeper and, the deploy declined, names cf-os secrets instead of asking", async (t) => {
+  const { code, written, json, stderr, log, prompter, ran } = await init(t, [...WITH_GITHUB, ["Deploy now?", false]],
+    completeAccount());
   assert.equal(code, 0);
   assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), {
     github: { name: "acme-os-gk-github" },
     homeassistant: { name: "acme-os-gk-homeassistant" },
   });
   assert.deepEqual(json, [], "wrote to stdout");
-  const log = stderr();
-  assert.match(log, /The github Gatekeeper \(acme-os-gk-github\) needs an OAuth app/);
-  assert.match(log, /Console: https:\/\/github\.com\/settings\/developers/);
-  assert.match(log, /Redirect URI: https:\/\/acme-os\.acme-sub\.workers\.dev\/gatekeeper\/github\/oauth\n/);
-  for (const secret of ["CLIENT_ID", "CLIENT_SECRET"]) {
-    assert.ok(log.includes(`CLOUDFLARE_ACCOUNT_ID=${FAKE_ACCOUNT} pnpm exec wrangler secret put ${secret} --name acme-os-gk-github`),
-      `no command for ${secret}`);
-  }
-  assert.match(log, /Deploying first is fine/);
+  assert.ok(!prompter.asked.some(({ kind, message }) => kind === "password" || /OAuth credentials/.test(message)));
+  assert.ok(!ran.some((line) => line.includes("secret")));
+  // One line, with the redirect URI to register, and none of upstream's setup steps.
+  assert.deepEqual(log.filter((line) => line.includes("cf-os secrets")), [SECRETS_LATER]);
+  assert.doesNotMatch(stderr(), /needs an OAuth app|Console:/);
   // Home Assistant takes no credentials, so it has nothing to set.
-  assert.doesNotMatch(log, /homeassistant Gatekeeper .*needs/);
-  // Printed after the file is written, before the deploy question.
-  assert.ok(log.indexOf("Wrote ") < log.indexOf("Redirect URI"));
+  assert.doesNotMatch(stderr(), /homeassistant Gatekeeper/);
+  assertNoSecretsShown(stderr(), json);
+});
+
+test("with no deploy offered, names cf-os secrets for a new OAuth Gatekeeper", async (t) => {
+  const { log, prompter } = await init(t, WITH_GITHUB, completeAccount(), { offerDeploy: false });
+  assert.deepEqual(log.filter((line) => line.includes("cf-os secrets")), [SECRETS_LATER]);
+  assert.ok(!prompter.asked.some(({ kind }) => kind === "password"));
+  // Writing deployment.jsonc itself, the command needs no --config.
+  const inPlace = await init(t, WITH_GITHUB, completeAccount(), { offerDeploy: false, values: {} });
+  assert.deepEqual(inPlace.log.filter((line) => line.includes("cf-os secrets")),
+    [SECRETS_LATER.replace(" --config init.jsonc", "")]);
+});
+
+test("once the deploy is agreed to, asks for a new OAuth Gatekeeper's credentials and hands them to it", async (t) => {
+  const { code, deployOptions, ran, prompter, stderr, json } = await init(t, [
+    ...WITH_GITHUB,
+    ["Deploy now?", true],
+    ["Set the github Gatekeeper's OAuth credentials now?", "now"],
+    ["OAuth client ID (CLIENT_ID)", ID],
+    ["OAuth client secret (CLIENT_SECRET)", SECRET],
+  ], completeAccount());
+  assert.equal(code, 0);
+  assert.deepEqual(deployOptions, [{
+    secrets: [{ gatekeeper: "github", worker: "acme-os-gk-github", values: { CLIENT_ID: ID, CLIENT_SECRET: SECRET } }],
+  }]);
+  // Nothing uploaded yet: the Worker does not exist until the deploy creates it.
+  assert.deepEqual(ran, ["pnpm exec wrangler whoami --json"]);
+  const log = stderr();
+  assert.match(log, /The github Gatekeeper \(acme-os-gk-github\) needs an OAuth app before anyone can connect it:\n/);
+  assert.match(log, /\n {2}Redirect URI: https:\/\/acme-os\.acme-sub\.workers\.dev\/gatekeeper\/github\/oauth$/m);
+  assert.doesNotMatch(log, /After deploying/);
+  assert.ok(!JSON.stringify(prompter.asked).includes(SECRET));
+  assertNoSecretsShown(log, json);
+});
+
+test("left for later at the credentials question, deploys without them", async (t) => {
+  const { deployed, deployOptions, prompter } = await init(t, [
+    ...WITH_GITHUB,
+    ["Deploy now?", true],
+    ["Set the github Gatekeeper's OAuth credentials now?", "later"],
+  ], completeAccount());
+  assert.equal(deployed.length, 1);
+  assert.deepEqual(deployOptions, [{ secrets: [] }]);
+  assert.ok(!prompter.asked.some(({ kind }) => kind === "password"));
 });
 
 test("asks again for an optional Gatekeeper's name another application's Worker has", async (t) => {
@@ -568,7 +651,7 @@ test("asks again for an optional Gatekeeper's name another application's Worker 
     github: { name: "acme-os-github" },
     homeassistant: { name: "acme-os-gk-homeassistant" },
   });
-  assert.match(stderr(), /secret put CLIENT_ID --name acme-os-github\n/);
+  assert.match(stderr(), /After deploying, `pnpm cf-os secrets github --config init\.jsonc` sets the github Gatekeeper's OAuth credentials \(redirect URI: https:\/\/acme-os\.acme-sub\.workers\.dev\/gatekeeper\/github\/oauth\)\./);
 });
 
 test("on a rerun, preselects the file's Gatekeepers, keeps their vars, and removes a deselected one", async (t) => {
@@ -617,6 +700,83 @@ test("on a takeover, preselects the instance's Gatekeepers, which keep their sec
   assert.doesNotMatch(stderr(), /Warning: leaving out/);
 });
 
+test("on a takeover, asks for a live Gatekeeper's missing secret before the deploy question, and sets it at once", async (t) => {
+  // Wrangler's bulk upload adds to this object, and the account's listing reads it.
+  const secrets: Record<string, string[]> = { "acme-gk-github": ["CLIENT_ID"] };
+  const { ran, inputs, calls, deployed, prompter, stderr, json } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", DEFAULT],
+    ["Custom Gatekeeper Worker name", DEFAULT],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Set the github Gatekeeper's OAuth credentials now?", "now"],
+    ["OAuth client secret (CLIENT_SECRET)", SECRET],
+    ["Deploy now?", false],
+  ], {
+    ...account(),
+    ...hostedAccount(),
+    "auth whoami": { authenticated: true, email: "me@example.com" },
+    "workers secrets list": workerSecretsReply(secrets),
+  }, { secrets });
+  assert.deepEqual(deployed, []);
+  assert.deepEqual(ran, ["pnpm exec wrangler whoami --json", "pnpm exec wrangler secret bulk --name acme-gk-github"]);
+  assert.deepEqual(inputs.map(({ input, accountId }) => [JSON.parse(input), accountId]),
+    [[{ CLIENT_SECRET: SECRET }, FAKE_ACCOUNT]]);
+  // Listed to find what is missing, then again to confirm the upload.
+  assert.equal(calls.filter((call) => call.args.join(" ") === "workers secrets list --script-name acme-gk-github").length, 2);
+  assert.deepEqual(secrets, { "acme-gk-github": ["CLIENT_ID", "CLIENT_SECRET"] });
+  // The one secret it lacks, not the one it has.
+  assert.deepEqual(prompter.asked.filter(({ kind }) => kind === "password").map(({ message }) => message),
+    ["OAuth client secret (CLIENT_SECRET)"]);
+  const log = stderr();
+  assert.match(log, /\nSet CLIENT_SECRET on acme-gk-github\./);
+  assert.ok(log.indexOf("Set CLIENT_SECRET") > log.indexOf("Wrote "));
+  // Live and set, so nothing is left for later.
+  assert.doesNotMatch(log, /After deploying/);
+  assertNoSecretsShown(log, json);
+});
+
+for (const deploy of [true, false]) {
+  test(`on a takeover, reports a failed upload with the command that tries again, still offers the deploy, and exits 1 (deploy ${deploy ? "accepted" : "declined"})`, async (t) => {
+    const secrets: Record<string, string[]> = { "acme-gk-github": [] };
+    const { code, deployed, stderr } = await init(t, [
+      ["What are you setting up?", "takeover"],
+      ["Which hosted instance?", "acme"],
+      ["Admin emails", DEFAULT],
+      ["Web Search Gatekeeper Worker name", DEFAULT],
+      ["Which Gatekeepers?", DEFAULT],
+      ["Custom Gatekeeper Worker name", DEFAULT],
+      ["Error Reporter Worker name", DEFAULT],
+      ["Which model providers?", ["cloudflare"]],
+      ["Organization name", DEFAULT],
+      ["What it tells agents", DEFAULT],
+      ["Set the github Gatekeeper's OAuth credentials now?", "now"],
+      ["OAuth client ID (CLIENT_ID)", ID],
+      ["OAuth client secret (CLIENT_SECRET)", SECRET],
+      ["Deploy now?", deploy],
+    ], {
+      ...account(),
+      ...hostedAccount(),
+      "auth whoami": { authenticated: true, email: "me@example.com" },
+      "workers secrets list": workerSecretsReply(secrets),
+    }, { secrets, tools: { "pnpm exec wrangler secret bulk": { status: 1 } } });
+    const log = stderr();
+    assert.match(log, /\nThe github Gatekeeper's OAuth credentials were not set: `wrangler secret bulk --name acme-gk-github` failed\. Its output is above\. `pnpm cf-os secrets github --config init\.jsonc` tries again\./);
+    assert.equal(deployed.length, deploy ? 1 : 0);
+    // The values entered are gone, so the run does not report success, whatever the deploy did.
+    assert.equal(code, 1);
+    // After a deploy's log, the failure is repeated at the end.
+    const repeated = "\nThe github Gatekeeper's OAuth credentials were not set: `pnpm cf-os secrets github --config init.jsonc` sets them.";
+    if (deploy) assert.ok(log.endsWith(repeated), log.slice(-300));
+    else assert.ok(!log.includes(repeated));
+  });
+}
+
 test("on a takeover that finds no public origin, prints no redirect URI on the template's domain", async (t) => {
   const hosted = hostedAccount();
   const { written, stderr } = await init(t, [
@@ -644,9 +804,8 @@ test("on a takeover that finds no public origin, prints no redirect URI on the t
   assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), { github: { name: "acme-gk-github" } });
   const log = stderr();
   assert.match(log, /No public origin was found for the instance, so <PUBLIC_ORIGIN> stands for it below\. Set workers\.router\.route and publicBaseUrl in init\.jsonc/);
-  assert.match(log, /Redirect URI: <PUBLIC_ORIGIN>\/gatekeeper\/github\/oauth\n/);
-  assert.match(log, /wrangler secret put CLIENT_SECRET --name acme-gk-github/);
-  assert.doesNotMatch(log, /example\.com\/gatekeeper/);
+  assert.match(log, /\nAfter deploying, `pnpm cf-os secrets github --config init\.jsonc` sets the github Gatekeeper's OAuth credentials \(redirect URI: <PUBLIC_ORIGIN>\/gatekeeper\/github\/oauth\)\./);
+  assert.doesNotMatch(log, /example\.com\/gatekeeper|secret put/);
 });
 
 test("on a takeover, warns that leaving out a live Gatekeeper unbinds it, and can drop the custom one", async (t) => {

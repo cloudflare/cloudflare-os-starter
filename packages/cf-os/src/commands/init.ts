@@ -10,8 +10,10 @@
 // the deploy: a project cloned by hand never passed through scaffolding, which used to offer them.
 //
 // It offers the optional Gatekeepers the submodule's catalog holds (gatekeeper-catalog.ts) beside the
-// example custom one, and prints how to give each its OAuth credentials, which stay the operator's
-// to set with Wrangler.
+// example custom one. An OAuth Gatekeeper's credentials are asked for, masked, once the deploy is
+// agreed to, and travel in memory to `cf-os deploy`, which sets them once every Worker has deployed
+// (gatekeeper-secrets.ts); one whose Worker the account already runs is asked about, and its
+// secrets set, before the deploy question. Declined, each is left to `cf-os secrets`.
 //
 // Interactive only. Without a terminal it refuses, pointing at `import` and `access`, which take
 // every answer as a flag or from the file. Signed out of `cf`, it still runs: the account-aware
@@ -56,6 +58,7 @@ import {
 } from "../core/wizard.ts";
 import { parseDeployment, updateDeployment } from "../deployment-file.ts";
 import { loadCatalog } from "../gatekeeper-catalog.ts";
+import { askAndSetSecrets, secretsCommand, type PendingSecrets } from "../gatekeeper-secrets.ts";
 import type { Prompter } from "../prompt.ts";
 import { defaultSpawn, succeeded, type SpawnTool } from "../tools.ts";
 import { accountFlag, resolveAccount, type ResolvedAccount } from "./account.ts";
@@ -75,10 +78,13 @@ export const NO_TERMINAL =
 
 /** What init runs besides `cf` lookups, so tests can record it instead. */
 export interface InitDeps {
-  /** The sign-ins and Wrangler's status. */
+  /** The sign-ins, Wrangler's status, and `wrangler secret bulk`. */
   spawn: SpawnTool;
-  /** `cf-os deploy` against `ctx`. Resolves to its exit code. */
-  deploy(ctx: Context): Promise<number>;
+  /**
+   * `cf-os deploy` against `ctx`, setting `secrets` on their Workers once it has deployed them.
+   * Resolves to its exit code.
+   */
+  deploy(ctx: Context, options?: { secrets?: PendingSecrets[] }): Promise<number>;
   /** The optional Gatekeepers the project at `root` offers. */
   catalog(root: string): Promise<GatekeeperCatalog>;
 }
@@ -87,9 +93,9 @@ export function defaultDeps(): InitDeps {
   return {
     spawn: defaultSpawn(),
     catalog: loadCatalog,
-    deploy: async (ctx) => {
+    deploy: async (ctx, options) => {
       const { run: deploy } = await import("./deploy.ts");
-      return deploy({ command: "deploy", values: {}, positionals: [] }, ctx);
+      return deploy({ command: "deploy", values: {}, positionals: [] }, ctx, options);
     },
   };
 }
@@ -614,52 +620,102 @@ async function takeover(
   return { edits, live, originFound };
 }
 
+/** An optional Gatekeeper the written file selects and the catalog offers. */
+interface Selected {
+  slug: string;
+  worker: string;
+  /** Whether the account already runs its Worker, which keeps its secrets. */
+  live: boolean;
+  /** Whether it reads OAuth secrets. */
+  oauth: boolean;
+}
+
+/** The optional Gatekeepers `config` selects that `catalog` offers, `live` marking those the account runs. */
+function selectedGatekeepers(config: DeploymentConfig, catalog: GatekeeperCatalog, live: FoundGatekeeper[]): Selected[] {
+  return Object.entries(config.gatekeepers ?? {}).flatMap(([slug, entry]) => {
+    const offered = catalog.offered.find((candidate) => candidate.slug === slug);
+    return offered && typeof entry?.name === "string"
+      ? [{ slug, worker: entry.name, live: live.some((found) => found.slug === slug), oauth: offered.secrets.length > 0 }]
+      : [];
+  });
+}
+
 /**
- * How to give each OAuth Gatekeeper `written` lists its credentials: upstream's setup steps, the
- * redirect URI, and the `wrangler secret put` commands. One whose Worker the account already runs
- * (`live`) keeps the secrets it has, which a deploy leaves alone, but not plain vars set outside
- * `gatekeepers.<slug>.vars`, which a deploy replaces; its redirect URI follows the public origin,
- * so it is printed too, for an instance that moves hostname. Without `originFound`,
- * {@link UNKNOWN_ORIGIN} stands in for the origin.
+ * What a Gatekeeper `selected` lists the account already runs keeps, and what it loses: it keeps the
+ * secrets it has, which a deploy leaves alone, but not plain vars set outside
+ * `gatekeepers.<slug>.vars`, which a deploy replaces. An OAuth one's redirect URI follows the public
+ * origin, so it is printed too, for an instance that moves hostname. Without `originFound`,
+ * {@link UNKNOWN_ORIGIN} stands in for the origin, here and in {@link reportSecretsLater}.
  */
-function reportSecretSetup(
+function reportLiveGatekeepers(
   ctx: Context,
-  written: Record<string, unknown>,
+  config: DeploymentConfig,
   where: string,
   catalog: GatekeeperCatalog,
-  accountId: string,
-  { live, originFound }: Configured,
+  selected: Selected[],
+  originFound: boolean,
 ): void {
-  const config = written as unknown as DeploymentConfig;
-  const selected = Object.entries(config.gatekeepers ?? {}).flatMap(([slug, entry]) => {
-    const offered = catalog.offered.find((candidate) => candidate.slug === slug);
-    return offered && typeof entry?.name === "string" ? [{ slug, worker: entry.name, offered }] : [];
-  });
-  const isLive = (slug: string) => live.some((found) => found.slug === slug);
   const origin = originFound ? publicOrigin(config) : UNKNOWN_ORIGIN;
-  if (!originFound && selected.some(({ offered }) => offered.secrets.length)) {
+  if (!originFound && selected.some(({ oauth }) => oauth)) {
     ctx.out.log(`\nNo public origin was found for the instance, so ${UNKNOWN_ORIGIN} stands for it below. ` +
       `Set workers.router.route and publicBaseUrl in ${where}, then register each redirect URI with the ` +
       "real origin in its place.");
   }
-  for (const { slug, worker, offered } of selected.filter((gatekeeper) => isLive(gatekeeper.slug))) {
+  for (const { slug, worker, oauth } of selected.filter(({ live }) => live)) {
     ctx.out.log(`\n${worker} already runs in the account and keeps its secrets: a deploy leaves them as they are. ` +
       "It does replace the Worker's plain vars, with the package's own, BASE_URL and " +
       `gatekeepers.${slug}.vars: copy any the Worker relies on (GITLAB_URL for a self-managed GitLab, ` +
       `MCP_PORTAL_URL for an MCP portal) into gatekeepers.${slug}.vars before deploying.` +
-      (offered.secrets.length
-        ? ` Its OAuth app must list ${secretSetup(offered, slug, worker, origin, accountId).redirectUri} as a ` +
+      (oauth
+        ? ` Its OAuth app must list ${redirectUri(catalog, slug, worker, origin, config.accountId)} as a ` +
           "redirect URI, which follows the public origin: if the instance moves hostname, add the new one."
         : ""));
   }
-  const needed = selected.filter(({ slug, offered }) => offered.secrets.length && !isLive(slug));
-  if (!needed.length) return;
-  for (const { slug, worker, offered } of needed) {
-    ctx.out.log(`\nThe ${slug} Gatekeeper (${worker}) needs an OAuth app before anyone can connect it:\n` +
-      secretSetup(offered, slug, worker, origin, accountId).lines.map((line) => `  ${line}`).join("\n"));
+}
+
+/** The redirect URI Gatekeeper `slug`'s OAuth app registers (core/gatekeepers.ts `secretSetup`). */
+function redirectUri(catalog: GatekeeperCatalog, slug: string, worker: string, origin: string, accountId: string): string {
+  const entry = catalog.offered.find((candidate) => candidate.slug === slug)!;
+  return secretSetup(entry, slug, worker, origin, accountId).redirectUri;
+}
+
+/**
+ * For each new OAuth Gatekeeper in `selected`, when nothing is deployed now: one line naming
+ * `cf-os secrets`, which sets its credentials once the deploy has created its Worker.
+ */
+function reportSecretsLater(
+  ctx: Context,
+  config: DeploymentConfig,
+  catalog: GatekeeperCatalog,
+  selected: Selected[],
+  originFound: boolean,
+): void {
+  const origin = originFound ? publicOrigin(config) : UNKNOWN_ORIGIN;
+  for (const { slug, worker } of selected.filter(({ live, oauth }) => oauth && !live)) {
+    ctx.out.log(`\nAfter deploying, \`${secretsCommand(ctx, slug)}\` sets the ${slug} Gatekeeper's OAuth credentials ` +
+      `(redirect URI: ${redirectUri(catalog, slug, worker, origin, config.accountId)}).`);
   }
-  ctx.out.log("\nDeploying first is fine: a Gatekeeper cannot connect anyone until its secrets are set, and " +
-    "deploys keep them once they are.");
+}
+
+/**
+ * {@link askAndSetSecrets} for `slugs`, each failure reported with the `cf-os secrets` command that
+ * tries again. Resolves to the values entered for a `"deferred"` upload, which never leave memory,
+ * and the Gatekeepers whose credentials could not be set, which make init exit 1.
+ */
+async function askSecrets(
+  ctx: Context,
+  deps: InitDeps,
+  config: DeploymentConfig,
+  catalog: GatekeeperCatalog,
+  slugs: string[],
+  upload: "now" | "deferred",
+  originFound: boolean,
+): Promise<{ pending: PendingSecrets[]; failed: string[] }> {
+  if (!slugs.length) return { pending: [], failed: [] };
+  const origin = originFound ? publicOrigin(config) : UNKNOWN_ORIGIN;
+  const outcome = await askAndSetSecrets(ctx, { prompter: ctx.prompter, client: await ctx.client(), spawn: deps.spawn },
+    { config, catalog, slugs, upload, origin });
+  return { pending: outcome.pending, failed: outcome.failed };
 }
 
 /**
@@ -791,17 +847,35 @@ export async function configure(
   if (outPath === inPath) ctx.out.log(`${outWhere} belongs in your repository: commit it.`);
 
   const written = parseDeployment(await readFile(outPath, "utf8"), outWhere);
-  reportSecretSetup(ctx, written, outWhere, catalog, account.id, configured);
+  const config = written as unknown as DeploymentConfig;
+  const selected = selectedGatekeepers(config, catalog, configured.live);
+  const { originFound } = configured;
+  reportLiveGatekeepers(ctx, config, outWhere, catalog, selected, originFound);
   const next = nextStep(written, outWhere, outPath === inPath ? "" : ` --config ${outWhere}`);
-  if (placeholderPaths(written).length) {
-    ctx.out.log(next);
+  // What runs against the written file, and the commands it prints, read the file written.
+  const outCtx: Context = { ...ctx, flags: { ...ctx.flags, config: outPath } };
+  if (placeholderPaths(written).length || !offerDeploy) {
+    reportSecretsLater(outCtx, config, catalog, selected, originFound);
+    if (placeholderPaths(written).length) ctx.out.log(next);
     return 0;
   }
-  if (!offerDeploy) return 0;
   await offerWranglerSignIn(ctx, deps);
+  // A Worker the account runs can take its secrets now; a new one only once the deploy creates it.
+  const oauth = (live: boolean) => selected.filter((gatekeeper) => gatekeeper.oauth && gatekeeper.live === live)
+    .map(({ slug }) => slug);
+  const live = await askSecrets(outCtx, deps, config, catalog, oauth(true), "now", originFound);
   if (!await prompter.confirm("Deploy now?", true)) {
+    reportSecretsLater(outCtx, config, catalog, selected, originFound);
     ctx.out.log(next);
-    return 0;
+    return live.failed.length ? 1 : 0;
   }
-  return deps.deploy({ ...ctx, flags: { ...ctx.flags, config: outPath } });
+  const fresh = await askSecrets(outCtx, deps, config, catalog, oauth(false), "deferred", originFound);
+  const code = await deps.deploy(outCtx, { secrets: fresh.pending });
+  const failed = [...live.failed, ...fresh.failed];
+  if (!failed.length) return code;
+  // Repeated after the deploy's log, which would otherwise bury each failure's own line.
+  for (const slug of failed) {
+    ctx.out.log(`\nThe ${slug} Gatekeeper's OAuth credentials were not set: \`${secretsCommand(outCtx, slug)}\` sets them.`);
+  }
+  return Math.max(code, 1);
 }

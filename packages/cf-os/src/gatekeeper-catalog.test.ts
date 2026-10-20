@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { secretSetup } from "./core/gatekeepers.ts";
 import { loadCatalog } from "./gatekeeper-catalog.ts";
-import { testCatalog } from "./test-support.ts";
+import { testCatalogWithGitlab } from "./test-support.ts";
 
 /** The repository root, whose submodule the real catalog is read from. */
 const ROOT = join(import.meta.dirname, "..", "..", "..");
@@ -70,7 +70,7 @@ test("offers upstream's installable Gatekeepers, as the hosted catalog would", a
 
 test("the shared test catalog says what the real one says", async () => {
   const real = await loadCatalog(ROOT);
-  const fake = testCatalog();
+  const fake = testCatalogWithGitlab();
   for (const gatekeeper of fake.offered) {
     assert.deepEqual(gatekeeper, real.offered.find((offered) => offered.slug === gatekeeper.slug), gatekeeper.slug);
   }
@@ -113,7 +113,7 @@ test("is unavailable, not a crash, without the submodule's packages", async (t) 
   assert.match(catalog.unavailable!, /cloudflare-os\/packages could not be read/);
 });
 
-test("prints upstream's setup guidance, the redirect URI and the secret commands", async () => {
+test("prints upstream's setup guidance and the redirect URI, and keeps the secret commands apart", async () => {
   const catalog = await loadCatalog(ROOT);
   const github = catalog.offered.find((gatekeeper) => gatekeeper.slug === "github")!;
   const setup = secretSetup(github, "github", "acme-gk-github", "https://os.example.com", "0123456789abcdef0123456789abcdef");
@@ -124,9 +124,14 @@ test("prints upstream's setup guidance, the redirect URI and the secret commands
     name,
     command: `CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef pnpm exec wrangler secret put ${name} --name acme-gk-github`,
   })));
-  assert.equal(setup.lines[0], "Console: https://github.com/settings/developers");
-  assert.ok(setup.lines.includes("Redirect URI: https://os.example.com/gatekeeper/github/oauth"));
-  assert.ok(setup.lines.includes(`  ${setup.commands[1].command}`));
+  // The commands are the route by hand, without a terminal; what init and `cf-os secrets` print
+  // before asking for the values leaves them out.
+  assert.deepEqual(setup.lines, [
+    "Console: https://github.com/settings/developers",
+    ...setup.steps.map((step, index) => `${index + 1}. ${step}`),
+    "Redirect URI: https://os.example.com/gatekeeper/github/oauth",
+  ]);
+  assert.ok(!setup.lines.some((line) => line.includes("wrangler")));
 
   // No deploy-inputs.json: the hosted route's OAuth path, and a pointer to the package's README.
   const spotify = catalog.offered.find((gatekeeper) => gatekeeper.slug === "spotify")!;

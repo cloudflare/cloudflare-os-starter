@@ -7,7 +7,8 @@ import { cfClient } from "../cf-client.ts";
 import { PACKAGE_DIRS } from "../core/deployment.ts";
 import { FAKE_ACCOUNT, fakeCf, workerSecretsReply } from "../fake-cf.ts";
 import { CANCEL, DEFAULT, scratchProject, scriptedPrompter, TEMPLATE, testContext } from "../test-support.ts";
-import { run } from "./deploy.ts";
+import type { PendingSecrets } from "../gatekeeper-secrets.ts";
+import { run, type DeployDeps } from "./deploy.ts";
 import { INSTALL_MARKER } from "./install.ts";
 
 /** A project whose submodule is checked out and installed, holding the unconfigured template. */
@@ -138,10 +139,13 @@ test("refuses any optional Gatekeeper when the catalog cannot be read", async (t
     /deployment\.jsonc: gatekeepers: the Gatekeeper catalog could not be read, so none can be deployed: cloudflare-os\/packages could not be read/);
 });
 
-test("check warns on stderr about a Gatekeeper secret that is not set, and carries on", async (t) => {
+/**
+ * An installed project holding copies of the real base configs, and of GitHub's package as far as the
+ * catalog reads it, with {@link FILLED} selecting the GitHub Gatekeeper as `acme-gk-github`: the run
+ * writes its generated configs beside them. Returns the root and GitHub's package directory.
+ */
+function githubProject(t: Parameters<typeof scratchProject>[0]): { root: string; github: string } {
   const root = installedProject(t);
-  // Copies of the real base configs, and of GitHub's package as far as the catalog reads it: the
-  // run writes its generated configs beside them.
   const repository = join(import.meta.dirname, "..", "..", "..", "..");
   const github = "cloudflare-os/packages/gatekeeper-github";
   for (const file of [
@@ -151,26 +155,158 @@ test("check warns on stderr about a Gatekeeper secret that is not set, and carri
     mkdirSync(dirname(join(root, file)), { recursive: true });
     copyFileSync(join(repository, file), join(root, file));
   }
+  writeFileSync(join(root, "deployment.jsonc"),
+    FILLED.replace('"gatekeepers": {}', '"gatekeepers": { "github": { "name": "acme-gk-github" } }'));
+  return { root, github };
+}
+
+/** An account matching {@link FILLED}, whose Worker secrets are `secrets`, read at each call. */
+function filledAccount(secrets: Record<string, string[]>) {
+  return fakeCf({
+    "zero-trust organization get": { auth_domain: "acme.cloudflareaccess.com" },
+    "zero-trust access applications list": [{ name: "Cloudflare OS", aud: "aud-1", domain: "os.example.com" }],
+    "workers secrets list": workerSecretsReply(secrets),
+  });
+}
+
+test("check warns on stderr about a Gatekeeper secret that is not set, and carries on", async (t) => {
+  const { root, github } = githubProject(t);
   // A directory where GitHub's generated config goes stops the run at that write, just past the
   // account checks.
   mkdirSync(join(root, github, "wrangler.prod.jsonc"));
-  writeFileSync(join(root, "deployment.jsonc"),
-    FILLED.replace('"gatekeepers": {}', '"gatekeepers": { "github": { "name": "acme-gk-github" } }'));
-  const cf = fakeCf({
-    "zero-trust organization get": { auth_domain: "acme.cloudflareaccess.com" },
-    "zero-trust access applications list": [{ name: "Cloudflare OS", aud: "aud-1", domain: "os.example.com" }],
-    "workers secrets list": workerSecretsReply({ "acme-gk-github": ["CLIENT_ID"] }),
-  });
+  const cf = filledAccount({ "acme-gk-github": ["CLIENT_ID"] });
   const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }) });
   await assert.rejects(run({ command: "check", values: {}, positionals: [] }, harness.ctx), /EISDIR|is a directory/);
   assert.match(harness.stderr(), /Cloudflare-side checks passed/);
-  assert.match(harness.stderr(),
-    /\nWarning: acme-gk-github has no CLIENT_SECRET; nobody can connect the github Gatekeeper until it is set:\n/);
-  assert.ok(harness.stderr().includes(
-    `CLOUDFLARE_ACCOUNT_ID=${FAKE_ACCOUNT} pnpm exec wrangler secret put CLIENT_SECRET --name acme-gk-github`));
-  assert.match(harness.stderr(),
-    /^Redirect URI to register with the provider: https:\/\/os\.example\.com\/gatekeeper\/github\/oauth$/m);
+  assert.deepEqual(harness.log.filter((line) => line.includes("acme-gk-github")),
+    ["\nWarning: acme-gk-github has no CLIENT_SECRET; nobody can connect the github Gatekeeper until " +
+      "`pnpm cf-os secrets github` sets it."]);
   assert.deepEqual(harness.json, []);
   assert.deepEqual(cf.calls.filter((call) => call.args[1] === "secrets").map((call) => call.args),
     [["workers", "secrets", "list", "--script-name", "acme-gk-github"]]);
+});
+
+/** Obviously fake OAuth credentials, as init would hand them over. */
+const PENDING: PendingSecrets[] = [
+  { gatekeeper: "github", worker: "acme-gk-github", values: { CLIENT_ID: "gh-id-123", CLIENT_SECRET: "gh-secret-456" } },
+];
+
+/**
+ * Deploy deps recording, in `steps`, the build, the deploy and each tool run, the deploy failing
+ * when `deployFails`. `wrangler secret bulk` adds the names on its stdin to the Worker's `secrets`,
+ * unless `parses` is false, as when Wrangler cannot read its input and still exits 0.
+ */
+function recordingDeploy(secrets: Record<string, string[]>, { deployFails = false, parses = true } = {}) {
+  const steps: string[] = [];
+  const inputs: { input: string; accountId?: string }[] = [];
+  const deps: DeployDeps = {
+    build: async () => {
+      steps.push("build");
+    },
+    deploy: async (_ctx, _config, _catalog, check) => {
+      steps.push(check ? "dry-run" : "deploy");
+      if (deployFails) throw new Error("acme-gk-router: wrangler deploy failed. Its output is above.");
+    },
+    spawn: (command, args, { env, input }) => {
+      steps.push([command, ...args].join(" "));
+      if (input !== undefined) {
+        inputs.push({ input, accountId: env?.CLOUDFLARE_ACCOUNT_ID });
+        const worker = args[args.indexOf("--name") + 1];
+        if (parses) secrets[worker] = [...secrets[worker] ?? [], ...Object.keys(JSON.parse(input))];
+      }
+      return { status: 0, stdout: "" };
+    },
+  };
+  return { deps, steps, inputs };
+}
+
+/** Asserts no secret value reached the output. */
+function assertNoValues(harness: { stderr: () => string; json: unknown[] }): void {
+  for (const where of [harness.stderr(), JSON.stringify(harness.json)]) {
+    for (const value of Object.values(PENDING[0].values)) {
+      assert.ok(!where.includes(value), `a secret value leaked into ${where}`);
+    }
+  }
+}
+
+test("deploy warns, in one line, about a Gatekeeper not deployed yet when no secrets come with it", async (t) => {
+  const { root } = githubProject(t);
+  const secrets: Record<string, string[]> = {};
+  const harness = testContext({ root, client: cfClient({ spawn: filledAccount(secrets).spawn }) });
+  const { deps, steps } = recordingDeploy(secrets);
+  assert.equal(await run({ command: "deploy", values: {}, positionals: [] }, harness.ctx, {}, deps), 0);
+  assert.deepEqual(steps, ["build", "deploy"]);
+  assert.deepEqual(harness.log.filter((line) => line.includes("acme-gk-github")),
+    ["\nWarning: acme-gk-github is not deployed yet; after the deploy, `pnpm cf-os secrets github` sets its " +
+      "CLIENT_ID and CLIENT_SECRET."]);
+});
+
+test("the cf-os secrets command a warning names reads the deployment file the deploy did", async (t) => {
+  const { root } = githubProject(t);
+  copyFileSync(join(root, "deployment.jsonc"), join(root, "staging.jsonc"));
+  const secrets: Record<string, string[]> = { "acme-gk-github": ["CLIENT_ID"] };
+  const harness = testContext({ root, client: cfClient({ spawn: filledAccount(secrets).spawn }), flags: { config: "staging.jsonc" } });
+  const { deps } = recordingDeploy(secrets);
+  assert.equal(await run({ command: "deploy", values: {}, positionals: [] }, harness.ctx, {}, deps), 0);
+  assert.deepEqual(harness.log.filter((line) => line.includes("acme-gk-github")),
+    ["\nWarning: acme-gk-github has no CLIENT_SECRET; nobody can connect the github Gatekeeper until " +
+      "`pnpm cf-os secrets github --config staging.jsonc` sets it."]);
+});
+
+test("deploy sets the secrets init asked for once every Worker has deployed, and confirms them", async (t) => {
+  const { root } = githubProject(t);
+  const secrets: Record<string, string[]> = {};
+  const cf = filledAccount(secrets);
+  const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }) });
+  const { deps, steps, inputs } = recordingDeploy(secrets);
+  assert.equal(await run({ command: "deploy", values: {}, positionals: [] }, harness.ctx, { secrets: PENDING }, deps), 0);
+  assert.deepEqual(steps, ["build", "deploy", "pnpm exec wrangler secret bulk --name acme-gk-github"]);
+  assert.deepEqual(inputs.map(({ input, accountId }) => [JSON.parse(input), accountId]),
+    [[PENDING[0].values, FAKE_ACCOUNT]]);
+  // Not looked up for the warnings, which leave it out, but listed after the upload to confirm it.
+  assert.equal(cf.calls.filter((call) => call.args.join(" ") === "workers secrets list --script-name acme-gk-github").length, 1);
+  // Not warned about: its secrets are about to be set.
+  assert.doesNotMatch(harness.stderr(), /Warning: acme-gk-github/);
+  assert.match(harness.stderr(), /\nacme-gk-github's CLIENT_ID and CLIENT_SECRET will be set once it is deployed\./);
+  assert.match(harness.stderr(), /\nSet CLIENT_ID and CLIENT_SECRET on acme-gk-github\./);
+  assert.deepEqual(harness.json, []);
+  assertNoValues(harness);
+});
+
+test("a failed deploy sets no secret, and names the cf-os secrets command that sets them", async (t) => {
+  const { root } = githubProject(t);
+  const secrets: Record<string, string[]> = {};
+  const harness = testContext({ root, client: cfClient({ spawn: filledAccount(secrets).spawn }) });
+  const { deps, steps } = recordingDeploy(secrets, { deployFails: true });
+  await assert.rejects(run({ command: "deploy", values: {}, positionals: [] }, harness.ctx, { secrets: PENDING }, deps),
+    /wrangler deploy failed/);
+  assert.deepEqual(steps, ["build", "deploy"]);
+  assert.deepEqual(secrets, {});
+  assert.ok(harness.log.includes("\nThe github Gatekeeper's OAuth credentials were not set, as the deploy did not " +
+    "finish: once it is fixed, `pnpm cf-os secrets github` sets them."));
+  assertNoValues(harness);
+});
+
+test("the cf-os secrets command named after a failure reads the deployment file the deploy did", async (t) => {
+  const { root } = githubProject(t);
+  copyFileSync(join(root, "deployment.jsonc"), join(root, "staging.jsonc"));
+  const secrets: Record<string, string[]> = {};
+  const harness = testContext({ root, client: cfClient({ spawn: filledAccount(secrets).spawn }), flags: { config: "staging.jsonc" } });
+  const { deps } = recordingDeploy(secrets, { deployFails: true });
+  await assert.rejects(run({ command: "deploy", values: {}, positionals: [] }, harness.ctx, { secrets: PENDING }, deps),
+    /wrangler deploy failed/);
+  assert.ok(harness.log.includes("\nThe github Gatekeeper's OAuth credentials were not set, as the deploy did not " +
+    "finish: once it is fixed, `pnpm cf-os secrets github --config staging.jsonc` sets them."));
+});
+
+test("deploy exits 1, naming cf-os secrets, when an upload does not show up on the Worker", async (t) => {
+  const { root } = githubProject(t);
+  const secrets: Record<string, string[]> = {};
+  const harness = testContext({ root, client: cfClient({ spawn: filledAccount(secrets).spawn }) });
+  const { deps, steps } = recordingDeploy(secrets, { parses: false });
+  assert.equal(await run({ command: "deploy", values: {}, positionals: [] }, harness.ctx, { secrets: PENDING }, deps), 1);
+  assert.deepEqual(steps, ["build", "deploy", "pnpm exec wrangler secret bulk --name acme-gk-github"]);
+  assert.ok(harness.log.includes("\nDeployed, but the github Gatekeeper's OAuth credentials were not set: Wrangler " +
+    "finished, but acme-gk-github has no CLIENT_ID or CLIENT_SECRET. `pnpm cf-os secrets github` tries again."));
+  assertNoValues(harness);
 });

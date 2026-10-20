@@ -74,7 +74,7 @@ test("prints usage and fails on no command or an unknown one", async (t) => {
 
 test("prints each command's help on stdout, anywhere", async (t) => {
   const cwd = tempDir(t);
-  for (const name of ["init", "import", "access", "check", "deploy", "update", "install"]) {
+  for (const name of ["init", "import", "access", "secrets", "check", "deploy", "update", "install"]) {
     const { code, stdout } = await run(t, [name, "--help"], { cwd });
     assert.equal(code, 0, name);
     assert.match(stdout, new RegExp(`^Usage: cf-os ${name}\\b`), name);
@@ -87,7 +87,7 @@ test("prints each command's help on stdout, anywhere", async (t) => {
 
 test("outside a project, only init and update run", async (t) => {
   const cwd = tempDir(t);
-  for (const name of ["import", "access", "check", "deploy", "install"]) {
+  for (const name of ["import", "access", "secrets", "check", "deploy", "install"]) {
     const { code, log } = await run(t, [name], { cwd });
     assert.equal(code, 1, name);
     assert.match(log, /Run `cf-os init <dir>` to create one/, name);

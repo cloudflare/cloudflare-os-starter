@@ -42,7 +42,7 @@ const GLOBAL_OPTIONS = {
 const GLOBAL_HELP = [
   "  --config <path>    deployment file (default: deployment.jsonc in the project root)",
   "  --account <id>     Cloudflare account for init and import, ahead of the file's accountId;",
-  "                     check, deploy and access refuse one other than the file's",
+  "                     check, deploy, access and secrets refuse one other than the file's",
   "  --profile <name>   cf sign-in to use, passed to every cf call",
   "  -h, --help         this help",
 ];
@@ -105,6 +105,15 @@ const COMMANDS: Record<string, CommandSpec> = {
     positionals: 0,
     failure: "Access setup failed.",
     load: () => import("./commands/access.ts"),
+  },
+  secrets: {
+    summary: "ask for the optional Gatekeepers' OAuth credentials and set them on their Workers",
+    synopsis: "[<slug>...]",
+    help: ["  <slug>...   the Gatekeepers to set (default: every selected one that reads secrets)"],
+    options: {},
+    positionals: Infinity,
+    failure: "Setting secrets failed.",
+    load: () => import("./commands/secrets.ts"),
   },
   check: {
     summary: "validate, check the account, test, build, and dry-run every deploy",

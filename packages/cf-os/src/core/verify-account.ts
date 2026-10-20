@@ -19,8 +19,7 @@ import {
   type CloudflareClient,
 } from "./client.ts";
 import type { DeploymentConfig } from "./deployment-config.ts";
-import { publicOrigin } from "./deployment.ts";
-import { secretSetup, type GatekeeperCatalog } from "./gatekeepers.ts";
+import type { GatekeeperCatalog } from "./gatekeepers.ts";
 
 /** The outcome: what is wrong, or why nothing was checked. */
 export type AccountCheck = { skipped: string } | { problems: string[] };
@@ -127,15 +126,16 @@ async function checkStorage(client: CloudflareClient, config: DeploymentConfig, 
 }
 
 /** `names` as a list in prose: "A", "A and B", "A, B and C" (with `or`, "A or B"). */
-function prose(names: string[], conjunction: "and" | "or"): string {
+export function prose(names: string[], conjunction: "and" | "or"): string {
   return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} ${conjunction} ${names.at(-1)}`;
 }
 
 /**
- * One warning, as lines to print, for each optional Gatekeeper in `config` whose Worker lacks a
- * secret its catalog entry reads: the `wrangler secret put` commands for what is missing and the
- * redirect URI its OAuth app registers (core/gatekeepers.ts `secretSetup`). A Worker not deployed
- * yet lacks all of them, and is told so. A Gatekeeper that takes no secrets is not looked up.
+ * One line of warning for each optional Gatekeeper in `config` whose Worker lacks a secret its
+ * catalog entry reads, pointing at `cf-os secrets <slug>`, which shows the setup and sets them, with
+ * `configFlag` (` --config <path>`, or empty for deployment.jsonc) so it reads the same file. A
+ * Worker not deployed yet lacks all of them, and is told so. A Gatekeeper that takes no secrets is
+ * not looked up.
  *
  * Never a problem: `wrangler deploy` keeps a Worker's secrets, so they can as well be set after the
  * deploy as before it. Signed out, or with a client that cannot run, it stops quietly with what it
@@ -146,8 +146,8 @@ export async function gatekeeperSecretWarnings(
   client: CloudflareClient,
   config: DeploymentConfig,
   catalog: GatekeeperCatalog,
+  configFlag = "",
 ): Promise<string[]> {
-  const origin = publicOrigin(config);
   const warnings: string[] = [];
   for (const [slug, { name: worker }] of Object.entries(config.gatekeepers ?? {})) {
     const entry = catalog.offered.find((gatekeeper) => gatekeeper.slug === slug);
@@ -163,17 +163,11 @@ export async function gatekeeperSecretWarnings(
     }
     const missing = entry.secrets.map(({ name }) => name).filter((name) => !present?.includes(name));
     if (!missing.length) continue;
-    const setup = secretSetup(entry, slug, worker, origin, config.accountId);
-    const heading = present === null
-      ? `Warning: ${worker} is not deployed yet; after the deploy, set ${prose(missing, "and")}, ` +
-        `or nobody can connect the ${slug} Gatekeeper:`
-      : `Warning: ${worker} has no ${prose(missing, "or")}; nobody can connect the ${slug} Gatekeeper ` +
-        `until ${missing.length === 1 ? "it is" : "they are"} set:`;
-    warnings.push([
-      heading,
-      ...setup.commands.filter(({ name }) => missing.includes(name)).map(({ command }) => `  ${command}`),
-      `Redirect URI to register with the provider: ${setup.redirectUri}`,
-    ].join("\n"));
+    const command = `\`pnpm cf-os secrets ${slug}${configFlag}\``;
+    warnings.push(present === null
+      ? `Warning: ${worker} is not deployed yet; after the deploy, ${command} sets its ${prose(missing, "and")}.`
+      : `Warning: ${worker} has no ${prose(missing, "or")}; nobody can connect the ${slug} Gatekeeper until ` +
+        `${command} sets ${missing.length === 1 ? "it" : "them"}.`);
   }
   return warnings;
 }
