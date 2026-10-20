@@ -74,12 +74,46 @@
           }
         },
         {
+          "name": "checkForUpdates",
+          "doc": "Ask now for the newest release, whether or not automatic update checks are on, and return\nthe status that check produces. Null unless the deploy flow installed this deployment. Throws\nwhen the check fails.",
+          "params": [],
+          "returns": {
+            "kind": "union",
+            "branches": [
+              {
+                "kind": "null"
+              },
+              {
+                "kind": "ref",
+                "name": "DeploymentUpdateStatus"
+              }
+            ]
+          }
+        },
+        {
           "name": "getSettings",
           "doc": "Read all admin-managed settings for the admin UI in one call.",
           "params": [],
           "returns": {
             "kind": "ref",
             "name": "AdminSettingsView"
+          }
+        },
+        {
+          "name": "getUpdateStatus",
+          "doc": "Whether a newer release is available. Null unless the deploy flow installed this deployment.\nWhile automatic update checks are off (see setUpdateChecksEnabled) it asks no one and reports\nthe last check made for the running release, if any.",
+          "params": [],
+          "returns": {
+            "kind": "union",
+            "branches": [
+              {
+                "kind": "null"
+              },
+              {
+                "kind": "ref",
+                "name": "DeploymentUpdateStatus"
+              }
+            ]
           }
         },
         {
@@ -569,6 +603,74 @@
               "name": "name",
               "type": {
                 "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "setUpdateCheckIntervalMinutes",
+          "doc": "Set how many minutes a successful update check is relied on before the deployment asks again,\nDEFAULT_UPDATE_CHECK_INTERVAL_MINUTES by default. A failed check is retried after the interval\nor 15 minutes, whichever is shorter. The deployment asks only while an admin is using it\n(getUpdateStatus() makes the check when one is due), never on a schedule of its own. Throws\nunless `minutes` is a whole number from 1 to MAX_UPDATE_CHECK_INTERVAL_MINUTES.",
+          "params": [
+            {
+              "name": "minutes",
+              "type": {
+                "kind": "number"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "setUpdateChecksEnabled",
+          "doc": "Set whether the deployment checks for updates by itself. On by default. When off,\ngetUpdateStatus() makes no outbound call and admins are never notified; checkForUpdates()\nstill asks.",
+          "params": [
+            {
+              "name": "enabled",
+              "type": {
+                "kind": "boolean"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "setUpdateMinimumAgeHours",
+          "doc": "Set how many hours a newer release must have been available before admins are notified of\nit, DEFAULT_UPDATE_MINIMUM_AGE_HOURS by default. It delays the notice only: an update always\ninstalls the newest release. 0 notifies as soon as a check reports an update. Throws unless\n`hours` is a whole number from 0 to MAX_UPDATE_HOURS.",
+          "params": [
+            {
+              "name": "hours",
+              "type": {
+                "kind": "number"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "setUpdateNoticeSnoozeHours",
+          "doc": "Set how many hours a dismissed update notice stays hidden in the browser that dismissed it,\nDEFAULT_UPDATE_NOTICE_SNOOZE_HOURS by default. 0 means a closed notice comes back on the next\nvisit to Home. Throws unless `hours` is a whole number from 0 to MAX_UPDATE_HOURS.",
+          "params": [
+            {
+              "name": "hours",
+              "type": {
+                "kind": "number"
               },
               "optional": false,
               "doc": ""
@@ -3971,7 +4073,7 @@
         },
         {
           "name": "sendChatMessage",
-          "doc": "Send a message to the chat from this client. Sending a message causes the LLM to start\nrunning if it isn't already.\nIf a slash command produces no message, only its visible invocation event is committed and the\nagent does not run.\nSlash-command requests cannot include capsules or attachments.\n\n`modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response\n(useful when using chat to talk between humans).",
+          "doc": "Send a message to the chat from this client. Sending a message causes the LLM to start\nrunning if it isn't already.\nWhile it runs, plain text with no capsules, attachments or formats steers it, on the running\nturn's model whatever `modelId` is, even null: it waits in `AiChatMetadata.queuedSteers` until\nthe agent reads it. Anything else, or anything sent after `stopAgent()`, throws until the\nagent finishes.\nIf a slash command produces no message, only its visible invocation event is committed and the\nagent does not run.\nSlash-command requests cannot include capsules or attachments.\n\n`modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response\n(useful when using chat to talk between humans).",
           "params": [
             {
               "name": "chatId",
@@ -4125,7 +4227,7 @@
         },
         {
           "name": "stopAgent",
-          "doc": "Request that any ongoing LLM session in the given chat immediately stop.\n\nIf an LLM is running, the session is canceled subscribers will receive a metadata update\nreflecting this before `stop()` returns.\n\nIf no LLM is running, `stop()` does nothing and returns immediately.",
+          "doc": "Request that any ongoing LLM session in the given chat immediately stop.\n\nIf an LLM is running, the session is canceled subscribers will receive a metadata update\nreflecting this before `stop()` returns.\n\nIf no LLM is running, `stop()` does nothing and returns immediately.\n\nStopping drops the chat's queued steers (see `AiChatMetadata.queuedSteers`), whoever sent them.\nThe client that stops is expected to put them in its draft, so its user can still send them.",
           "params": [
             {
               "name": "chatId",
@@ -6816,6 +6918,18 @@
             "sequence": {
               "kind": "number"
             },
+            "steered": {
+              "kind": "union",
+              "branches": [
+                {
+                  "kind": "literal",
+                  "value": true
+                },
+                {
+                  "kind": "undefined"
+                }
+              ]
+            },
             "timestamp": {
               "kind": "date"
             },
@@ -7301,6 +7415,29 @@
               "kind": "array",
               "element": {
                 "kind": "number"
+              }
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
+        "queuedSteers": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "array",
+              "element": {
+                "kind": "object",
+                "properties": {
+                  "author": {
+                    "kind": "ref",
+                    "name": "AiChatAuthorInfo"
+                  },
+                  "text": {
+                    "kind": "string"
+                  }
+                }
               }
             },
             {
@@ -10330,6 +10467,83 @@
         }
       }
     },
+    "DeploymentUpdateStatus": {
+      "kind": "object",
+      "properties": {
+        "availableSince": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "date"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
+        "checkIntervalMinutes": {
+          "kind": "number"
+        },
+        "checkedAt": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "date"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
+        "checksEnabled": {
+          "kind": "boolean"
+        },
+        "currentReleaseId": {
+          "kind": "string"
+        },
+        "latestReleaseId": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "string"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
+        "minimumAgeHours": {
+          "kind": "number"
+        },
+        "modified": {
+          "kind": "boolean"
+        },
+        "modifiedWorkers": {
+          "kind": "array",
+          "element": {
+            "kind": "string"
+          }
+        },
+        "noticeSnoozeHours": {
+          "kind": "number"
+        },
+        "notify": {
+          "kind": "boolean"
+        },
+        "unfinishedWorkers": {
+          "kind": "array",
+          "element": {
+            "kind": "string"
+          }
+        },
+        "updateAvailable": {
+          "kind": "boolean"
+        },
+        "updateUrl": {
+          "kind": "string"
+        }
+      }
+    },
     "DeviceSessionHandoffStart": {
       "kind": "object",
       "properties": {
@@ -12165,6 +12379,17 @@
           "branches": [
             {
               "kind": "boolean"
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
+        "groupedWith": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "string"
             },
             {
               "kind": "undefined"

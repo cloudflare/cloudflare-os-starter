@@ -39,6 +39,18 @@ export const table: ApiTable = {
           ],
           returns: { kind: "value", type: "void" },
         },
+        "check-for-updates": {
+          method: "checkForUpdates",
+          doc:
+            "Ask now for the newest release, whether or not automatic update checks are on, and return\n" +
+            "the status that check produces. Null unless the deploy flow installed this deployment. Throws\n" +
+            "when the check fails.",
+          args: [],
+          returns: {
+            kind: "value",
+            type: "DeploymentUpdateStatus | null, where DeploymentUpdateStatus = { availableSince?: Date; checkIntervalMinutes: number; checkedAt?: Date; checksEnabled: boolean; currentReleaseId: string; latestReleaseId?: string; minimumAgeHours: number; modified: boolean; modifiedWorkers: string[]; noticeSnoozeHours: number; notify: boolean; unfinishedWorkers: string[]; updateAvailable: boolean; updateUrl: string }",
+          },
+        },
         "get-settings": {
           method: "getSettings",
           doc: "Read all admin-managed settings for the admin UI in one call.",
@@ -46,6 +58,18 @@ export const table: ApiTable = {
           returns: {
             kind: "value",
             type: "AdminSettingsView = { accentColor: string; announcement: string; banner: BannerConfig; formats: AdminFormat[]; gatewayModels?: { defaultReasoning: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" | null; models: AdminModelView[]; modelsDevSuggestions: boolean; providerSettings: AdminGatewayProvider[]; providers: AiModelProvider[]; userModelsEnabled: boolean }; instanceInstructions: string; resourceVendors: AdminResourceVendor[]; signupsEnabled: boolean; siteLogo?: AvatarImage; siteName: string; userSearchEnabled: boolean }",
+          },
+        },
+        "get-update-status": {
+          method: "getUpdateStatus",
+          doc:
+            "Whether a newer release is available. Null unless the deploy flow installed this deployment.\n" +
+            "While automatic update checks are off (see setUpdateChecksEnabled) it asks no one and reports\n" +
+            "the last check made for the running release, if any.",
+          args: [],
+          returns: {
+            kind: "value",
+            type: "DeploymentUpdateStatus | null, where DeploymentUpdateStatus = { availableSince?: Date; checkIntervalMinutes: number; checkedAt?: Date; checksEnabled: boolean; currentReleaseId: string; latestReleaseId?: string; minimumAgeHours: number; modified: boolean; modifiedWorkers: string[]; noticeSnoozeHours: number; notify: boolean; unfinishedWorkers: string[]; updateAvailable: boolean; updateUrl: string }",
           },
         },
         "is-blueprint-featured": {
@@ -315,6 +339,45 @@ export const table: ApiTable = {
             "Set the site name shown next to the top-bar logo. Pass \"\" to reset to DEFAULT_SITE_NAME.\n" +
             "Rejects over MAX_SITE_NAME_LENGTH.",
           args: [{ name: "name", index: 0, encoding: "string", type: "string", doc: "" }],
+          returns: { kind: "value", type: "void" },
+        },
+        "set-update-check-interval-minutes": {
+          method: "setUpdateCheckIntervalMinutes",
+          doc:
+            "Set how many minutes a successful update check is relied on before the deployment asks again,\n" +
+            "DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES by default. A failed check is retried after the interval\n" +
+            "or 15 minutes, whichever is shorter. The deployment asks only while an admin is using it\n" +
+            "(`get-update-status` makes the check when one is due), never on a schedule of its own. Throws\n" +
+            "unless `minutes` is a whole number from 1 to MAX_UPDATE_CHECK_INTERVAL_MINUTES.",
+          args: [{ name: "minutes", index: 0, encoding: "number", type: "number", doc: "" }],
+          returns: { kind: "value", type: "void" },
+        },
+        "set-update-checks-enabled": {
+          method: "setUpdateChecksEnabled",
+          doc:
+            "Set whether the deployment checks for updates by itself. On by default. When off,\n" +
+            "`get-update-status` makes no outbound call and admins are never notified; `check-for-updates`\n" +
+            "still asks.",
+          args: [{ name: "enabled", index: 0, encoding: "boolean", type: "boolean", doc: "" }],
+          returns: { kind: "value", type: "void" },
+        },
+        "set-update-minimum-age-hours": {
+          method: "setUpdateMinimumAgeHours",
+          doc:
+            "Set how many hours a newer release must have been available before admins are notified of\n" +
+            "it, DEFAULT_UPDATE_MINIMUM_AGE_HOURS by default. It delays the notice only: an update always\n" +
+            "installs the newest release. 0 notifies as soon as a check reports an update. Throws unless\n" +
+            "`hours` is a whole number from 0 to MAX_UPDATE_HOURS.",
+          args: [{ name: "hours", index: 0, encoding: "number", type: "number", doc: "" }],
+          returns: { kind: "value", type: "void" },
+        },
+        "set-update-notice-snooze-hours": {
+          method: "setUpdateNoticeSnoozeHours",
+          doc:
+            "Set how many hours a dismissed update notice stays hidden in the browser that dismissed it,\n" +
+            "DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS by default. 0 means a closed notice comes back on the next\n" +
+            "visit to Home. Throws unless `hours` is a whole number from 0 to MAX_UPDATE_HOURS.",
+          args: [{ name: "hours", index: 0, encoding: "number", type: "number", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
         "set-user-models-enabled": {
@@ -1950,7 +2013,7 @@ export const table: ApiTable = {
           args: [],
           returns: {
             kind: "value",
-            type: "AiChatMetadata[], where AiChatMetadata = { activeAgent?: AiChatAuthorInfo; cacheReadTokens?: number; cacheWriteTokens?: number; codeBase?: ChatCodeBase; compactedTo?: number; id: number; lastActive: Date; promptTokens?: number; proposedChangeWorkpieces?: number[]; spawnerName?: string; started: Date; title: string; totalCost?: number; totalTokens?: number }",
+            type: "AiChatMetadata[], where AiChatMetadata = { activeAgent?: AiChatAuthorInfo; cacheReadTokens?: number; cacheWriteTokens?: number; codeBase?: ChatCodeBase; compactedTo?: number; id: number; lastActive: Date; promptTokens?: number; proposedChangeWorkpieces?: number[]; queuedSteers?: { author: AiChatAuthorInfo; text: string }[]; spawnerName?: string; started: Date; title: string; totalCost?: number; totalTokens?: number }",
           },
         },
         "list-collaborators": {
@@ -2383,6 +2446,10 @@ export const table: ApiTable = {
           doc:
             "Send a message to the chat from this client. Sending a message causes the LLM to start\n" +
             "running if it isn't already.\n" +
+            "While it runs, plain text with no capsules, attachments or formats steers it, on the running\n" +
+            "turn's model whatever `modelId` is, even null: it waits in `AiChatMetadata.queuedSteers` until\n" +
+            "the agent reads it. Anything else, or anything sent after `stop-agent`, throws until the\n" +
+            "agent finishes.\n" +
             "If a slash command produces no message, only its visible invocation event is committed and the\n" +
             "agent does not run.\n" +
             "Slash-command requests cannot include capsules or attachments.\n" +
@@ -2484,7 +2551,10 @@ export const table: ApiTable = {
             "If an LLM is running, the session is canceled subscribers will receive a metadata update\n" +
             "reflecting this before `stop()` returns.\n" +
             "\n" +
-            "If no LLM is running, `stop()` does nothing and returns immediately.",
+            "If no LLM is running, `stop()` does nothing and returns immediately.\n" +
+            "\n" +
+            "Stopping drops the chat's queued steers (see `AiChatMetadata.queuedSteers`), whoever sent them.\n" +
+            "The client that stops is expected to put them in its draft, so its user can still send them.",
           args: [{ name: "chatId", index: 0, encoding: "number", type: "number", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
