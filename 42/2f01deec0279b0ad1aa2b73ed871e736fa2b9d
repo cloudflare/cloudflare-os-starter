@@ -1,0 +1,19 @@
+packages/cf-os/src/local-bin.ts
+  s_d623130e650fe3::t_143321c58f4aa3 3-4,6-9,13-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "422f01deec0279b0ad1aa2b73ed871e736fa2b9d",
+  "prompts": {},
+  "sessions": {
+    "s_d623130e650fe3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a13d40eab3b41f51c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
