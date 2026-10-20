@@ -3,7 +3,7 @@ import test from "node:test";
 import { cfClient } from "../cf-client.ts";
 import { FAKE_ACCOUNT, fakeCf, WORKER_NOT_FOUND_FAILURE, workerSecretsReply, type FakeReply } from "../fake-cf.ts";
 import {
-  scratchProject, scriptedPrompter, TEMPLATE, testCatalog, testCatalogWithGitlab, testContext, type Step,
+  reversing, scratchProject, scriptedPrompter, TEMPLATE, testCatalog, testCatalogWithGitlab, testContext, type Step,
 } from "../test-support.ts";
 import type { SpawnTool } from "../tools.ts";
 import { setSecrets } from "./secrets.ts";
@@ -28,10 +28,8 @@ const WITH_GITLAB = FILLED.replace('"github": { "name": "acme-gk-github" },',
   '"github": { "name": "acme-gk-github" }, "gitlab": { "name": "acme-gk-gitlab" },');
 
 /**
- * Runs `cf-os secrets <positionals>` against a fake account whose Workers have `secrets` (or whose
- * `workers secrets list` answers `list`), answering from `script` (no terminal when null), each `cf`
- * call settling after `delay`. Its `wrangler secret bulk` adds the names on its stdin, but fails for
- * Worker `failing`. With `gitlab`, the file selects GitLab too.
+ * Runs `cf-os secrets <positionals>` against a fake account whose Workers have `secrets`, answering
+ * from `script` (no terminal when null).
  */
 async function secrets(
   t: Parameters<typeof scratchProject>[0],
@@ -153,12 +151,6 @@ test("without a terminal, fails naming the wrangler secret put commands for what
   assert.deepEqual(ran, []);
   assert.deepEqual(json, []);
 });
-
-/** A `delay` settling the `cf` calls in the reverse of the order they started: the first waits longest. */
-function reversing(): (args: string[]) => number {
-  let started = 0;
-  return () => 60 - 10 * started++;
-}
 
 /** A `workers secrets list` reply: GitHub's Worker is not deployed, and GitLab's read fails. */
 const undeployedAndFailing: FakeReply = (args) =>

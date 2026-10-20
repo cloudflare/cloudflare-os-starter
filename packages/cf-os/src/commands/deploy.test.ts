@@ -139,11 +139,7 @@ test("refuses any optional Gatekeeper when the catalog cannot be read", async (t
     /deployment\.jsonc: gatekeepers: the Gatekeeper catalog could not be read, so none can be deployed: cloudflare-os\/packages could not be read/);
 });
 
-/**
- * An installed project holding copies of the real base configs, and of GitHub's package as far as the
- * catalog reads it, with {@link FILLED} selecting the GitHub Gatekeeper as `acme-gk-github`: the run
- * writes its generated configs beside them. Returns the root and GitHub's package directory.
- */
+/** An installed project with the real base configs and GitHub's package, {@link FILLED} selecting GitHub. */
 function githubProject(t: Parameters<typeof scratchProject>[0]): { root: string; github: string } {
   const root = installedProject(t);
   const repository = join(import.meta.dirname, "..", "..", "..", "..");
@@ -160,10 +156,7 @@ function githubProject(t: Parameters<typeof scratchProject>[0]): { root: string;
   return { root, github };
 }
 
-/**
- * An account matching {@link FILLED}, whose Worker secrets are `secrets`, read at each call, each
- * call settling after `delay`.
- */
+/** An account matching {@link FILLED}, whose Worker secrets are `secrets`. */
 function filledAccount(secrets: Record<string, string[]>, delay?: (args: string[]) => number) {
   return fakeCf({
     "zero-trust organization get": { auth_domain: "acme.cloudflareaccess.com" },
@@ -225,9 +218,8 @@ const PENDING: PendingSecrets[] = [
 ];
 
 /**
- * Deploy deps recording, in `steps`, the build, the deploy and each tool run, the deploy failing
- * when `deployFails`. `wrangler secret bulk` adds the names on its stdin to the Worker's `secrets`,
- * unless `parses` is false, as when Wrangler cannot read its input and still exits 0.
+ * Deploy deps recording each step in `steps`, whose `wrangler secret bulk` adds to `secrets` unless
+ * `parses` is false.
  */
 function recordingDeploy(secrets: Record<string, string[]>, { deployFails = false, parses = true } = {}) {
   const steps: string[] = [];

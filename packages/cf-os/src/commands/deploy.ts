@@ -16,9 +16,7 @@
 // and only the next wave is held back. With the router last, any failure leaves the previous router
 // serving.
 //
-// Secrets `cf-os init` asked for come in memory, never from a flag or a file, and are set once every
-// Worker has deployed (gatekeeper-secrets.ts): a secret cannot go on a Worker that does not exist
-// yet. A failed deploy sets none, and says how to set them once it is fixed.
+// Secrets `cf-os init` asked for come in memory and are set once every Worker exists (gatekeeper-secrets.ts).
 //
 // Wrangler deploys, not `cf deploy`: `cf deploy` takes no `--config` and works one project per
 // directory, so it cannot deploy a set of Workers from generated configs.
@@ -338,10 +336,9 @@ export async function run(
 }
 
 /**
- * Sets each of `pending` on its Worker, one at a time: each `wrangler secret bulk` may refresh
- * Wrangler's sign-in, which is single-use (see {@link deployAll}). Whatever stops one, the deploy is
- * done and the values are gone with this process, so each failure names the `cf-os secrets` command
- * that tries again, and the run exits 1.
+ * Sets each of `pending` on its Worker, one at a time, since each may be refreshing Wrangler's
+ * single-use token (see {@link deployAll}). A failure names the `cf-os secrets` command that tries
+ * again, and the run exits 1.
  */
 async function setSecrets(ctx: Context, deps: DeployDeps, accountId: string, pending: PendingSecrets[]): Promise<number> {
   if (!pending.length) return 0;

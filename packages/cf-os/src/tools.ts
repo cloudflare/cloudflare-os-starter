@@ -1,7 +1,6 @@
 // The external tools scaffolding and init hand the terminal to, or read a status from: git, pnpm,
-// gh, wrangler, `cf auth login`. One command at a time, behind types tests can record against: a
-// tool handed the terminal runs synchronously, and a status read runs asynchronously, so a spinner
-// can turn while it waits.
+// gh, wrangler, `cf auth login`. One command at a time, behind types tests can record against; a
+// status read is asynchronous, so a spinner can turn while it waits.
 //
 // On the packed path (scaffolding imports it), so node builtins only: see main.ts.
 
@@ -28,14 +27,10 @@ export type SpawnTool = (
 ) => ToolResult;
 
 /**
- * One external command, run in `cwd` with its output captured and nothing on its stdin, resolving
- * once it exits: a status read (`wrangler whoami`, `gh api user`) the event loop keeps turning
- * through. `signal` stops waiting on one started ahead that turns out not to be needed: it resolves
- * at once, and the command is left to finish on its own without holding this process open. Not
- * killed: a sign-in check may be refreshing a single-use OAuth token, and one cut off mid-refresh
- * would leave the CLI signed out. For the same reason it runs, off Windows, in a process group of its
- * own, out of reach of the SIGINT a terminal's Ctrl-C sends while a sign-in holds the terminal, as
- * `cf` does (cf-client.ts).
+ * A status read (`wrangler whoami`, `gh api user`): output captured, nothing on stdin. `signal` stops
+ * waiting on one no longer needed, leaving it to finish without holding this process open. Never
+ * killed, and off Windows in a process group of its own: it may be refreshing a single-use token
+ * (see cf-client.ts `firstAlone`).
  */
 export type CaptureTool = (
   command: string,

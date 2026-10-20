@@ -6,7 +6,7 @@ import { cfClient } from "../cf-client.ts";
 import { parseDeployment, valueAtPath } from "../deployment-file.ts";
 import { FAKE_ACCOUNT, fakeCf, type FakeReply } from "../fake-cf.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
-import { CANCEL, hostedAccount, scratchProject, scriptedPrompter, TEMPLATE, testCatalog, testContext } from "../test-support.ts";
+import { CANCEL, hostedAccount, reversing, scratchProject, scriptedPrompter, TEMPLATE, testCatalog, testContext } from "../test-support.ts";
 import { INVENTORY_LABEL } from "../cached-reads.ts";
 import { run } from "./import.ts";
 
@@ -255,12 +255,6 @@ test("rejects malformed arguments", async (t) => {
 function command(args: string[]): string {
   const end = args.findIndex((arg) => arg.startsWith("-"));
   return args.slice(0, end < 0 ? undefined : end).join(" ");
-}
-
-/** A `delay` settling the `cf` calls in the reverse of the order they started: the first waits longest. */
-function reversing(): (args: string[]) => number {
-  let started = 0;
-  return () => 60 - 10 * started++;
 }
 
 test("prints the same, byte for byte, whichever read finishes first", async (t) => {

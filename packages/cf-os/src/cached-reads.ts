@@ -1,7 +1,5 @@
-// The account reads an interactive command makes, each made once per run and shared: by the step that
-// needs it, by a replay after Esc (back.ts), and by a read started ahead of its step while earlier
-// questions are answered. Waiting on one still in flight shows the prompter's spinner, labelled with
-// what it reads.
+// The account reads an interactive command makes, each made once per run and shared by the step that
+// needs it, a replay after Esc (back.ts), and a read started ahead of its step.
 
 import type { CloudflareClient } from "./core/client.ts";
 import { waitOn, type Prompter } from "./prompt.ts";
@@ -41,12 +39,9 @@ interface CachedRead {
 
 /**
  * Two views of `client` over one cache, each read answered once per method and arguments, its
- * failure included. Going back a question runs every question before it again, with the reads
- * between them; those then cost no `cf` call. `quiet` draws nothing: it starts reads ahead of the
- * step that needs them. `loud(prompter)` is what a step reads through: a read still in flight shows
- * the prompter's spinner while the step waits on it, and one already settled answers at once. A
- * create or its dry run is never cached: `quiet` passes it straight through, and `loud` shows the
- * spinner while it runs. `pending` says whether any read made so far is still in flight.
+ * failure included. `quiet` draws nothing, for starting reads ahead. `loud(prompter)` shows the
+ * prompter's spinner while a step waits on a read still in flight, or on a create, which is never
+ * cached. `pending` says whether any read is still in flight.
  */
 export function cachedReads(client: CloudflareClient): {
   quiet: CloudflareClient;

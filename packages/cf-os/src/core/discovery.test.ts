@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { cfClient } from "../cf-client.ts";
 import { FAKE_ACCOUNT, fakeCf } from "../fake-cf.ts";
-import { hostedAccount as fakeHostedAccount } from "../test-support.ts";
+import { hostedAccount as fakeHostedAccount, reversing } from "../test-support.ts";
 import { CfAuthError } from "./client.ts";
 import { discover, fetchInventory, type Inventory } from "./discovery.ts";
 import { editsAsFragment } from "./edits.ts";
@@ -151,15 +151,6 @@ test("survives an account with no Zero Trust organization, but not missing crede
 function command(args: string[]): string {
   const end = args.findIndex((arg) => arg.startsWith("-"));
   return args.slice(0, end < 0 ? undefined : end).join(" ");
-}
-
-/**
- * A `delay` for {@link fakeCf} that settles the calls in the reverse of the order they started: the
- * first waits longest.
- */
-function reversing(): (args: string[]) => number {
-  let started = 0;
-  return () => 60 - 10 * started++;
 }
 
 test("reads everything at once, and gives the same inventory whichever read finishes first", async () => {

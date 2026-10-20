@@ -40,16 +40,13 @@
     // See docs/customization.md#workers-and-routing.
     "websearch": { "name": "<WEBSEARCH_WORKER_NAME>" },
 
-    // The example custom Gatekeeper. Ignored when customGatekeeper.enabled below is false.
     "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
     "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
   },
 
-  // Optional upstream Gatekeepers (GitHub, Google, Slack, ...), keyed by slug, each its own Worker:
+  // Optional upstream Gatekeepers (GitHub, Slack, ...), keyed by slug, each its own Worker:
   //   "github": { "name": "<router-name>-gk-github" }
-  // "vars" sets plain-text vars, never BASE_URL (the deploy sets it) or a secret: OAuth
-  // credentials go to the Worker. `pnpm cf-os secrets` sets them; `check` warns while one is
-  // missing. `pnpm cf-os init` lists the slugs on offer.
+  // `pnpm cf-os init` offers them; `pnpm cf-os secrets` sets their OAuth credentials.
   // Reference: docs/customization.md#optional-gatekeepers
   "gatekeepers": {},
 
@@ -105,8 +102,7 @@
     // }
   },
 
-  // The example custom integration. false deploys no Worker for it, and name and message (displayed
-  // to agents when it is enabled in /admin) are then ignored.
+  // Displayed to agents when the example custom integration is enabled in /admin. false deploys none.
   // Reference: docs/customization.md#custom-gatekeepers
   "customGatekeeper": {
     "enabled": true,

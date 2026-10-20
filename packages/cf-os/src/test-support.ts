@@ -53,14 +53,8 @@ function describeChoices(choices: Choice[]): Pick<Asked, "choices" | "hints"> {
 /**
  * A {@link Prompter} answering from `script`, in order. Each prompt must match its step's expected
  * message, every text answer must pass the prompt's own validation, and a prompt past the end of the
- * script fails the test -- so a script is also an assertion about what was asked. A password answer
- * the validation refuses is asked again, as the terminal does, from the next step; the record never
- * holds a password answer. Its {@link Prompter.backable} view answers from the same script, and only
- * there does a step answering {@link BACK} go back.
- *
- * `answered` holds the message of every question answered so far, in order, and `waited` the message
- * of every {@link Prompter.busy} wait, whose work it simply runs: together with `fakeCf`'s `stamp`,
- * what was open when a read started, and what a step showed it was waiting on.
+ * script fails the test -- so a script is also an assertion about what was asked. `answered` and
+ * `waited` record, in order, the questions answered and the {@link Prompter.busy} waits it ran.
  */
 export function scriptedPrompter(
   script: Step[],
@@ -220,6 +214,12 @@ export const TEMPLATE = `{
   }
 }
 `;
+
+/** A `delay` for `fakeCf` settling the calls in the reverse of the order they started: the first waits longest. */
+export function reversing(): (args: string[]) => number {
+  let started = 0;
+  return () => 60 - 10 * started++;
+}
 
 /** A hosted instance "acme" deployed before Web Search shipped, as `cf` would print it. */
 export function hostedAccount(): Record<string, FakeReply> {

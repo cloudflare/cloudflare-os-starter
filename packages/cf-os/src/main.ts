@@ -348,11 +348,10 @@ function version(): string {
 }
 
 /**
- * Ends the process with exit code `code`. A cancelled or failed run (any code but 0) exits once
- * stdout and stderr have flushed: a `cf` read still in flight, in the background or beside the one
- * that failed, would otherwise hold it open until the read ends; exiting leaves it to finish on its
- * own (cf-client.ts). Pipes are asynchronous on some platforms, and exiting before they drain would
- * drop lines. A successful run is left to the event loop, which ends with its own work.
+ * Ends the process with exit code `code`. A failed or cancelled run exits once stdout and stderr have
+ * flushed, rather than waiting on a `cf` read still in flight, which is left to finish on its own: it
+ * may be refreshing a single-use token (see cf-client.ts `firstAlone`). A successful run is left to
+ * the event loop.
  */
 export async function finish(code: number, exit: (code: number) => void = process.exit): Promise<void> {
   if (code === 0) {

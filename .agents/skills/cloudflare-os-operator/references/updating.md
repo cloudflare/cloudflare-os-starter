@@ -40,14 +40,14 @@ A dependency's new major can need code changes as well as a version bump, such a
 - Vars a Worker reads that no base config declares, in `env.d.ts` or as `env.X ?? <default>` in its code. Upstream's deploy service sets these itself, so `generateConfigs()` has to as well, and nothing fails without them: Web Search's `CF_AI_GATEWAY` silently falls back to `default`.
 - New bindings.
 - Routes that need adding to lists the starter overrides, such as `assets.run_worker_first`.
-- For the optional Gatekeepers a deployment selects: their configs are upstream's as shipped, plus the common block, the deployment's `vars` and `BASE_URL`. A var upstream's deploy service starts setting for them has to be set in `generateConfigs()` too, and a new `var` input in a package's `deploy-inputs.json` makes `check` fail until `gatekeepers.<slug>.vars.<NAME>` is set, which `init` does not ask for: set it by hand, or teach `init` to ask.
+- Optional Gatekeepers' configs are upstream's plus the common block, their `vars` and `BASE_URL`; a var upstream's deploy service starts setting for them goes in `generateConfigs()`, and a new `var` input fails `check` until `gatekeepers.<slug>.vars` sets it (`init` does not ask).
 - A change in how upstream produces its configs.
 
 `pnpm cf-os check` generates and validates the configs, so it is the test for this section.
 
 ## A New Upstream Gatekeeper Or Worker *(starter)*
 
-The starter's own Workers are a fixed set. Upstream's other Gatekeepers come from the catalog `packages/cf-os/src/gatekeeper-catalog.ts` builds from the submodule with upstream's release code, so a new one arrives as *optional*: `init` offers it, and nothing deploys it until a deployment selects it under `gatekeepers`. That holds for one newly added to upstream's `PREINSTALL` (`cloudflare-os/scripts/release/manifest-lib.ts`) too, which the hosted flow installs everywhere, unless the catalog excludes it: upstream marking it not installable, a config key or input upstream's own release code rejects, a KV, R2, service or Artifacts binding, or another Worker's name as an input. An excluded one is never offered, and a hand-added `gatekeepers.<slug>` fails `check` with the reason, so it cannot stay optional: making it built-in is the only way to deploy it. Say so in the summary, and leave an offered one optional or, to keep the starter on the hosted topology, make it built-in, which needs all of:
+The starter's own Workers are a fixed set; upstream's other Gatekeepers come from the catalog (`packages/cf-os/src/gatekeeper-catalog.ts`), so a new one, even a new `PREINSTALL`, arrives as optional unless the catalog excludes it, which `check` reports. Say which in the summary. Making one built-in, to keep the hosted topology or deploy an excluded one, needs all of:
 
 - A `PACKAGE_DIRS` entry.
 - Bindings to it from the Workshop and the router in `generateConfigs()`.
@@ -60,11 +60,9 @@ The starter's own Workers are a fixed set. Upstream's other Gatekeepers come fro
 
 The naming row also makes its slug a built-in one, so a deployment that had selected it under `gatekeepers` fails `check` until the entry moves to `workers`.
 
+A selected Gatekeeper the new pin excludes fails `check` on `gatekeepers.<slug>` with the reason. Report it to the operator, and do not work around it in `deployment.jsonc`.
+
 A `gatekeeper-*` package without a `wrangler.jsonc` is a library, not a Worker.
-
-## A Selected Gatekeeper The New Pin Excludes *(starter)*
-
-The catalog fails closed. When the range changes a Gatekeeper a deployment selects so that the catalog excludes it, `pnpm cf-os check` fails on `gatekeepers.<slug>` with the reason: upstream marking it not installable, a config key or input upstream's own release code rejects, a KV, R2, service or Artifacts binding, or another Worker's name as an input. A slug upstream renamed or removed fails as one it has no such Gatekeeper for, listing those it has. Do not work around it in `deployment.jsonc`. Report it to the operator: the deployment cannot take that pin until the starter supports what changed, or the entry is removed, which leaves the Worker running unbound.
 
 ## Build Tooling *(starter)*
 

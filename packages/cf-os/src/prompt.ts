@@ -119,9 +119,8 @@ export function terminalPrompter(): Prompter | null {
 
 /**
  * `output`, on which, once `escaped()`, clack's cancelled frame is drawn grey rather than red: going
- * back is not cancelling. Clack colours red only the step symbol, and the bar beside a message that
- * wraps; both are computed as clack computes them, at write time, so they match under any colour
- * setting. Clack redraws whole lines, so each arrives intact in one write.
+ * back is not cancelling. The red parts are recomputed as clack computes them, so they match under
+ * any colour setting.
  */
 function rewound(output: Writable, escaped: () => boolean): Writable {
   const write = (chunk: unknown, ...rest: unknown[]) => {
@@ -152,10 +151,8 @@ const SHOW_CURSOR = "\x1b[?25h";
 type TerminalInput = Readable & { isTTY?: boolean; isRaw?: boolean; setRawMode?: (mode: boolean) => unknown };
 
 /**
- * Holds a terminal `input` while a spinner shows: raw, so a key typed is neither echoed into the
- * spinner's line nor left for the next prompt, and read, so Ctrl-C, which raw mode delivers as a
- * byte rather than a signal, still quits (`interrupt`). Returns how to put it back as it was: a
- * stream left flowing would keep the process alive, and one left raw would confuse the next prompt.
+ * Holds a terminal `input` raw while a spinner shows, so a key typed is not echoed into it, and
+ * reads it, so Ctrl-C, a byte in raw mode, still quits (`interrupt`). Returns how to put it back.
  */
 function holdInput(input: Readable, interrupt: () => void): () => void {
   const terminal = input as TerminalInput;
@@ -180,13 +177,9 @@ function holdInput(input: Readable, interrupt: () => void): () => void {
 }
 
 /**
- * {@link Prompter.busy} on `output`: one line, a clack spinner frame and the message of the newest
- * call still in flight, however many overlap. It erases itself once the last settles, leaving the
- * cursor at the start of that empty line, where whatever comes next draws as if it had never shown.
- * The first frame waits for a timer, so work already settled (a read cached earlier) draws nothing.
- *
- * While it shows, Ctrl-C quits as on a prompt: `Cancelled.` and exit code 130, rather than Node's
- * default of dying with the spinner's line drawn and the cursor hidden.
+ * {@link Prompter.busy} on `output`: one line showing the newest call still in flight, erased once
+ * the last settles. The first frame waits for a timer, so work already settled draws nothing. Ctrl-C
+ * quits as on a prompt.
  */
 function spinner(input: Readable, output: Writable): NonNullable<Prompter["busy"]> {
   /** The calls in flight, oldest first. */
@@ -246,9 +239,8 @@ function spinner(input: Readable, output: Writable): NonNullable<Prompter["busy"
 
 /**
  * A {@link Prompter} drawing with clack on `streams`, the process's own by default. With `back`, Esc
- * throws {@link Back}: clack cancels on Esc and Ctrl-C alike, so a listener ahead of clack's notes
- * which key it was. Going back is not cancelling, so the question is then left drawn as cancelled
- * but grey rather than red, followed by a grey "Rewound." line. Ctrl-C still cancels.
+ * throws {@link Back}; clack cancels on Esc and Ctrl-C alike, so a listener ahead of clack's notes
+ * which key it was.
  */
 export function clackPrompter({ input = process.stdin, output = process.stdout }: Streams = {}, back = false): Prompter {
   return clackView(input, output, back, spinner(input, output));

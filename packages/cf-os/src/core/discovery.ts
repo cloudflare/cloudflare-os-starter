@@ -40,8 +40,7 @@ export interface Inventory {
  * organization's first, so a run fails the same way however the reads interleave.
  */
 export async function fetchInventory(client: CloudflareClient, accountId: string): Promise<Inventory> {
-  // Every read starts before the first await; each carries a no-op catch so one that fails while an
-  // earlier one is still awaited is not an unhandled rejection. The awaits below still see it.
+  // Every read starts before the first await.
   const reads = {
     organization: quietly(client.getOrganization(accountId)),
     workers: quietly(client.listWorkers(accountId)),
@@ -118,10 +117,9 @@ export interface Discovery {
 }
 
 /**
- * Matches `inventory` against instance `n`'s naming. Each `N-gk-<slug>` Worker beyond the built-in
- * ones is deployable when `offeredSlugs` (the catalog's) has its slug; a repeat install when its
- * slug is one of those, or a built-in's, plus digits, as the hosted deploy names a second install
- * (`google2`); otherwise unknown, with `excluded`'s reason when the catalog names one.
+ * Matches `inventory` against instance `n`'s naming. An `N-gk-<slug>` Worker beyond the built-in ones
+ * is deployable when `offeredSlugs` has its slug, a repeat install when it is a known slug plus
+ * digits (`google2`), and otherwise unknown, with `excluded`'s reason if any.
  */
 export function discover(
   n: string,

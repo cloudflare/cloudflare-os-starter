@@ -6,8 +6,7 @@
 // Optional by design. When the client has no credentials the checks are skipped with one line rather
 // than failing, so an offline check keeps working; when it does have them, a mismatch is an error.
 //
-// An optional Gatekeeper's missing OAuth secrets are warnings instead (`gatekeeperSecretWarnings`):
-// its Worker deploys and runs without them, and only connecting through it fails until they are set.
+// An optional Gatekeeper's missing OAuth secrets are warnings instead (`gatekeeperSecretWarnings`).
 
 import {
   CfAuthError,
@@ -89,11 +88,7 @@ function gatewayToFind(config: DeploymentConfig): string | undefined {
     : undefined;
 }
 
-/**
- * Starts every read `config` calls for, at once, in the order they are judged. Each carries a no-op
- * catch: one that fails while an earlier one is still awaited is not an unhandled rejection, and the
- * await that reaches it still sees the failure.
- */
+/** Starts every read `config` calls for, at once, in the order they are judged. */
 function startReads(client: CloudflareClient, config: DeploymentConfig): AccountReads {
   return {
     organization: started(client.getOrganization(config.accountId)),
@@ -187,10 +182,8 @@ export function prose(names: string[], conjunction: "and" | "or"): string {
 export const SECRET_READS_AT_ONCE = 4;
 
 /**
- * Starts `task` on each of `items`, at most `limit` at a time, each next one as an earlier one
- * settles, and returns their promises in `items`' order. The first `limit` start before it returns.
- * Each carries a no-op catch, so one that fails before anything awaits it is not an unhandled
- * rejection; awaiting it still throws.
+ * Starts `task` on each of `items`, at most `limit` at a time, and returns their promises in
+ * `items`' order, each {@link started}.
  *
  * `mapConcurrent` (run-tasks.ts) is the same pool, but resolves only once every task has, and the
  * core cannot import it.
@@ -213,16 +206,9 @@ export function startBounded<T, R>(items: readonly T[], limit: number, task: (it
 }
 
 /**
- * One line of warning for each optional Gatekeeper in `config` whose Worker lacks a secret its
- * catalog entry reads, pointing at `cf-os secrets <slug>`, which shows the setup and sets them, with
- * `configFlag` (` --config <path>`, or empty for deployment.jsonc) so it reads the same file. A
- * Worker not deployed yet lacks all of them, and is told so. A Gatekeeper that takes no secrets is
- * not looked up. The Workers are read {@link SECRET_READS_AT_ONCE} at a time.
- *
- * Never a problem: `wrangler deploy` keeps a Worker's secrets, so they can as well be set after the
- * deploy as before it. Signed out, or with a client that cannot run, it stops quietly with what it
- * found, as {@link verifyAccount} skips; any other failure to read a Worker's secrets is a warning
- * of its own.
+ * One warning for each optional Gatekeeper in `config` whose Worker lacks a secret, pointing at
+ * `cf-os secrets <slug>` with `configFlag`. Never a problem: a deploy keeps a Worker's secrets.
+ * Signed out, it stops quietly with what it found, as {@link verifyAccount} skips.
  */
 export async function gatekeeperSecretWarnings(
   client: CloudflareClient,

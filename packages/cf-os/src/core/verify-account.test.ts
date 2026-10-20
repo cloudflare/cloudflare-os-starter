@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { cfClient } from "../cf-client.ts";
 import { fakeCf, workerSecretsReply, type FakeReply } from "../fake-cf.ts";
-import { testCatalog, testCatalogWithGitlab } from "../test-support.ts";
+import { reversing, testCatalog, testCatalogWithGitlab } from "../test-support.ts";
 import { CfAuthError, CfUnavailableError, type CloudflareClient } from "./client.ts";
 import type { DeploymentConfig } from "./deployment-config.ts";
 import type { GatekeeperCatalog } from "./gatekeepers.ts";
@@ -252,15 +252,6 @@ test("turns any other failure to read a Gatekeeper's secrets into a warning, not
     "Warning: could not read acme-gk-github's secrets to check for CLIENT_ID and CLIENT_SECRET: [10013] internal error",
   ]);
 });
-
-/**
- * A `delay` for {@link fakeCf} that settles the calls in the reverse of the order they started: the
- * first waits longest.
- */
-function reversing(): (args: string[]) => number {
-  let started = 0;
-  return () => 60 - 10 * started++;
-}
 
 /** {@link matchingAccount} as `cf` prints it, with `changes` on top. */
 function fakeAccount(changes: Record<string, FakeReply> = {}): Record<string, FakeReply> {

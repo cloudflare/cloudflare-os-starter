@@ -30,9 +30,8 @@ interface Ran {
 }
 
 /**
- * A spawn recording every run. `wrangler secret bulk` succeeds and, unless `parses` is false (as
- * when Wrangler cannot read its input and still exits 0), adds the names on its stdin to the
- * Worker's secrets in `account`. `status` makes it fail instead.
+ * A spawn recording every run, whose `wrangler secret bulk` adds to `account` unless `parses` is false
+ * or `status` fails it.
  */
 function recordingSpawn(account: MemoryAccount, { parses = true, status = 0 } = {}): { spawn: SpawnTool; ran: Ran[] } {
   const ran: Ran[] = [];

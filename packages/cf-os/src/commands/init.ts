@@ -9,17 +9,11 @@
 // from clone to running in one command. It offers the `cf` sign-in up front and Wrangler's before
 // the deploy: a project cloned by hand never passed through scaffolding, which used to offer them.
 //
-// It offers the optional Gatekeepers the submodule's catalog holds (gatekeeper-catalog.ts) beside the
-// example custom one. An OAuth Gatekeeper's credentials are asked for, masked, once the deploy is
-// agreed to, and travel in memory to `cf-os deploy`, which sets them once every Worker has deployed
-// (gatekeeper-secrets.ts); one whose Worker the account already runs is asked about, and its
-// secrets set, before the deploy question. Declined, each is left to `cf-os secrets`.
+// It offers the catalog's optional Gatekeepers (gatekeeper-catalog.ts), and their OAuth credentials,
+// held in memory for `cf-os deploy` to set (gatekeeper-secrets.ts).
 //
-// Until the file is written, Esc goes back to the previous question (back.ts). Going back runs the
-// questions before it again, with the reads between them, which a cache answers; so nothing is
-// created before the last question: the Access step asks both its questions first. At a terminal, a
-// step waiting on `cf` shows a spinner, and reads start early, in the background, while earlier
-// questions are answered, whether or not the answers turn out to need them.
+// Until the file is written, Esc goes back a question (back.ts), replaying the reads from a cache;
+// so nothing is created before the last question.
 //
 // Interactive only. Without a terminal it refuses, pointing at `import` and `access`, which take
 // every answer as a flag or from the file. Signed out of `cf`, it still runs: the account-aware
@@ -434,13 +428,9 @@ function gatekeepersIn(file: Record<string, unknown>): string[] {
 }
 
 /**
- * The optional Gatekeepers the account already runs for instance `n`: the `<n>-gk-<slug>` Workers
- * `discovered` for it and, when the file is this deployment's ({@link fileIsInstance}, as on a rerun
- * after a deploy), the file's `gatekeepers` entries whose Worker exists, under whatever name it has.
- * Any other file may be another deployment's, and binding the Workers it names would deploy over
- * them, so its entries are left out. Where the file and discovery name different Workers for one slug, the file may name a
- * Worker renamed by hand, so the operator picks; `passedOver` holds the instance's Worker when it is
- * not picked, which loses its binding as a deselected one does.
+ * The optional Gatekeepers the account already runs for instance `n`: those `discovered`, plus the
+ * file's entries whose Worker exists when the file is the instance's ({@link fileIsInstance}). Where
+ * the two differ the operator picks; `passedOver` holds the Worker not picked.
  */
 async function liveGatekeepers(
   session: Session,
@@ -488,11 +478,8 @@ async function liveGatekeepers(
 }
 
 /**
- * The example custom Gatekeeper's Worker the account runs for instance `n` in account `accountId`, if
- * any: the file's `workers.customGatekeeper.name` when the file is this deployment's
- * ({@link fileIsInstance}), else `<n>-gk-custom`. None when that file deploys no custom Gatekeeper, as
- * nothing binds it. Leaving the custom Gatekeeper out unbinds this Worker, with its Durable Object's
- * state.
+ * The example custom Gatekeeper's Worker the account runs for instance `n`, if any: the file's name
+ * for it when the file is the instance's ({@link fileIsInstance}), else `<n>-gk-custom`.
  */
 function liveCustomGatekeeper(file: Record<string, unknown>, accountId: string, n: string, workers: CfWorker[]): string[] {
   const own = fileIsInstance(file, accountId, n);
@@ -501,11 +488,7 @@ function liveCustomGatekeeper(file: Record<string, unknown>, accountId: string, 
   return workers.some((worker) => worker.name === name) ? [name] : [];
 }
 
-/**
- * The custom Gatekeeper's Worker name the file gives instance `n` in account `accountId`: its
- * `workers.customGatekeeper.name` when the file is this deployment's ({@link fileIsInstance}) and the
- * name is filled in.
- */
+/** The file's filled-in custom Gatekeeper Worker name, when the file is the instance's ({@link fileIsInstance}). */
 function fileCustomGatekeeper(file: Record<string, unknown>, accountId: string, n: string): string | undefined {
   if (!fileIsInstance(file, accountId, n)) return undefined;
   const named = valueAtPath(file, ["workers", "customGatekeeper", "name"]);
@@ -667,9 +650,7 @@ async function takeover(
   const client = session.client!;
   const instance = chosen ?? await pickInstance(ctx, client, account.id, "pnpm cf-os import --account <id>");
   if (!instance) return null;
-  // One spinner for the six reads, as in import: it clears when fetchInventory settles, on its first
-  // failure too, though later reads are still in flight. fetchInventory starts or reuses every read
-  // synchronously, so `pending` already covers them all.
+  // One spinner for the six reads, as in import.ts.
   const reading = fetchInventory(session.reads!, account.id);
   const inventory = await (session.pending() ? waitOn(prompter, INVENTORY_LABEL, () => reading) : reading);
   const discovery = discoverInstance(instance, inventory, catalog);
@@ -806,10 +787,8 @@ function reportSecretsLater(
 }
 
 /**
- * {@link askAndSetSecrets} for `slugs`, each failure reported with the `cf-os secrets` command that
- * tries again. Resolves to the values entered for a `"deferred"` upload, which never leave memory,
- * and the Gatekeepers whose credentials could not be set, which make init exit 1. `present` holds
- * their secret listings, started ahead ({@link readSecretsAhead}).
+ * {@link askAndSetSecrets} for `slugs`: the values entered for a `"deferred"` upload, and the
+ * Gatekeepers whose credentials could not be set, which make init exit 1.
  */
 async function askSecrets(
   ctx: Context,

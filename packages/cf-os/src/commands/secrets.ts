@@ -1,15 +1,7 @@
 // `cf-os secrets [<slug>...] [--config <path>]`
 //
-// Sets the OAuth credentials of the deployment's optional Gatekeepers on their Workers: for each
-// named one (by default, every one `gatekeepers` selects that reads secrets) whose Worker lacks a
-// secret, prints upstream's setup steps and the redirect URI, asks for the values, masked, and
-// uploads them (gatekeeper-secrets.ts). Prints `{ set: [{ gatekeeper, worker, secrets }] }` as JSON
-// on stdout: secret names, never values.
-//
-// It never creates a Worker: one not deployed yet is left alone, and the run fails saying to deploy
-// first. A Gatekeeper whose lookup or upload fails fails the run too, once the rest have been asked
-// about, and what was set still goes to stdout. Without a terminal it fails naming the
-// `wrangler secret put` commands, which ask for each value themselves.
+// Asks for and sets the OAuth credentials the optional Gatekeepers' Workers lack
+// (gatekeeper-secrets.ts). Never creates a Worker: one not deployed yet fails the run.
 
 import { readFile } from "node:fs/promises";
 import { configPath, displayPath, type CommandArgs, type Context } from "../context.ts";

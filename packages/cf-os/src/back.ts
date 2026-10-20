@@ -3,7 +3,6 @@
 // again with its earlier answer as the default. At the first question there is nothing to go back
 // to, so Esc there cancels, as it does anywhere else. A replay repeats whatever ran between the questions,
 // so that has to be reads, which the command can cache; nothing it creates may come before a question.
-// Waiting on one draws no spinner during a replay: the reads are cached, and nothing is being asked.
 
 import type { Output } from "./context.ts";
 import {

@@ -60,9 +60,8 @@ function account(overrides: Record<string, FakeReply> = {}): Record<string, Fake
 type ToolReplies = Record<string, { status?: number; stdout?: string }>;
 
 /**
- * Deps that record every tool run and every deploy, instead of running them, offering `catalog`.
- * `wrangler secret bulk` adds the names on its stdin to the Worker's entry in `secrets`, as the
- * account would.
+ * Deps recording every tool run and deploy instead of running them, whose `wrangler secret bulk` adds
+ * to `secrets`.
  */
 function recording(tools: ToolReplies = {}, catalog: GatekeeperCatalog = testCatalog(), secrets: Record<string, string[]> = {}) {
   const ran: string[] = [];
@@ -96,9 +95,8 @@ function recording(tools: ToolReplies = {}, catalog: GatekeeperCatalog = testCat
 }
 
 /**
- * Runs `cf-os init --out init.jsonc` in a scratch project, answering from `script`. Each `cf` call
- * is stamped with the questions answered when it started (its `at`), and each line printed with
- * them too (`logged`). `delay` times the `cf` calls (fakeCf's).
+ * Runs `cf-os init --out init.jsonc` in a scratch project, answering from `script`, each `cf` call and
+ * line printed stamped with the questions answered by then.
  */
 async function init(
   t: Parameters<typeof scratchProject>[0],
@@ -694,10 +692,7 @@ const WITH_GITHUB: Step[] = [
   ["What it tells agents", DEFAULT],
 ];
 
-/**
- * What init says, for a new GitHub Gatekeeper, when nothing is deployed now: the command names the
- * file written, init.jsonc (`--out`), as `cf-os secrets` would otherwise read deployment.jsonc.
- */
+/** What init says, for a new GitHub Gatekeeper, when nothing is deployed now: the command names `--out`'s file. */
 const SECRETS_LATER = "\nAfter deploying, `pnpm cf-os secrets github --config init.jsonc` sets the github Gatekeeper's " +
   "OAuth credentials (redirect URI: https://acme-os.acme-sub.workers.dev/gatekeeper/github/oauth).";
 

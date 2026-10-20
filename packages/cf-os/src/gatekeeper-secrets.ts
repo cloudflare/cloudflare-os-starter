@@ -9,11 +9,6 @@
 // exist. And its exit code proves nothing: input it cannot parse is reported and exits 0, so every
 // upload is confirmed by listing the Worker's secrets again.
 //
-// The first read of each Worker's secrets starts together, a few at a time, before anything is
-// asked (readSecretsAhead), and the Gatekeepers are still asked about one by one, in order: a
-// failed read is reported at its Gatekeeper's turn. The read confirming an upload is always a fresh
-// one, made after it.
-//
 // I/O, beside cf-client.ts. Only lazily loaded commands import it.
 
 import { resolve } from "node:path";
@@ -183,22 +178,11 @@ function track<T>(read: Promise<T>): Promise<T> {
 }
 
 /**
- * For each of `slugs` whose catalog entry reads secrets and whose Worker lacks one: prints upstream's
- * setup steps and the redirect URI (core/gatekeepers.ts `secretSetup`), asks whether to enter the
- * values now, and asks for each missing one, masked. With `upload: "now"` they are uploaded at once,
- * and a Worker not deployed yet is skipped, as nothing may be uploaded to it. With `"deferred"` they
- * are returned for the caller to upload after the deploy that creates the Worker.
- *
- * One Gatekeeper's failed lookup or upload is reported, with the `cf-os secrets` command that tries
- * again, and the rest are still asked about: what was set before it stays in the outcome.
- *
- * Every Worker's first read starts at once, before the first question: from `present`, reads a
- * caller started earlier ({@link readSecretsAhead}), or else started here. They are taken in
- * `slugs`' order, so what is printed and asked does not depend on which finishes first. A slug
- * missing from `present` is read when its turn comes. The read confirming an upload is always
- * fresh.
- *
- * `origin` is the public origin the redirect URI is on: `publicOrigin(config)` unless given.
+ * For each of `slugs` whose Worker lacks a secret, in order: prints the setup steps and redirect URI
+ * on `origin`, and asks for each missing value, masked. `upload: "now"` uploads at once, skipping a
+ * Worker not deployed yet; `"deferred"` returns them for the caller to upload after the deploy. One
+ * Gatekeeper's failure is reported and the rest are still asked about. `present` holds reads started
+ * ahead ({@link readSecretsAhead}).
  */
 export async function askAndSetSecrets(
   ctx: Context,

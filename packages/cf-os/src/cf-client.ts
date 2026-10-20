@@ -54,14 +54,10 @@ export type SpawnCf = (
 ) => Promise<{ status: number | null; stdout: string; stderr: string; error?: Error }>;
 
 /**
- * {@link SpawnCf} on `spawn`: asynchronous, so the event loop keeps turning while `cf` runs (a
- * spinner can animate, other reads can run beside it). stdin is empty: `cf` never prompts here.
- *
- * A `cf` still running when this process exits, cancelled or failed, is left to finish on its own,
- * never killed: on an OAuth sign-in it may be refreshing the access token, and the refresh token is
- * single-use, so one cut off mid-refresh would leave `cf` signed out. Off Windows it runs in a process
- * group of its own for the same reason, out of reach of the SIGINT a terminal's Ctrl-C sends to its
- * foreground group. Exiting does not wait on it either (main.ts `finish`).
+ * {@link SpawnCf} on `spawn`: asynchronous, so a spinner can animate and other reads run beside it.
+ * stdin is empty: `cf` never prompts here. A `cf` still running when this process exits is left to
+ * finish, never killed, and off Windows runs in a process group of its own, out of reach of a
+ * terminal's Ctrl-C: it may be refreshing a single-use token ({@link firstAlone}).
  */
 const spawnProcess: SpawnCf = (command, args, { cwd, env }) => new Promise((finish) => {
   let stdout = "";
@@ -87,15 +83,12 @@ const spawnProcess: SpawnCf = (command, args, { cwd, env }) => new Promise((fini
 });
 
 /**
- * `spawn`, sending the first call of every burst alone: a call made while no other is running goes
- * at once, and the calls made while it runs wait until it has settled, then run together. Unless
- * `CLOUDFLARE_API_TOKEN` is set. On an OAuth sign-in, `cf` refreshes an expired access token by
- * itself, without a lock, and Cloudflare's refresh token is single-use: `cf` processes started
- * together on an expired token would each spend the same one, and all but the first would fail, or
- * sign `cf` out. The token can expire at any point of a run (init waits minutes on questions between
- * its reads), so the gate closes again whenever no call is running: the call that ends an idle spell
- * refreshes alone, and the rest, run after it, read what it wrote. A token never needs refreshing,
- * so with one set nothing waits.
+ * `spawn`, sending the first call of every burst alone: a call made while none is running goes at
+ * once, and those made while it runs wait for it to settle, then run together. On an OAuth sign-in,
+ * `cf` refreshes an expired access token by itself, without a lock, and Cloudflare's refresh token
+ * is single-use: `cf` processes started together on an expired token would each spend it, and all
+ * but the first would fail or sign `cf` out. The token can expire at any point of a run, so the gate
+ * closes again whenever no call is running. With `CLOUDFLARE_API_TOKEN` set nothing waits.
  */
 export function firstAlone(spawn: SpawnCf): SpawnCf {
   let inFlight = 0;

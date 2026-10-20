@@ -52,11 +52,8 @@ export function fileIsInstance(file: Record<string, unknown>, accountId: string,
 }
 
 /**
- * The file's `gatekeepers` entries to remove when the file is not instance `n`'s in account
- * `accountId` ({@link fileIsInstance}): it may be another deployment's, and binding the Workers it
- * names would deploy over them (`cf-os init`'s takeover leaves them out too). Slugs `discovery` found
- * for `n` stay, as its edits rename them to the instance's own Workers. Each removal comes with a
- * note naming the Worker left alone.
+ * The file's `gatekeepers` entries to remove, with a note each, when it is not the instance's
+ * ({@link fileIsInstance}). Slugs discovery found stay: its edits rename them.
  */
 export function foreignGatekeepers(
   file: Record<string, unknown>,
@@ -90,11 +87,8 @@ const UNDISCOVERED_WORKERS = [
 
 /**
  * The edits setting the custom Gatekeeper's and Error Reporter's Worker names back to placeholders
- * when the file is another deployment's: it names a router, but is not instance `n`'s in account
- * `accountId` ({@link fileIsInstance}). Discovery never writes those two, and once `--out` writes the
- * instance's router and account the file reads as the instance's own, so the other deployment's
- * names would stand as this one's: a deploy, or a later takeover, would deploy over its Workers.
- * The placeholders hold the deploy back until they are set; `cf-os init` asks for them.
+ * when the file names a router but is not the instance's ({@link fileIsInstance}): discovery never
+ * writes those two, so `--out` would otherwise keep another deployment's names.
  */
 export function foreignWorkers(
   file: Record<string, unknown>,
