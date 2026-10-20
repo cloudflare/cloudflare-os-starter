@@ -11,7 +11,10 @@
 
 import type { Readable, Writable } from "node:stream";
 import { styleText } from "node:util";
-import { cancel, confirm, isCancel, multiselect, password, select, text, unicode, type Option } from "@clack/prompts";
+import {
+  cancel, confirm, isCancel, multiselect, password, S_BAR, S_STEP_CANCEL, select, symbol, symbolBar, text, unicode,
+  type Option,
+} from "@clack/prompts";
 
 /** One choice in a {@link Prompter.select}. */
 export interface Choice<T extends string = string> {
@@ -114,33 +117,28 @@ export function terminalPrompter(): Prompter | null {
   return isInteractive() ? clackPrompter() : null;
 }
 
-/** How clack moves the cursor down and up: a newline, or CSI A (up) and B (down) with a count. */
-// eslint-disable-next-line no-control-regex -- terminal escapes are what is matched
-const CURSOR_MOVES = /(\n)|\x1b\[(\d*)([AB])/g;
-
 /**
- * `output`, counting the rows clack has moved the cursor down since it began a prompt. Clack wraps
- * each frame to the terminal's width itself, so every line it writes is one row, and it moves the
- * cursor up and down only with newlines and CSI A and B.
+ * `output`, on which, once `escaped()`, clack's cancelled frame is drawn grey rather than red: going
+ * back is not cancelling. Clack colours red only the step symbol, and the bar beside a message that
+ * wraps; both are computed as clack computes them, at write time, so they match under any colour
+ * setting. Clack redraws whole lines, so each arrives intact in one write.
  */
-function counted(output: Writable): { output: Writable; rows: () => number } {
-  let rows = 0;
+function rewound(output: Writable, escaped: () => boolean): Writable {
   const write = (chunk: unknown, ...rest: unknown[]) => {
-    for (const [, newline, count, direction] of String(chunk).matchAll(CURSOR_MOVES)) {
-      rows += newline ? 1 : (direction === "A" ? -1 : 1) * Number(count || 1);
+    if (escaped() && typeof chunk === "string") {
+      chunk = chunk
+        .replaceAll(symbol("cancel"), styleText("gray", S_STEP_CANCEL))
+        .replaceAll(symbolBar("cancel")!, styleText("gray", S_BAR));
     }
     return (output.write as (...args: unknown[]) => boolean)(chunk, ...rest);
   };
-  return {
-    output: new Proxy(output, {
-      get(target, key) {
-        if (key === "write") return write;
-        const value: unknown = Reflect.get(target, key);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    }),
-    rows: () => rows,
-  };
+  return new Proxy(output, {
+    get(target, key) {
+      if (key === "write") return write;
+      const value: unknown = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 /** Clack's spinner frames, which it draws in magenta, and how often it draws the next. */
@@ -199,11 +197,10 @@ function spinner(input: Readable, output: Writable): NonNullable<Prompter["busy"
   let releaseInput: (() => void) | undefined;
 
   const draw = () => {
-    const symbol = FRAMES[frame];
     // Short of the last column, where some terminals wrap at once.
     const width = Math.max(1, ((output as { columns?: number }).columns || 80) - 1);
     const rest = [...`  ${waiting.at(-1)?.message ?? ""}`].slice(0, width - 1).join("");
-    output.write(`\r${styleText("magenta", symbol)}${rest}\x1b[K`);
+    output.write(`\r${styleText("magenta", FRAMES[frame])}${rest}\x1b[K`);
   };
   const clear = () => {
     clearInterval(timer);
@@ -249,9 +246,9 @@ function spinner(input: Readable, output: Writable): NonNullable<Prompter["busy"
 
 /**
  * A {@link Prompter} drawing with clack on `streams`, the process's own by default. With `back`, Esc
- * throws {@link Back}: clack cancels on Esc and Ctrl-C alike, so a listener beside clack's notes
- * which key it was. Going back is not cancelling, so the question is then erased rather than left
- * drawn as cancelled. Ctrl-C still cancels.
+ * throws {@link Back}: clack cancels on Esc and Ctrl-C alike, so a listener ahead of clack's notes
+ * which key it was. Going back is not cancelling, so the question is then left drawn as cancelled
+ * but grey rather than red, followed by a grey "Rewound." line. Ctrl-C still cancels.
  */
 export function clackPrompter({ input = process.stdin, output = process.stdout }: Streams = {}, back = false): Prompter {
   return clackView(input, output, back, spinner(input, output));
@@ -262,17 +259,14 @@ function clackView(input: Readable, output: Writable, back: boolean, busy: NonNu
   const ask = async <T>(prompt: (streams: { input: Readable; output: Writable }) => Promise<T | symbol>): Promise<T> => {
     let escaped = false;
     const onKeypress = (_: unknown, key?: { name?: string }) => {
-      if (key?.name === "escape") escaped = true;
+      escaped = key?.name === "escape";
     };
-    const drawn = counted(output);
-    // After clack's own, which the prompt adds as it starts: clack then sees the key first.
-    const pending = prompt({ input, output: drawn.output });
-    if (back) input.on("keypress", onKeypress);
+    // Ahead of clack's own, so the frame clack draws for a key is drawn knowing whether it was Esc.
+    if (back) input.prependListener("keypress", onKeypress);
     try {
-      const value = await pending;
+      const value = await prompt({ input, output: back ? rewound(output, () => escaped) : output });
       if (back && escaped && isCancel(value)) {
-        // Up to where the prompt began, then everything below it.
-        output.write(`${drawn.rows() > 0 ? `\x1b[${drawn.rows()}A` : ""}\x1b[G\x1b[J`);
+        output.write(`${styleText("gray", S_BAR)}  ${styleText("gray", "Rewound.")}\n`);
         throw new Back();
       }
       return answered<T>(value, output);

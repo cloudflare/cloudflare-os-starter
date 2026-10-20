@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
+import { styleText } from "node:util";
+import { S_STEP_CANCEL } from "@clack/prompts";
 import { Back, Cancelled, clackPrompter, waitOn, type Prompter } from "./prompt.ts";
 
 /** A stand-in terminal input: a stream that can be put in raw mode, as `process.stdin` on a TTY can. */
@@ -79,19 +81,36 @@ test("on the backable view, Esc throws Back and Ctrl-C still cancels", async () 
   assert.equal(input.listenerCount("keypress"), 0);
 });
 
-test("going back erases the question, where cancelling leaves it drawn as cancelled", async () => {
-  const { prompter, press, shown } = terminal();
+test("going back leaves the question struck through under a grey square, then Rewound.; cancelling leaves it red", async (t) => {
+  // Colours on streams that are not a terminal, which styleText reads as it draws.
+  const forceColor = process.env.FORCE_COLOR;
+  process.env.FORCE_COLOR = "1";
+  t.after(() => {
+    if (forceColor === undefined) delete process.env.FORCE_COLOR;
+    else process.env.FORCE_COLOR = forceColor;
+  });
+  const grey = styleText("gray", S_STEP_CANCEL);
+  const red = styleText("red", S_STEP_CANCEL);
+  assert.notEqual(grey, red);
+
+  const { prompter, press, shown, written } = terminal();
   press("\x1b[B");
   setTimeout(() => press("\x1b"), 20);
   await assert.rejects(pick(prompter.backable!()), Back);
-  assert.deepEqual(shown(), ["earlier line"]);
+  assert.deepEqual(shown(), ["earlier line", "│", "■  Pick", "│  B", "│", "│  Rewound."]);
   press("\x1b");
   await assert.rejects(prompter.backable!().text("Name", { initial: "acme" }), Back);
-  assert.deepEqual(shown(), ["earlier line"]);
+  assert.equal(shown().at(-1), "│  Rewound.");
+  const rewinds = written();
+  assert.ok(rewinds.includes(grey));
+  assert.ok(!rewinds.includes(red));
 
   press("\x03");
   await assert.rejects(pick(prompter.backable!()), Cancelled);
-  assert.match(shown().join("\n"), /Pick[\s\S]*Cancelled\./);
+  const cancelled = written().slice(rewinds.length);
+  assert.ok(cancelled.includes(red));
+  assert.match(screen(cancelled).join("\n"), /Pick[\s\S]*Cancelled\./);
+  assert.ok(!cancelled.includes("Rewound."));
 });
 
 test("on the plain prompter, Esc cancels", async () => {
