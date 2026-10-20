@@ -1,0 +1,21 @@
+packages/cf-os/src/api/generated/commands.ts
+  s_6d531ae53d5b6a::t_d2db48ae590e4b 42-53,63-74,344-382,2016,2449-2452,2554-2557
+packages/cf-os/src/api/generated/schema.json
+  s_6d531ae53d5b6a::t_ee98294c509fa8 76-92,102-118,615-682,4076,4230,6921-6932,7425-7447,10470-10546,12384-12394
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9199be6deb12636f6ebfb4d3c8e6cfd80b36ba8e",
+  "prompts": {},
+  "sessions": {
+    "s_6d531ae53d5b6a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c709a705-0437-4886-b661-5e914988e7ed",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
