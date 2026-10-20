@@ -147,6 +147,43 @@ test("treats a file for the same router in another account, or in none yet, as a
   }
 });
 
+/** {@link gatekeepersTemplate}, naming the custom Gatekeeper's and Error Reporter's Workers too. */
+function namedWorkersTemplate(router: string, accountId = FAKE_ACCOUNT): string {
+  return gatekeepersTemplate(router, accountId)
+    .replace('"<CUSTOM_GATEKEEPER_WORKER_NAME>"', '"shared-custom"')
+    .replace('"<ERROR_REPORTER_WORKER_NAME>"', '"shared-errors"');
+}
+
+test("--out sets another deployment's custom Gatekeeper and Error Reporter names back to placeholders", async (t) => {
+  for (const [router, accountId] of [["beta", FAKE_ACCOUNT], ["acme", "f".repeat(32)]]) {
+    const root = scratchProject(t, namedWorkersTemplate(router, accountId));
+    const { code, json, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT } });
+    assert.equal(code, 0);
+    const written = parseDeployment(readFileSync(join(root, "acme.jsonc"), "utf8"));
+    assert.equal(valueAtPath(written, ["workers", "customGatekeeper", "name"]), "<CUSTOM_GATEKEEPER_WORKER_NAME>");
+    assert.equal(valueAtPath(written, ["workers", "errorReporter", "name"]), "<ERROR_REPORTER_WORKER_NAME>");
+    // The file now reads as acme's, so it is the placeholders that keep it from deploying over them.
+    assert.equal(valueAtPath(written, ["workers", "router", "name"]), "acme");
+    assert.match(stderr(), new RegExp(`Note: The file is ${router}'s, not acme's in account ${FAKE_ACCOUNT}, so the Worker ` +
+      "names it gives the rest may be that deployment's: workers\\.customGatekeeper\\.name \\(shared-custom\\), " +
+      "workers\\.errorReporter\\.name \\(shared-errors\\)\\. --out sets them back to placeholders"));
+    assert.match(stderr(), /setting workers\.customGatekeeper\.name and workers\.errorReporter\.name back to placeholders/);
+    assert.equal((json[0] as Record<string, any>).workers.customGatekeeper, undefined, "a reset on stdout");
+  }
+});
+
+test("--out keeps the custom Gatekeeper and Error Reporter names of the instance's own file, or of one naming no router", async (t) => {
+  const own = scratchProject(t, namedWorkersTemplate("acme"));
+  assert.equal((await importing(own, ["acme"], { out: "deployment.jsonc", flags: { account: FAKE_ACCOUNT } })).code, 0);
+  const fresh = scratchProject(t, TEMPLATE.replace('"<CUSTOM_GATEKEEPER_WORKER_NAME>"', '"typed-custom"'));
+  const { stderr } = await importing(fresh, ["acme"], { out: "deployment.jsonc", flags: { account: FAKE_ACCOUNT } });
+  assert.equal(valueAtPath(parseDeployment(readFileSync(join(own, "deployment.jsonc"), "utf8")),
+    ["workers", "customGatekeeper", "name"]), "shared-custom");
+  assert.equal(valueAtPath(parseDeployment(readFileSync(join(fresh, "deployment.jsonc"), "utf8")),
+    ["workers", "customGatekeeper", "name"]), "typed-custom");
+  assert.doesNotMatch(stderr(), /back to placeholders/);
+});
+
 test("without an account, lists the ones cf can reach and stops", async (t) => {
   const root = scratchProject(t, TEMPLATE);
   const accounts = [{ id: FAKE_ACCOUNT, name: "Acme" }, { id: "f".repeat(32), name: "Acme Staging" }];

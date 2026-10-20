@@ -22,6 +22,7 @@ import type { Context } from "../context.ts";
 import { Cancelled, type Prompter } from "../prompt.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import type { PendingSecrets } from "../gatekeeper-secrets.ts";
+import { run as importInstance } from "./import.ts";
 import { configure, NO_TERMINAL, run, type InitDeps } from "./init.ts";
 
 const ZONE = { id: "zone-1", name: "example.com", status: "active" };
@@ -1212,6 +1213,32 @@ test("on a takeover, a file for the same router in another account binds none of
     "acme-gk-custom");
   assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), { github: { name: "acme-gk-github" } });
   assert.match(stderr(), /accountId differs\), so the Gatekeeper Workers its gatekeepers block names may be another deployment's, and are left alone: other-gk-github\./);
+});
+
+test("a takeover after importing over another account's file asks for the Workers that file named", async (t) => {
+  // The file is acme's in another account, naming a custom Gatekeeper Worker this account also runs.
+  const root = scratchProject(t, githubTemplate("acme", "acme-gk-github", "f".repeat(32))
+    .replace('"<CUSTOM_GATEKEEPER_WORKER_NAME>"', '"shared-custom"')
+    .replace('"<ERROR_REPORTER_WORKER_NAME>"', '"shared-errors"'));
+  const hosted: Record<string, FakeReply> = {
+    ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" },
+  };
+  const replies = {
+    ...hosted,
+    "workers list": [...hosted["workers list"] as { name: string }[], { name: "shared-custom" }, { name: "shared-errors" }],
+  };
+  const imported = testContext({ root, client: cfClient({ spawn: fakeCf(replies).spawn }), flags: { account: FAKE_ACCOUNT } });
+  assert.equal(await importInstance({ command: "import", values: { out: "acme.jsonc" }, positionals: ["acme"] }, imported.ctx,
+    async () => testCatalog()), 0);
+
+  // The written file reads as acme's in this account, so it is now trusted: its names must not be the other's.
+  const { prompter, written } = await init(t, withCustom(DEFAULT), replies,
+    { template: readFileSync(join(root, "acme.jsonc"), "utf8") });
+  assert.equal(prompter.asked.find((question) => question.message === "Custom Gatekeeper Worker name")!.initial,
+    "acme-gk-custom");
+  assert.ok(!prompter.asked.some((question) => /Is shared-/.test(question.message)));
+  assert.equal(valueAtPath(written(), ["workers", "customGatekeeper", "name"]), "acme-gk-custom");
+  assert.equal(valueAtPath(written(), ["workers", "errorReporter", "name"]), "acme-errors");
 });
 
 test("without a Gatekeeper catalog, still asks about the custom Gatekeeper", async (t) => {

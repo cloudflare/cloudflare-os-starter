@@ -82,6 +82,40 @@ export function foreignGatekeepers(
   };
 }
 
+/** The Worker names discovery never writes, which `--out` leaves as the file has them, and their placeholders. */
+const UNDISCOVERED_WORKERS = [
+  { path: ["workers", "customGatekeeper", "name"], placeholder: "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
+  { path: ["workers", "errorReporter", "name"], placeholder: "<ERROR_REPORTER_WORKER_NAME>" },
+];
+
+/**
+ * The edits setting the custom Gatekeeper's and Error Reporter's Worker names back to placeholders
+ * when the file is another deployment's: it names a router, but is not instance `n`'s in account
+ * `accountId` ({@link fileIsInstance}). Discovery never writes those two, and once `--out` writes the
+ * instance's router and account the file reads as the instance's own, so the other deployment's
+ * names would stand as this one's: a deploy, or a later takeover, would deploy over its Workers.
+ * The placeholders hold the deploy back until they are set; `cf-os init` asks for them.
+ */
+export function foreignWorkers(
+  file: Record<string, unknown>,
+  accountId: string,
+  n: string,
+): { resets: DeploymentEdit[]; note?: string } {
+  const router = valueAtPath(file, ["workers", "router", "name"]);
+  if (typeof router !== "string" || isPlaceholder(router) || fileIsInstance(file, accountId, n)) return { resets: [] };
+  const named = UNDISCOVERED_WORKERS.flatMap(({ path, placeholder }) => {
+    const name = valueAtPath(file, path);
+    return typeof name === "string" && !isPlaceholder(name) ? [{ path, placeholder, name }] : [];
+  });
+  if (!named.length) return { resets: [] };
+  return {
+    resets: named.map(({ path, placeholder }) => ({ path, value: placeholder })),
+    note: `The file is ${router}'s, not ${n}'s in account ${accountId}, so the Worker names it gives the rest may be ` +
+      `that deployment's: ${named.map(({ path, name }) => `${path.join(".")} (${name})`).join(", ")}. --out sets them ` +
+      "back to placeholders, and `pnpm cf-os init` asks for this deployment's.",
+  };
+}
+
 /** The human-readable report: a found/missing table, then what is left to do by hand. */
 export function formatReport(n: string, discovery: Discovery): string {
   const lines: string[] = [];
@@ -190,6 +224,8 @@ export async function run(
   const discovery = discoverInstance(instance, inventory, await catalog(ctx.root));
   const { removals, note } = foreignGatekeepers(file, account.id, instance, discovery);
   if (note) discovery.notes.push(note);
+  const { resets, note: workersNote } = foreignWorkers(file, account.id, instance);
+  if (workersNote) discovery.notes.push(workersNote);
 
   ctx.out.log(`Hosted instance "${instance}" in account ${account.id}:\n`);
   ctx.out.log(formatReport(instance, discovery));
@@ -203,10 +239,11 @@ export async function run(
   if (out) {
     const outPath = resolve(ctx.cwd, out);
     const outWhere = displayPath(ctx, outPath);
-    await updateDeployment(inPath, [...discovery.edits, ...removals], outPath);
+    await updateDeployment(inPath, [...discovery.edits, ...removals, ...resets], outPath);
     const removed = removals.length
       ? `, removing ${removals.length} gatekeepers ${removals.length === 1 ? "entry" : "entries"}` : "";
-    ctx.out.log(`\nWrote ${discovery.edits.length} values to ${outWhere}${removed} (local file only; nothing in ` +
+    const reset = resets.length ? `, setting ${resets.map(({ path }) => path.join(".")).join(" and ")} back to placeholders` : "";
+    ctx.out.log(`\nWrote ${discovery.edits.length} values to ${outWhere}${removed}${reset} (local file only; nothing in ` +
       `the account changed). Review it${outPath === inPath ? ` with \`git diff ${outWhere}\`` : ""}, ` +
       "fill in what is listed above, then run `pnpm cf-os deploy`.");
   } else {

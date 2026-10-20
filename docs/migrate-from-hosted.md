@@ -90,7 +90,10 @@ report goes to stderr) and ends with the full command to re-run with `--out`. Th
 file whose `workers.router.name` is not `N`, or whose `accountId` is not the account read (as with
 `--account`), may be another deployment's, so the Gatekeeper Workers
 its `gatekeepers` block names are left alone: the report lists the entries it did not find for `N`,
-and `--out` removes them rather than bind that deployment's Workers to this one. It
+and `--out` removes them rather than bind that deployment's Workers to this one. For the same reason
+`--out` sets such a file's `workers.customGatekeeper.name` and `workers.errorReporter.name`, which
+discovery does not find, back to placeholders, so the deploy waits until `pnpm cf-os init` asks for
+this deployment's. It
 leaves `access.admins`, the two new Worker names and the custom Gatekeeper's text for you to fill
 in, or `customGatekeeper.enabled: false` to deploy no custom Gatekeeper.
 
