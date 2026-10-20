@@ -15,12 +15,17 @@
 // (gatekeeper-secrets.ts); one whose Worker the account already runs is asked about, and its
 // secrets set, before the deploy question. Declined, each is left to `cf-os secrets`.
 //
+// Until the file is written, Esc goes back to the previous question (back.ts). Going back runs the
+// questions before it again, with the reads between them, which a cache answers; so nothing is
+// created before the last question: the Access step asks both its questions first.
+//
 // Interactive only. Without a terminal it refuses, pointing at `import` and `access`, which take
 // every answer as a flag or from the file. Signed out of `cf`, it still runs: the account-aware
 // steps become typed answers, and Access is left for `cf-os access`.
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { withBack } from "../back.ts";
 import { configPath, displayPath, UsageError, type CommandArgs, type Context } from "../context.ts";
 import {
   accessEdits,
@@ -125,6 +130,31 @@ async function lookup<T>(session: Session, what: string, read: (client: Cloudfla
     session.ctx.out.log(`Could not list ${what}, so you will type it: ${(error as Error).message}`);
     return null;
   }
+}
+
+/** The client methods that only read, which {@link cachedReads} answers a second time from memory. */
+const READ = /^(whoami|list|find|get|workersDevSubdomain)/;
+
+/**
+ * `client`, each read answered once per method and arguments, its failure included. Going back a
+ * question runs every question before it again, with the reads between them; those then cost no `cf`
+ * call. Anything else, a create or its dry run, goes straight through.
+ */
+function cachedReads(client: CloudflareClient): CloudflareClient {
+  const cache = new Map<string, unknown>();
+  return new Proxy(client, {
+    get(target, key) {
+      const value: unknown = Reflect.get(target, key);
+      if (typeof key !== "string" || typeof value !== "function") return value;
+      const method = value.bind(target) as (...args: unknown[]) => unknown;
+      if (!READ.test(key)) return method;
+      return (...args: unknown[]) => {
+        const id = `${key} ${JSON.stringify(args)}`;
+        if (!cache.has(id)) cache.set(id, method(...args));
+        return cache.get(id);
+      };
+    },
+  });
 }
 
 function workerNameProblem(name: string): string | undefined {
@@ -244,17 +274,22 @@ async function accessEditsFor(session: Session, client: CloudflareClient, target
 
   const providers = await lookup(session, "identity providers",
     (reader) => reader.listIdentityProviders(target.accountId));
+  let addPin = false;
   if (providers && !providers.length) {
     ctx.out.log("Warning: the Zero Trust organization has no identity providers, so nobody could sign in.");
-    if (await prompter.confirm("Add a One-time PIN provider? Access emails each admin a sign-in code.", true)) {
-      // Validated first, so a body the API would reject fails before anything is created.
-      await client.dryRunCreateIdentityProvider(target.accountId, { ...ONE_TIME_PIN_PROVIDER });
-      await client.createIdentityProvider(target.accountId, { ...ONE_TIME_PIN_PROVIDER });
-      ctx.out.log("Added the One-time PIN identity provider.");
-    }
+    addPin = await prompter.confirm("Add a One-time PIN provider? Access emails each admin a sign-in code.", true);
   }
+  // After the step's last question, so going back never steps over a provider already created.
+  const addProvider = async () => {
+    if (!addPin) return;
+    // Validated first, so a body the API would reject fails before anything is created.
+    await client.dryRunCreateIdentityProvider(target.accountId, { ...ONE_TIME_PIN_PROVIDER });
+    await client.createIdentityProvider(target.accountId, { ...ONE_TIME_PIN_PROVIDER });
+    ctx.out.log("Added the One-time PIN identity provider.");
+  };
 
   if (found.kind === "found") {
+    await addProvider();
     ctx.out.log(`Reusing Access application "${found.app.name}", which already covers ${target.host}.`);
     return accessEdits(found.issuer, found.app);
   }
@@ -272,6 +307,7 @@ async function accessEditsFor(session: Session, client: CloudflareClient, target
       : [],
     { value: "skip" as const, label: "Skip", hint: "run `pnpm cf-os access` later" },
   ]);
+  await addProvider();
   if (choice === "skip") return [];
   if (choice === "reuse" && wildcard) {
     ctx.out.log(`Using Access application "${wildcard.name}". Its policy, not access.admins, decides who gets in.`);
@@ -837,32 +873,36 @@ export async function configure(
       "values, and Access is left for later. To sign in first: `pnpm exec cf auth login`.\n");
   }
 
-  const account = await chooseAccount(ctx, prompter, client, file, where);
-  const session: Session = { ctx, prompter, client, account, email };
   const catalog = await deps.catalog(ctx.root);
+  const reads = client && cachedReads(client);
+  // Every question up to the write, which Esc goes back through.
+  const { account, configured } = await withBack(prompter, ctx.out, async (asker, askOut) => {
+    const askCtx: Context = { ...ctx, prompter: asker, out: askOut };
+    const chosen = await chooseAccount(askCtx, asker, reads, file, where);
+    const session: Session = { ctx: askCtx, prompter: asker, client: reads, account: chosen, email };
 
-  let instances: string[] = [];
-  if (client) {
-    instances = findInstances(await lookup(session, "the account's Workers",
-      (reader) => reader.listWorkers(account.id)) ?? []);
-  }
-  const mode = client
-    ? await prompter.select("What are you setting up?", [
-      { value: "new" as const, label: "A new deployment" },
-      {
-        value: "takeover" as const, label: "Take over a hosted instance",
-        hint: `${instances.length} in this account`,
-      },
-    ])
-    : "new";
+    let instances: string[] = [];
+    if (reads) {
+      instances = findInstances(await lookup(session, "the account's Workers",
+        (reader) => reader.listWorkers(chosen.id)) ?? []);
+    }
+    const mode = reads
+      ? await asker.select("What are you setting up?", [
+        { value: "new" as const, label: "A new deployment" },
+        {
+          value: "takeover" as const, label: "Take over a hosted instance",
+          hint: `${instances.length} in this account`,
+        },
+      ])
+      : "new";
 
-  let configured: Configured | null;
-  if (mode === "takeover") {
-    configured = await takeover(session, file, catalog);
-  } else {
+    if (mode === "takeover") return { account: chosen, configured: await takeover(session, file, catalog) };
     const outcome = await newDeployment(session, file, catalog);
-    configured = "takeover" in outcome ? await takeover(session, file, catalog, outcome.takeover) : outcome;
-  }
+    return {
+      account: chosen,
+      configured: "takeover" in outcome ? await takeover(session, file, catalog, outcome.takeover) : outcome,
+    };
+  });
   if (!configured) return 1;
   const { edits } = configured;
   if (account.isNew && !edits.some((edit) => edit.path[0] === "accountId")) {

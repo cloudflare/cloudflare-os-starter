@@ -11,13 +11,16 @@ import type { CloudflareClient } from "./core/client.ts";
 import type { ProdWranglerConfig } from "./core/deployment-config.ts";
 import type { GatekeeperCatalog } from "./core/gatekeepers.ts";
 import type { FakeReply } from "./fake-cf.ts";
-import { Cancelled, type Choice, type Prompter } from "./prompt.ts";
+import { Back, Cancelled, type Choice, type Prompter } from "./prompt.ts";
 
 /** Accept whatever the prompt offers as its default. */
 export const DEFAULT = Symbol("default");
 
 /** Cancel the prompt, as Ctrl-C would. */
 export const CANCEL = Symbol("cancel");
+
+/** Press Esc, to go back a question: only on the {@link Prompter.backable} view. */
+export const BACK = Symbol("back");
 
 /** One scripted answer: the prompt it expects (a substring or pattern of its message), and the reply. */
 export type Step = [expected: string | RegExp, answer: unknown];
@@ -36,6 +39,8 @@ export interface Asked {
   required?: boolean;
   /** For password: why the prompt's validation refused the answer, which then asked again. */
   refused?: string;
+  /** Asked on the {@link Prompter.backable} view, where Esc goes back. */
+  backable?: true;
 }
 
 function describeChoices(choices: Choice[]): Pick<Asked, "choices" | "hints"> {
@@ -50,12 +55,18 @@ function describeChoices(choices: Choice[]): Pick<Asked, "choices" | "hints"> {
  * message, every text answer must pass the prompt's own validation, and a prompt past the end of the
  * script fails the test -- so a script is also an assertion about what was asked. A password answer
  * the validation refuses is asked again, as the terminal does, from the next step; the record never
- * holds a password answer.
+ * holds a password answer. Its {@link Prompter.backable} view answers from the same script, and only
+ * there may a step answer {@link BACK}.
  */
 export function scriptedPrompter(script: Step[]): Prompter & { asked: Asked[]; remaining: () => Step[] } {
   const steps = [...script];
   const asked: Asked[] = [];
+  return { asked, remaining: () => steps, ...scriptedView(steps, asked, false) };
+}
+
+function scriptedView(steps: Step[], asked: Asked[], backable: boolean): Prompter {
   const next = (record: Asked): unknown => {
+    if (backable) record.backable = true;
     asked.push(record);
     const step = steps.shift();
     assert.ok(step, `unexpected prompt: ${record.message}`);
@@ -63,11 +74,14 @@ export function scriptedPrompter(script: Step[]): Prompter & { asked: Asked[]; r
     if (typeof expected === "string") assert.ok(record.message.includes(expected), `expected a prompt about "${expected}", got "${record.message}"`);
     else assert.match(record.message, expected);
     if (answer === CANCEL) throw new Cancelled();
+    if (answer === BACK) {
+      assert.ok(backable, `Esc goes back only where a command lets you: "${record.message}"`);
+      throw new Back();
+    }
     return answer === DEFAULT ? record.initial : answer;
   };
   return {
-    asked,
-    remaining: () => steps,
+    backable: () => scriptedView(steps, asked, true),
     async select(message, choices, initial) {
       const answer = next({ kind: "select", message, ...describeChoices(choices), initial }) as string;
       assert.ok(choices.some((choice) => choice.value === answer), `"${answer}" is not a choice for "${message}"`);

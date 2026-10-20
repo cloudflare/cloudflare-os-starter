@@ -5,7 +5,9 @@ import test from "node:test";
 import { cfClient } from "../cf-client.ts";
 import { parseDeployment, valueAtPath } from "../deployment-file.ts";
 import { FAKE_ACCOUNT, fakeCf, flag, workerSecretsReply, type FakeReply } from "../fake-cf.ts";
+import { BACK_HINT } from "../back.ts";
 import {
+  BACK,
   DEFAULT,
   hostedAccount,
   scratchProject,
@@ -1127,4 +1129,123 @@ test("without a Gatekeeper catalog, still asks about the custom Gatekeeper", asy
   assert.deepEqual(prompter.asked.find((question) => question.message.startsWith("Which Gatekeepers?"))!.choices, ["custom"]);
   assert.match(stderr(), /The Gatekeeper catalog could not be read, so only the example custom Gatekeeper is offered: no submodule install/);
   assert.equal(valueAtPath(written(), ["customGatekeeper", "enabled"]), true);
+});
+
+test("Esc at the route question goes back to the base name, offering the old one, and the new one names every Worker", async (t) => {
+  const tail: Step[] = [["Where will people reach it?", "workersDev"], ...REST, ["No Access application covers", "skip"]];
+  const { code, prompter, written, stderr, calls } = await init(t, [
+    ["What are you setting up?", "new"],
+    ["Base name", "acme-os"],
+    ["Where will people reach it?", BACK],
+    ["Base name", "acme-two"],
+    ...tail,
+  ]);
+  assert.equal(code, 0);
+  assert.deepEqual(prompter.asked.filter(({ message }) => message.startsWith("Base name")).map(({ initial }) => initial),
+    ["cloudflare-os", "acme-os"]);
+  const file = written();
+  assert.equal(valueAtPath(file, ["workers", "router", "name"]), "acme-two");
+  assert.equal(valueAtPath(file, ["workers", "errorReporter", "name"]), "acme-two-errors");
+  assert.equal(stderr().split(BACK_HINT).length, 2, "the hint once");
+  assert.match(stderr(), /Back to: Base name/);
+  // The way back reads nothing again: as many `cf` calls as going straight there.
+  const straight = await init(t, [["What are you setting up?", "new"], ["Base name", "acme-two"], ...tail]);
+  assert.equal(calls.length, straight.calls.length);
+});
+
+test("Esc at the Gatekeeper question goes back to the model providers, offering the earlier choice", async (t) => {
+  const { code, prompter, written } = await init(t, [
+    ["What are you setting up?", "new"],
+    ["Base name", "acme-os"],
+    ["Where will people reach it?", "workersDev"],
+    ["Admin emails", DEFAULT],
+    ["Which AI Gateway", "default"],
+    ["Which model providers?", ["cloudflare", "anthropic"]],
+    ["Which Gatekeepers?", BACK],
+    ["Which model providers?", DEFAULT],
+    ["Which Gatekeepers?", DEFAULT],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["No Access application covers", "skip"],
+  ]);
+  assert.equal(code, 0);
+  assert.deepEqual(prompter.asked.filter(({ message }) => message === "Which model providers?").map(({ initial }) => initial),
+    [["cloudflare"], ["cloudflare", "anthropic"]]);
+  assert.deepEqual(valueAtPath(written(), ["aiGateway", "providers"]), ["cloudflare", "anthropic"]);
+});
+
+test("on a takeover, Esc goes back through the questions after the discovery report without printing it again", async (t) => {
+  const replies = { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } };
+  const rest: Step[] = [
+    ["Custom Gatekeeper Worker name", DEFAULT],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
+  ];
+  const { code, prompter, written, stderr } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", "ops@example.com"],
+    ["Web Search Gatekeeper Worker name", "acme-search"],
+    ["Which Gatekeepers?", BACK],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", DEFAULT],
+    ...rest,
+  ], replies);
+  assert.equal(code, 0);
+  assert.equal(prompter.asked.filter(({ message }) => message.startsWith("Web Search"))[1].initial, "acme-search");
+  assert.equal(valueAtPath(written(), ["workers", "websearch", "name"]), "acme-search");
+  assert.deepEqual(valueAtPath(written(), ["access", "admins"]), ["ops@example.com"]);
+  assert.equal(stderr().split('Hosted instance "acme"').length, 2, "the report once");
+
+  // Back from the first question after the instance, to the instance.
+  const again = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", BACK],
+    ["Which hosted instance?", DEFAULT],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", DEFAULT],
+    ...rest,
+  ], replies);
+  assert.equal(again.code, 0);
+  assert.deepEqual(again.prompter.asked.filter(({ message }) => message === "Which hosted instance?").map(({ initial }) => initial),
+    [undefined, "acme"]);
+});
+
+test("the Access step creates the One-time PIN provider only after its last question, so Esc there creates nothing", async (t) => {
+  const created: boolean[] = [];
+  const replies = account({
+    "zero-trust identity-providers list": [],
+    "zero-trust identity-providers create": (args) => {
+      created.push(args.includes("--dry-run"));
+      return { id: "otp", type: "onetimepin" };
+    },
+  });
+  const start: Step[] = [
+    ["What are you setting up?", "new"],
+    ["Base name", "acme-os"],
+    ["Where will people reach it?", "workersDev"],
+    ...REST,
+    ["Add a One-time PIN provider?", true],
+    ["No Access application covers", BACK],
+  ];
+  const declined = await init(t, [...start, ["Add a One-time PIN provider?", false], ["No Access application covers", "skip"]], replies);
+  assert.equal(declined.code, 0);
+  assert.equal(declined.prompter.asked.filter(({ message }) => message.startsWith("Add a One-time PIN"))[1].initial, true);
+  assert.deepEqual(created, []);
+  assert.ok(!declined.calls.some((call) => call.args.join(" ").includes("access applications create")));
+
+  const accepted = await init(t, [...start, ["Add a One-time PIN provider?", DEFAULT], ["No Access application covers", "create"], ["Deploy now?", false]], replies);
+  assert.equal(accepted.code, 0);
+  assert.deepEqual(created, [true, false]);
+  assert.equal(valueAtPath(accepted.written(), ["access", "audience"]), "aud-new");
+});
+
+test("Esc does not go back once the file is written", async (t) => {
+  await assert.rejects(init(t, [...COMPLETE, ["Deploy now?", BACK]], completeAccount()),
+    /Esc goes back only where a command lets you: "Deploy now\?"/);
 });
