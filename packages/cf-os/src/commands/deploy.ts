@@ -53,7 +53,7 @@ import {
   type WorkerId,
 } from "../core/deployment.ts";
 import { placeholderPaths } from "../core/edits.ts";
-import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
+import { undeclaredVarWarnings, type GatekeeperCatalog } from "../core/gatekeepers.ts";
 import { gatekeeperSecretWarnings, prose, verifyAccount } from "../core/verify-account.ts";
 import { parseDeployment } from "../deployment-file.ts";
 import { loadCatalog } from "../gatekeeper-catalog.ts";
@@ -385,6 +385,7 @@ async function buildAndDeploy(
   }
   const generated = generateConfigs(config, await readBaseConfigs(root), catalog);
   reportAiGateway(ctx, config);
+  for (const warning of undeclaredVarWarnings(config.gatekeepers ?? {})) ctx.out.log(`\n${warning}`);
   await checkAccount(ctx, config, where, catalog, secrets);
 
   const generatedPath = (id: WorkerId) => join(root, workerDir(id, catalog), GENERATED_NAME);

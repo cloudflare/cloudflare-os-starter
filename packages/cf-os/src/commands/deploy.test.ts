@@ -186,6 +186,33 @@ test("check warns on stderr about a Gatekeeper secret that is not set, and carri
     [["workers", "secrets", "list", "--script-name", "acme-gk-github"]]);
 });
 
+test("check and deploy warn about an MCP portal with no endpoint, and deploy it anyway", async (t) => {
+  const root = installedProject(t);
+  const repository = join(import.meta.dirname, "..", "..", "..", "..");
+  const portal = "cloudflare-os/packages/gatekeeper-mcp-portal";
+  for (const file of [
+    ...Object.values(PACKAGE_DIRS).map((dir) => `${dir}/wrangler.jsonc`),
+    ...["wrangler.jsonc", "package.json"].map((name) => `${portal}/${name}`),
+  ]) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    copyFileSync(join(repository, file), join(root, file));
+  }
+  const deployWith = async (entry: string) => {
+    writeFileSync(join(root, "deployment.jsonc"), FILLED.replace('"gatekeepers": {}', `"gatekeepers": { "mcpportal": ${entry} }`));
+    const harness = testContext({ root, client: cfClient({ spawn: filledAccount({}).spawn }) });
+    const { deps, steps } = recordingDeploy({});
+    assert.equal(await run({ command: "deploy", values: {}, positionals: [] }, harness.ctx, {}, deps), 0);
+    assert.deepEqual(steps, ["build", "deploy"]);
+    return harness.log.filter((line) => line.includes("MCP_PORTAL_URL"));
+  };
+  assert.deepEqual(await deployWith('{ "name": "acme-gk-mcpportal" }'), [
+    "\nWarning: gatekeepers.mcpportal.vars.MCP_PORTAL_URL is not set, so the app hides the mcpportal Gatekeeper. " +
+      "Set it to the MCP server portal endpoint.",
+  ]);
+  assert.deepEqual(
+    await deployWith('{ "name": "acme-gk-mcpportal", "vars": { "MCP_PORTAL_URL": "https://portal.example.com/mcp" } }'), []);
+});
+
 /** Obviously fake OAuth credentials, as init would hand them over. */
 const PENDING: PendingSecrets[] = [
   { gatekeeper: "github", worker: "acme-gk-github", values: { CLIENT_ID: "gh-id-123", CLIENT_SECRET: "gh-secret-456" } },

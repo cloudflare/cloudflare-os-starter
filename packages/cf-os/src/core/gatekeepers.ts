@@ -44,6 +44,58 @@ export interface GatekeeperCatalog {
   unavailable?: string;
 }
 
+/** A plain var a Gatekeeper cannot work without, which upstream declares no deploy input for. */
+export interface UndeclaredVar {
+  name: string;
+  /** What it is, for the question that asks for it. */
+  label: string;
+  /** Why a value cannot be used, or undefined when it can. */
+  problem(value: string): string | undefined;
+}
+
+/**
+ * Why `value` cannot be the MCP portal's endpoint, mirroring upstream's `readPortalConfig`
+ * (gatekeeper-mcp-portal/src/config.ts): it takes an `https:` URL without a username or password,
+ * and hides the connector rather than fail on anything else. Plain `http:` needs
+ * `MCP_ALLOW_INSECURE`, which is for local development, so it is refused here.
+ */
+function portalUrlProblem(value: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return "Enter the portal's MCP endpoint as a URL, e.g. https://portal.example.com/mcp.";
+  }
+  if (url.protocol !== "https:") return "The portal's endpoint must be an https:// URL.";
+  if (url.username || url.password) return "Leave the username and password out of the URL: the Gatekeeper refuses one carrying them.";
+  return undefined;
+}
+
+/**
+ * By slug, the vars an offered Gatekeeper reads that upstream ships no `deploy-inputs.json` entry
+ * for, so neither its hosted wizard nor {@link CatalogGatekeeper.vars} asks for them. Without
+ * `MCP_PORTAL_URL` the MCP portal Gatekeeper advertises no resources, and the app hides it.
+ */
+export const UNDECLARED_VARS: Readonly<Record<string, readonly UndeclaredVar[]>> = {
+  mcpportal: [{ name: "MCP_PORTAL_URL", label: "MCP server portal endpoint", problem: portalUrlProblem }],
+};
+
+/**
+ * A warning for each {@link UNDECLARED_VARS} entry `gatekeepers` selects but leaves unset or unusable.
+ * Never an error: the Worker deploys without it, and only its connector stays hidden.
+ */
+export function undeclaredVarWarnings(gatekeepers: Record<string, { vars?: Record<string, string> }>): string[] {
+  return Object.entries(gatekeepers).flatMap(([slug, entry]) => (UNDECLARED_VARS[slug] ?? []).flatMap((input) => {
+    const path = `gatekeepers.${slug}.vars.${input.name}`;
+    const value = entry.vars?.[input.name];
+    if (value === undefined || !value.trim()) {
+      return [`Warning: ${path} is not set, so the app hides the ${slug} Gatekeeper. Set it to the ${input.label}.`];
+    }
+    const problem = input.problem(value);
+    return problem ? [`Warning: ${path} cannot be used, so the app hides the ${slug} Gatekeeper. ${problem}`] : [];
+  }));
+}
+
 /** How to give one Gatekeeper its OAuth credentials. See {@link secretSetup}. */
 export interface SecretSetup {
   /** The provider's console page the OAuth app is created in, when upstream names one. */

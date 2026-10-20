@@ -531,6 +531,70 @@ test("offers the custom Gatekeeper, preselected, then the catalog's, none requir
   assert.equal(asked.required, false);
   assert.equal(asked.hints!.github, "needs CLIENT_ID, CLIENT_SECRET");
   assert.equal(asked.hints!.homeassistant, "no credentials, one install only");
+  assert.equal(asked.hints!.mcpportal, "no credentials, vars MCP_PORTAL_URL, one install only");
+});
+
+/** The question for the MCP portal's endpoint, which upstream declares no input for. */
+const PORTAL_URL = "The mcpportal Gatekeeper's MCP server portal endpoint (gatekeepers.mcpportal.vars.MCP_PORTAL_URL)";
+
+/** {@link UP_TO_GATEKEEPERS}, then the MCP portal alone, its endpoint answered `url`. */
+const withPortal = (url: string): Step[] => [
+  ...UP_TO_GATEKEEPERS,
+  ["Which Gatekeepers?", ["mcpportal"]],
+  [PORTAL_URL, url],
+];
+
+test("asks for a new MCP portal's endpoint, without which the app hides it, and records it", async (t) => {
+  const { written, prompter } = await init(t, [...withPortal("https://portal.example.com/mcp "), ["Deploy now?", false]],
+    completeAccount());
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), {
+    mcpportal: { name: "acme-os-gk-mcpportal", vars: { MCP_PORTAL_URL: "https://portal.example.com/mcp" } },
+  });
+  assert.match(prompter.asked.find((question) => question.message.startsWith(PORTAL_URL))!.message,
+    /empty to set it later, the Gatekeeper hidden until then$/);
+  // Upstream's rule: https, no credentials in the URL.
+  for (const url of ["http://portal.example.com/mcp", "https://me:pw@portal.example.com/mcp", "portal.example.com"]) {
+    await assert.rejects(init(t, [...withPortal(url), ["Deploy now?", false]], completeAccount()),
+      (error: Error) => error.message.includes(`"${url}" fails "${PORTAL_URL}`));
+  }
+});
+
+test("left empty, the MCP portal's endpoint stays unset, and the deploy is still offered", async (t) => {
+  const { written, prompter } = await init(t, [...withPortal(""), ["Deploy now?", false]], completeAccount());
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), { mcpportal: { name: "acme-os-gk-mcpportal" } });
+  assert.ok(prompter.asked.some((question) => question.message.startsWith("Deploy now?")));
+});
+
+test("on a rerun, keeps the file's usable MCP portal endpoint unasked, and asks again for an unusable one", async (t) => {
+  const withUrl = (url: string) => TEMPLATE.replace('"gatekeepers": {},',
+    `"gatekeepers": { "mcpportal": { "name": "old-gk-mcpportal", "vars": { "MCP_PORTAL_URL": "${url}" } } },`);
+  const kept = await init(t, [...UP_TO_GATEKEEPERS, ["Which Gatekeepers?", ["mcpportal"]], ["Deploy now?", false]],
+    completeAccount(), { template: withUrl("https://portal.example.com/mcp") });
+  assert.deepEqual(valueAtPath(kept.written(), ["gatekeepers", "mcpportal", "vars"]), { MCP_PORTAL_URL: "https://portal.example.com/mcp" });
+
+  const fixed = await init(t, [...withPortal("https://portal.example.com/mcp"), ["Deploy now?", false]],
+    completeAccount(), { template: withUrl("http://portal.example.com/mcp") });
+  assert.match(fixed.stderr(), /gatekeepers\.mcpportal\.vars\.MCP_PORTAL_URL is http:\/\/portal\.example\.com\/mcp, which the Gatekeeper cannot use\. The portal's endpoint must be an https:\/\/ URL\./);
+  assert.deepEqual(valueAtPath(fixed.written(), ["gatekeepers", "mcpportal", "vars"]), { MCP_PORTAL_URL: "https://portal.example.com/mcp" });
+});
+
+test("on a takeover, asks for the endpoint of an MCP portal it adds", async (t) => {
+  const { written } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", ["custom", "github", "mcpportal"]],
+    ["Custom Gatekeeper Worker name", DEFAULT],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    [PORTAL_URL, "https://portal.example.com/mcp"],
+    ["Deploy now?", false],
+  ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers", "mcpportal"]),
+    { name: "acme-gk-mcpportal", vars: { MCP_PORTAL_URL: "https://portal.example.com/mcp" } });
 });
 
 test("without the custom Gatekeeper, asks nothing about its text and leaves it disabled", async (t) => {

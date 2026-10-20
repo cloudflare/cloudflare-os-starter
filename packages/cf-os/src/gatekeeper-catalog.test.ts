@@ -3,7 +3,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { secretSetup } from "./core/gatekeepers.ts";
+import { secretSetup, UNDECLARED_VARS, undeclaredVarWarnings } from "./core/gatekeepers.ts";
 import { loadCatalog } from "./gatekeeper-catalog.ts";
 import { testCatalogWithGitlab } from "./test-support.ts";
 
@@ -144,4 +144,35 @@ test("prints upstream's setup guidance and the redirect URI, and keeps the secre
   // Nothing to set, nothing printed.
   const homeassistant = catalog.offered.find((gatekeeper) => gatekeeper.slug === "homeassistant")!;
   assert.deepEqual(secretSetup(homeassistant, "homeassistant", "acme-gk-homeassistant", "https://os.example.com", "0123456789abcdef0123456789abcdef").lines, []);
+});
+
+test("each var the starter asks for is one its Gatekeeper reads and upstream declares no input for", async () => {
+  const catalog = await loadCatalog(ROOT);
+  for (const [slug, inputs] of Object.entries(UNDECLARED_VARS)) {
+    const entry = catalog.offered.find((gatekeeper) => gatekeeper.slug === slug);
+    assert.ok(entry, `${slug} is not offered`);
+    const source = readFileSync(join(ROOT, entry.packageDir, "src", "config.ts"), "utf8");
+    for (const { name } of inputs) {
+      assert.ok(source.includes(`env.${name}`), `${entry.packageDir} no longer reads ${name}`);
+      // Once upstream declares it, the catalog's own var input asks for it, and this entry goes.
+      assert.ok(![...entry.vars, ...entry.secrets].some((input) => input.name === name), `upstream declares ${name}`);
+    }
+  }
+});
+
+test("warns about an MCP portal without a usable endpoint, as upstream would hide it", () => {
+  const warn = (vars?: Record<string, string>) => undeclaredVarWarnings({ mcpportal: vars ? { vars } : {} });
+  const unset = "Warning: gatekeepers.mcpportal.vars.MCP_PORTAL_URL is not set, so the app hides the mcpportal " +
+    "Gatekeeper. Set it to the MCP server portal endpoint.";
+  assert.deepEqual(warn(), [unset]);
+  assert.deepEqual(warn({ MCP_PORTAL_URL: "  " }), [unset]);
+  assert.deepEqual(warn({ MCP_PORTAL_URL: "http://portal.example.com/mcp" }), [
+    "Warning: gatekeepers.mcpportal.vars.MCP_PORTAL_URL cannot be used, so the app hides the mcpportal " +
+      "Gatekeeper. The portal's endpoint must be an https:// URL.",
+  ]);
+  assert.match(warn({ MCP_PORTAL_URL: "https://me:pw@portal.example.com/mcp" })[0], /Leave the username and password out/);
+  assert.match(warn({ MCP_PORTAL_URL: "portal.example.com" })[0], /Enter the portal's MCP endpoint as a URL/);
+  assert.deepEqual(warn({ MCP_PORTAL_URL: "https://portal.example.com/mcp" }), []);
+  // Only the Gatekeepers selected, and only those the starter knows a var for.
+  assert.deepEqual(undeclaredVarWarnings({ github: {}, homeassistant: {} }), []);
 });

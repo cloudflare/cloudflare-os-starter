@@ -34,7 +34,7 @@ import { fetchInventory, type FoundGatekeeper } from "../core/discovery.ts";
 import { isPlaceholder, placeholderPaths, valueAtPath, type DeploymentEdit } from "../core/edits.ts";
 import { publicOrigin } from "../core/deployment.ts";
 import type { AiGatewayProvider, DeploymentConfig } from "../core/deployment-config.ts";
-import { secretSetup, type GatekeeperCatalog } from "../core/gatekeepers.ts";
+import { secretSetup, UNDECLARED_VARS, type GatekeeperCatalog } from "../core/gatekeepers.ts";
 import { baseNameProblem, findInstances, gatekeeperWorkerName, WORKER_NAME, workerNames } from "../core/naming.ts";
 import {
   adminsProblem,
@@ -74,7 +74,8 @@ export const NO_TERMINAL =
   "cf-os init asks questions, and there is no terminal to ask them at. Without one, take over a " +
   "hosted instance with `pnpm cf-os import <instance> --account <id> --out deployment.jsonc`, or " +
   "edit deployment.jsonc by hand: optional Gatekeepers are entries in `gatekeepers`, and " +
-  "`customGatekeeper.enabled: false` drops the example custom one. Then `pnpm cf-os access` sets up Access.";
+  "`customGatekeeper.enabled: false` drops the example custom one; an MCP portal needs " +
+  "`gatekeepers.mcpportal.vars.MCP_PORTAL_URL`. Then `pnpm cf-os access` sets up Access.";
 
 /** What init runs besides `cf` lookups, so tests can record it instead. */
 export interface InitDeps {
@@ -350,7 +351,7 @@ async function newDeployment(session: Session, file: Record<string, unknown>, ca
     accountId: account.id, name, route, admins, aiGateway: { name: gateway, providers }, customGatekeeper,
     gatekeepers, removedGatekeepers: deselected(listed, choice, catalog),
   };
-  const edits = newDeploymentEdits(answers);
+  const edits = [...newDeploymentEdits(answers), ...await askUndeclaredVars(session, file, choice.slugs)];
   edits.push(...await setUpAccess(session, newDeploymentAccessTarget(answers)));
   return { edits, live: [], originFound: true };
 }
@@ -506,6 +507,32 @@ async function nameGatekeepers(
   return names;
 }
 
+/**
+ * The {@link UNDECLARED_VARS} the Gatekeepers `slugs` need that the file does not set usably, asked
+ * for. One the account already runs is asked too: a deploy replaces its plain vars, and discovery
+ * cannot read the value it has. Left empty, the file keeps what it has, for `cf-os check` to warn about.
+ */
+async function askUndeclaredVars(session: Session, file: Record<string, unknown>, slugs: string[]): Promise<DeploymentEdit[]> {
+  const edits: DeploymentEdit[] = [];
+  for (const slug of slugs) {
+    for (const input of UNDECLARED_VARS[slug] ?? []) {
+      const path = ["gatekeepers", slug, "vars", input.name];
+      const current = valueAtPath(file, path);
+      if (typeof current === "string" && current.trim()) {
+        const problem = input.problem(current);
+        if (!problem) continue;
+        session.ctx.out.log(`${path.join(".")} is ${current}, which the Gatekeeper cannot use. ${problem}`);
+      }
+      const value = (await session.prompter.text(
+        `The ${slug} Gatekeeper's ${input.label} (${path.join(".")}); empty to set it later, the Gatekeeper hidden until then`,
+        { validate: (text) => text.trim() ? input.problem(text) : undefined },
+      )).trim();
+      if (value) edits.push({ path, value });
+    }
+  }
+  return edits;
+}
+
 /** The model providers to advertise; the file's own choice is the default when it has one. */
 async function askProviders(session: Session, file: Record<string, unknown>): Promise<AiGatewayProvider[]> {
   const current = valueAtPath(file, ["aiGateway", "providers"]);
@@ -611,7 +638,11 @@ async function takeover(
     removedGatekeepers: deselected(gatekeepersIn(file), choice, catalog),
   };
   // takeoverEdits records the Gatekeepers chosen, found or not; discovery's are only what it found.
-  const edits = [...discovery.edits.filter((edit) => edit.path[0] !== "gatekeepers"), ...takeoverEdits(answers)];
+  const edits = [
+    ...discovery.edits.filter((edit) => edit.path[0] !== "gatekeepers"),
+    ...takeoverEdits(answers),
+    ...await askUndeclaredVars(session, file, choice.slugs),
+  ];
   if (!discovery.edits.some((edit) => edit.path.join(".") === "access.audience")) {
     ctx.out.log("No Access application was found for this instance. After writing, `pnpm cf-os access` " +
       "finds or creates one for its hostname.");

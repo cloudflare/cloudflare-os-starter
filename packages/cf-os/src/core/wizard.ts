@@ -7,7 +7,7 @@ import { isEmail } from "./access.ts";
 import type { CfAiGateway, CfWorker } from "./client.ts";
 import { AI_GATEWAY_PROVIDERS, type AiGatewayProvider } from "./deployment-config.ts";
 import { editsAsFragment, type DeploymentEdit } from "./edits.ts";
-import type { CatalogGatekeeper } from "./gatekeepers.ts";
+import { UNDECLARED_VARS, type CatalogGatekeeper } from "./gatekeepers.ts";
 import { gatekeeperWorkerName, WORKER_NAME, workerNames, type WorkerKey } from "./naming.ts";
 
 /**
@@ -98,9 +98,10 @@ export const CUSTOM_GATEKEEPER_CHOICE = "custom";
 
 /** What an optional Gatekeeper needs, beside its name in the Gatekeeper question. */
 export function gatekeeperHint(entry: CatalogGatekeeper): string {
+  const vars = [...entry.vars, ...UNDECLARED_VARS[entry.slug] ?? []].map((input) => input.name);
   return [
     entry.secrets.length ? `needs ${entry.secrets.map((input) => input.name).join(", ")}` : "no credentials",
-    ...entry.vars.length ? [`vars ${entry.vars.map((input) => input.name).join(", ")}`] : [],
+    ...vars.length ? [`vars ${vars.join(", ")}`] : [],
     ...entry.singleton ? ["one install only"] : [],
   ].join(", ");
 }
