@@ -9,13 +9,17 @@
 // `pnpm api:generate` after moving the pin.
 //
 // stdout is one JSON object for scripts: the files that changed (or, with --check, would) and the
-// commands added, removed and changed relative to the committed schema. Everything else goes to
-// stderr.
+// commands added, removed and changed relative to the committed schema, or, with --since, to the
+// schema committed at that commit. `cf-os update` passes the commit it started from: after a merge
+// that brought regenerated files, the working tree's schema is already the new one. Everything else
+// goes to stderr.
 //
-// Usage: node packages/cf-os/generator/generate.ts [--check]
+// Usage: node packages/cf-os/generator/generate.ts [--check] [--since <commit>]
 
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { type CommandDiff, diffCommands, generate, SCHEMA_PATH, type Schema } from "./emit.ts";
 import { type ExtractOptions, extractSchema } from "./extract.ts";
@@ -43,6 +47,8 @@ export interface GenerateResult {
 export interface GenerateOptions {
   /** Compare only: write nothing. */
   check: boolean;
+  /** The commit whose committed schema the commands are compared with; by default, the working tree's. */
+  since?: string;
   /** The schema to render; by default, extracted from {@link API_SOURCE}. */
   schema?: Schema;
   /** The `cf-os` package the generated paths are relative to. */
@@ -56,7 +62,12 @@ export function generateApi(options: GenerateOptions): GenerateResult {
   const packageDir = options.packageDir ?? PACKAGE;
   const root = options.root ?? ROOT;
   const schema = options.schema ?? extractSchema(API_SOURCE);
-  const commands = diffCommands(committedSchema(join(packageDir, SCHEMA_PATH)), schema);
+  const path = join(packageDir, SCHEMA_PATH);
+  const before = options.since === undefined
+    ? existsSync(path) ? readFileSync(path, "utf8") : undefined
+    : schemaAt(options.since, packageDir);
+  const commands = diffCommands(before === undefined ? undefined
+    : parseSchema(before, options.since === undefined ? path : `${options.since}:${SCHEMA_PATH}`), schema);
   const files: string[] = [];
   for (const file of generate(schema)) {
     const path = join(packageDir, file.path);
@@ -72,31 +83,47 @@ export function generateApi(options: GenerateOptions): GenerateResult {
 }
 
 /**
- * The committed schema the command diff is relative to, or undefined (every command added) when
- * there is none or it does not build a table.
+ * The schema committed at `commit`, or undefined when it had none (a project from before
+ * `cf-os api`). A `commit` git cannot resolve fails the run: a wrong diff would pass for a right one.
  */
-function committedSchema(path: string): Schema | undefined {
-  if (!existsSync(path)) return undefined;
+function schemaAt(commit: string, packageDir: string): string | undefined {
+  const verify = spawnSync("git", ["rev-parse", "--verify", "--quiet", `${commit}^{commit}`], { cwd: packageDir, encoding: "utf8" });
+  if (verify.error) throw new Error(`could not run git: ${verify.error.message}`);
+  if (verify.status !== 0) throw new Error(`--since ${commit}: not a commit`);
+  // `./`: the path is relative to the package, wherever the repository root is.
+  const shown = spawnSync("git", ["show", `${commit}:./${SCHEMA_PATH}`],
+    { cwd: packageDir, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  return shown.status === 0 ? shown.stdout : undefined;
+}
+
+/**
+ * The schema the command diff is relative to, from `where`, or undefined (every command added) when
+ * it does not build a table.
+ */
+function parseSchema(text: string, where: string): Schema | undefined {
   try {
-    const schema = JSON.parse(readFileSync(path, "utf8")) as Schema;
+    const schema = JSON.parse(text) as Schema;
     diffCommands(undefined, schema);
     return schema;
   } catch (error) {
-    console.error(`${path}: unreadable (${(error as Error).message}); counting every command as added`);
+    console.error(`${where}: unreadable (${(error as Error).message}); counting every command as added`);
     return undefined;
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const args = process.argv.slice(2);
-  const unknown = args.filter((arg) => arg !== "--check");
-  if (unknown.length > 0) {
-    console.error(`unknown argument ${unknown[0]}\nUsage: node packages/cf-os/generator/generate.ts [--check]`);
+  const usage = "Usage: node packages/cf-os/generator/generate.ts [--check] [--since <commit>]";
+  let parsed: { values: { check?: boolean; since?: string } } | undefined;
+  try {
+    parsed = parseArgs({ args: process.argv.slice(2), options: { check: { type: "boolean" }, since: { type: "string" } } });
+  } catch (error) {
+    console.error(`${(error as Error).message}\n${usage}`);
     process.exitCode = 1;
-  } else {
-    const check = args.includes("--check");
+  }
+  if (parsed) {
+    const { check = false, since } = parsed.values;
     try {
-      const result = generateApi({ check });
+      const result = generateApi({ check, since });
       process.stdout.write(`${JSON.stringify(result)}\n`);
       if (check && result.files.length > 0) {
         console.error(`API files out of date (run \`pnpm api:generate\`):\n  ${result.files.join("\n  ")}`);

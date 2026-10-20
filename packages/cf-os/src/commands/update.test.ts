@@ -924,7 +924,8 @@ test("runs api:generate after the install only when the root package.json has th
     replies: { "pnpm run api:generate": { stdout: generatedJson({}, []) } },
   });
   assert.equal(code, 0);
-  assert.deepEqual(commands().slice(-2), ["pnpm install", "pnpm run api:generate"]);
+  // Its commands compared with where the update started, not with the working tree a merge changed.
+  assert.deepEqual(commands().slice(-2), ["pnpm install", `pnpm run api:generate --since ${OLD_HEAD}`]);
   // Captured, as its stdout is the JSON read back, and run in the root.
   const generate = ran.at(-1)!;
   assert.deepEqual([generate.cwd, generate.capture], [root, true]);
@@ -967,6 +968,23 @@ test("after a clean starter merge, regenerated API files mean the update is not 
   assert.doesNotMatch(stderr(), /Next: `pnpm cf-os check`/);
   assert.match(stderr(), /Next: ask your coding agent to follow \.cf-os\/update\.md\./);
   assert.match(brief()!, /Then commit them in a commit of their own, right after the merge \(`git add packages\/cf-os\/src\/api\/generated\/schema\.json`\)\./);
+});
+
+test("after a merge that brought the regenerated files, the commands it changed are still the brief's", async (t) => {
+  const { code, json, stderr, brief } = await updating(t, {
+    packageJson: GENERATING, script: [["Merge 2 starter commits", true]],
+    replies: { "pnpm run api:generate": { stdout: generatedJson({ removed: ["public old-thing"] }, []) } },
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(apiOf(json), { status: "generated", files: [], added: [], removed: ["public old-thing"], changed: [] });
+  assert.match(stderr(), /API commands: 0 added, 1 removed, 0 changed; the generated files already match the pin\.\n {2}Removed:\n {4}public old-thing/);
+  // A removed command is work for the agent, not a clean update.
+  assert.match(stderr(), /Next: ask your coding agent to follow \.cf-os\/update\.md\./);
+  const text = brief()!;
+  assert.match(text, new RegExp("## API commands\\n\\n`pnpm run api:generate` ran, and the generated files already matched the pin, " +
+    `as the merge brought them\\. Since \`${OLD_HEAD}\`, where the update started, the API commands changed: 0 added, 1 removed, 0 changed\\.\\n\\nRemoved \\(1\\):\\n\\n- \`public old-thing\``));
+  assert.match(text, /Some `cf-os api` commands were removed or changed \(listed under "API commands"\): that breaks the scripts/);
+  assert.doesNotMatch(text, /left unstaged|git restore -- packages/);
 });
 
 test("api:generate with nothing to change says so, and adds no step", async (t) => {

@@ -5,7 +5,8 @@
 // a brief for the operator's coding agent: what changed in both repositories, what conflicted, and
 // how to finish. Conflicts are left to git; nothing is resolved here. When the root `package.json`
 // has an `api:generate` script, as the starter's does, it then regenerates `cf-os api`'s committed
-// files from the new pin and leaves them unstaged, for review with it.
+// files from the new pin and leaves them unstaged, for review with it, listing the commands changed
+// since the commit the update started from.
 //
 // The starter is fetched from its URL, not through a remote, so this works whether the project kept
 // the `starter` remote `init` made, renamed it or removed it. The submodule follows the starter's
@@ -694,13 +695,17 @@ const apiKinds = (api: GeneratedApi): [string, string[]][] =>
   ([["Added", api.added], ["Removed", api.removed], ["Changed (arguments or result)", api.changed]] as [string, string[]][])
     .filter(([, commands]) => commands.length);
 
+/** Whether any API command was removed or changed: what breaks the scripts, docs and skills calling it. */
+const apiBreaks = (api: GeneratedApi) => api.removed.length > 0 || api.changed.length > 0;
+
 /** The terminal's account of the regenerated API, when it changed: a failure is among the problems. */
 function apiLines(state: Update): string[] {
   const { api } = state;
   if (api?.status !== "generated") return [];
-  if (!api.files.length) return ["API commands: the generated files already match the pin."];
+  if (!api.files.length && !apiKinds(api).length) return ["API commands: the generated files already match the pin."];
   return [
-    `API commands: ${apiCounts(api)}; ${plural(api.files.length, "regenerated file")} left unstaged, for review.`,
+    `API commands: ${apiCounts(api)}; ` +
+      (api.files.length ? `${plural(api.files.length, "regenerated file")} left unstaged, for review.` : "the generated files already match the pin."),
     ...apiKinds(api).flatMap(([kind, commands]) => [
       `  ${kind}:`,
       ...commands.slice(0, API_LISTED).map((command) => `    ${command}`),
@@ -718,12 +723,14 @@ function apiSection(state: Update): string[] {
     ? `${script} failed: see "Still to do".`
     : api.status === "not-run"
       ? `${script} did not run, as the install did not complete.`
-      : !api.files.length
+      : !api.files.length && !apiKinds(api).length
         ? `${script} ran, and the generated files already matched the pin: no API command changed.`
         : [
-          `${script} regenerated \`cf-os api\` from the pin: ${apiCounts(api)}. These files are left unstaged, for review:`,
-          "",
-          ...api.files.map((file) => `- \`${file}\``),
+          api.files.length
+            ? `${script} regenerated \`cf-os api\` from the pin: ${apiCounts(api)}. These files are left unstaged, for review:`
+            : `${script} ran, and the generated files already matched the pin, as the merge brought them. Since ` +
+              `\`${state.oldHead}\`, where the update started, the API commands changed: ${apiCounts(api)}.`,
+          ...api.files.length ? ["", ...api.files.map((file) => `- \`${file}\``)] : [],
           ...apiKinds(api).flatMap(([kind, commands]) => [
             "",
             `${kind} (${commands.length}):`,
@@ -735,10 +742,10 @@ function apiSection(state: Update): string[] {
   return ["## API commands", "", text, ""];
 }
 
-/** The step for `cf-os api`'s generated files, unless generation ran and changed nothing. */
+/** The step for `cf-os api`'s generated files and changed commands, unless generation ran and changed nothing. */
 function apiStep(state: Update): string[] {
   const { api } = state;
-  if (!api || api.status === "generated" && !api.files.length) return [];
+  if (!api || api.status === "generated" && !api.files.length && !apiBreaks(api)) return [];
   const check = "`pnpm lint` runs `api:check`, which fails until they match the pin.";
   if (api.status === "not-run") {
     return [`Once \`pnpm install\` has run, run \`pnpm ${API_GENERATE}\` too, and review the files it regenerates with the ` +
@@ -747,6 +754,10 @@ function apiStep(state: Update): string[] {
   if (api.status === "failed") {
     return [`\`pnpm run ${API_GENERATE}\` failed: fix what it reports (the install, or a type in the new \`api.ts\` the ` +
       `generator does not handle), run it again, and review the files it regenerates with the pin. ${check}`];
+  }
+  if (!api.files.length) {
+    return ["Some `cf-os api` commands were removed or changed (listed under \"API commands\"): that breaks the scripts, " +
+      "docs and skills that call them, so update those."];
   }
   return [`\`cf-os api\`'s generated files were regenerated from the pin and left unstaged (listed under "API commands"). ` +
     `Review them${state.staged ? " with the staged pin" : ""}: a removed or changed command breaks the scripts, docs and ` +
@@ -981,7 +992,9 @@ function parseGenerated(stdout: string): GeneratedApi | undefined {
 function generateApi(ctx: Context, deps: UpdateDeps, state: Update): ApiGeneration {
   ctx.out.log(`\nRunning pnpm run ${API_GENERATE}.`);
   // Captured, as its stdout is the result read here. Its log is shown at a terminal, and when it fails.
-  const result = deps.spawn("pnpm", ["run", API_GENERATE], { cwd: ctx.root, capture: true });
+  // Compared with where the update started: a merge that brought regenerated files has already
+  // replaced the working tree's schema, which would otherwise be the baseline.
+  const result = deps.spawn("pnpm", ["run", API_GENERATE, "--since", state.oldHead], { cwd: ctx.root, capture: true });
   const generated = succeeded(result) ? parseGenerated(result.stdout) : undefined;
   if (generated) {
     if (ctx.prompter && result.stderr?.trim()) ctx.out.log(result.stderr.trimEnd());
@@ -1177,7 +1190,7 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
     : result.newPin !== oldPin && !result.conflicts.includes(path) ? `${path} is at the starter's ${short(result.newPin)}.` : "";
   ctx.out.log(["", outcome, pin, ...apiLines(result), ...result.problems, `Wrote ${where}.`].filter(Boolean).join("\n"));
   // Regenerated API files are left to commit, so the update is not finished either.
-  const regenerated = result.api?.status === "generated" && result.api.files.length > 0;
+  const regenerated = result.api?.status === "generated" && (result.api.files.length > 0 || apiBreaks(result.api));
   const clean = isStarter && result.merge !== "conflicted" && !result.problems.length && !result.staged && !regenerated;
   // With nobody at a terminal, it is usually the coding agent itself that ran this: the brief's steps are its own.
   ctx.out.log(!ctx.prompter

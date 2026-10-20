@@ -69,6 +69,40 @@ test("counts every command as added when the committed schema is unreadable, say
   assert.ok(!existsSync(join(dir, COMMANDS_PATH)));
 });
 
+/** Runs git in `cwd`, as a throwaway identity, returning its stdout. */
+function git(cwd: string, ...args: string[]): string {
+  const result = spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", ...args],
+    { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
+test("with since, compares the commands with that commit's schema, not the working tree's", (t) => {
+  const dir = scratch(t);
+  t.mock.method(console, "error", () => {});
+  git(dir, "init", "-q");
+  git(dir, "commit", "-q", "--allow-empty", "-m", "before cf-os api");
+  const none = git(dir, "rev-parse", "HEAD");
+  generateApi({ check: false, schema: fixture(), packageDir: dir, root: dir });
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "api");
+  const old = git(dir, "rev-parse", "HEAD");
+  // A merge that brings the regenerated files: the working tree's schema is already the new one.
+  const schema = fixture();
+  schema.services.Notebook!.methods = schema.services.Notebook!.methods.filter((m) => m.name !== "lock");
+  generateApi({ check: false, schema, packageDir: dir, root: dir });
+  git(dir, "commit", "-q", "-am", "merge");
+
+  assert.deepEqual(generateApi({ check: true, schema, packageDir: dir, root: dir }).commands.removed, []);
+  assert.deepEqual(generateApi({ check: true, schema, packageDir: dir, root: dir, since: old }),
+    { files: [], commands: { added: [], removed: ["open-notebook lock"], changed: [] } });
+  // A commit from before `cf-os api` has no schema: every command is new.
+  assert.equal(generateApi({ check: true, schema, packageDir: dir, root: dir, since: none }).commands.added.length,
+    commandEntries(schema).size);
+  assert.throws(() => generateApi({ check: true, schema, packageDir: dir, root: dir, since: "nope" }),
+    /--since nope: not a commit/);
+});
+
 test("the script: JSON on stdout, --check passing while fresh, usage on a bad argument", () => {
   const check = spawnSync(process.execPath, [SCRIPT, "--check"], { encoding: "utf8" });
   assert.equal(check.status, 0, check.stderr);
@@ -77,5 +111,5 @@ test("the script: JSON on stdout, --check passing while fresh, usage on a bad ar
   const bad = spawnSync(process.execPath, [SCRIPT, "--chek"], { encoding: "utf8" });
   assert.equal(bad.status, 1);
   assert.equal(bad.stdout, "");
-  assert.match(bad.stderr, /unknown argument --chek\nUsage: node packages\/cf-os\/generator\/generate\.ts \[--check\]/);
+  assert.match(bad.stderr, /Unknown option '--chek'.*\nUsage: node packages\/cf-os\/generator\/generate\.ts \[--check\] \[--since <commit>\]/);
 });
