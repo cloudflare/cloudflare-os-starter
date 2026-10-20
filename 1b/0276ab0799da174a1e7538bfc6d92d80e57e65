@@ -1,0 +1,23 @@
+packages/cf-os/src/cf-client.test.ts
+  s_85bfd4081fca2d::t_2ab097d9cd8c10 275-276,280,283
+packages/cf-os/src/main.test.ts
+  s_85bfd4081fca2d::t_ab1f6a3406f20f 235-236,241,245,249
+packages/cf-os/src/tools.test.ts
+  s_85bfd4081fca2d::t_71cc3f520d735a 62-63,67,73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1b0276ab0799da174a1e7538bfc6d92d80e57e65",
+  "prompts": {},
+  "sessions": {
+    "s_85bfd4081fca2d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec18836d-070a-48ab-b7e5-7c4c15a36cc6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
