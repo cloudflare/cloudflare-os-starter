@@ -101,9 +101,13 @@ test("--out to another path leaves the input untouched", async (t) => {
   assert.equal(valueAtPath(filled, ["workers", "workshop", "name"]), "acme-backend");
 });
 
-/** A template for router `router` whose `gatekeepers` block names beta's GitHub and Home Assistant Workers. */
-function gatekeepersTemplate(router: string): string {
-  return TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', JSON.stringify(router)).replace('"gatekeepers": {},',
+/**
+ * A template for router `router` in account `accountId`, whose `gatekeepers` block names beta's GitHub
+ * and Home Assistant Workers.
+ */
+function gatekeepersTemplate(router: string, accountId = FAKE_ACCOUNT): string {
+  return TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', JSON.stringify(router))
+    .replace('"<CLOUDFLARE_ACCOUNT_ID>"', JSON.stringify(accountId)).replace('"gatekeepers": {},',
     '"gatekeepers": { "github": { "name": "beta-gk-github" }, "homeassistant": { "name": "beta-gk-homeassistant" } },');
 }
 
@@ -115,7 +119,7 @@ test("--out removes the gatekeepers entries of a file for another router, and sa
   const written = parseDeployment(readFileSync(join(root, "acme.jsonc"), "utf8"));
   assert.deepEqual(valueAtPath(written, ["gatekeepers"]), { github: { name: "acme-gk-github" } });
   assert.deepEqual((json[0] as Record<string, any>).gatekeepers, { github: { name: "acme-gk-github" } });
-  assert.match(stderr(), /Note: The file's workers\.router\.name is not acme, so the Gatekeeper Workers its gatekeepers block names may be another deployment's, and are left alone\. --out removes their entries: gatekeepers\.homeassistant \(beta-gk-homeassistant\)\./);
+  assert.match(stderr(), new RegExp(`Note: The file is not acme's in account ${FAKE_ACCOUNT} \\(its workers\\.router\\.name or accountId differs\\), so the Gatekeeper Workers its gatekeepers block names may be another deployment's, and are left alone\\. --out removes their entries: gatekeepers\\.homeassistant \\(beta-gk-homeassistant\\)\\.`));
   assert.match(stderr(), /Wrote \d+ values to acme\.jsonc, removing 1 gatekeepers entry \(local file only/);
 });
 
@@ -129,6 +133,18 @@ test("keeps the gatekeepers entries of the instance's own file", async (t) => {
     homeassistant: { name: "beta-gk-homeassistant" },
   });
   assert.doesNotMatch(stderr(), /removing|--out removes/);
+});
+
+test("treats a file for the same router in another account, or in none yet, as another deployment's", async (t) => {
+  for (const accountId of ["f".repeat(32), "<CLOUDFLARE_ACCOUNT_ID>"]) {
+    const root = scratchProject(t, gatekeepersTemplate("acme", accountId));
+    const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT } });
+    assert.equal(code, 0);
+    // Not the instance's own file, so beta's Home Assistant Worker is not bound in this account.
+    const written = parseDeployment(readFileSync(join(root, "acme.jsonc"), "utf8"));
+    assert.deepEqual(valueAtPath(written, ["gatekeepers"]), { github: { name: "acme-gk-github" } });
+    assert.match(stderr(), /accountId differs[\s\S]*gatekeepers\.homeassistant \(beta-gk-homeassistant\)/);
+  }
 });
 
 test("without an account, lists the ones cf can reach and stops", async (t) => {

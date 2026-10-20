@@ -17,7 +17,7 @@ import { cachedReads, INVENTORY_LABEL } from "../cached-reads.ts";
 import { configPath, displayPath, UsageError, type CommandArgs, type Context } from "../context.ts";
 import type { CloudflareClient } from "../core/client.ts";
 import { discover, fetchInventory, type Discovery, type Inventory } from "../core/discovery.ts";
-import { editsAsFragment, valueAtPath, type DeploymentEdit } from "../core/edits.ts";
+import { editsAsFragment, isPlaceholder, valueAtPath, type DeploymentEdit } from "../core/edits.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import { findInstances, WORKER_NAME } from "../core/naming.ts";
 import { parseDeployment, updateDeployment } from "../deployment-file.ts";
@@ -38,20 +38,34 @@ export function discoverInstance(n: string, inventory: Inventory, catalog: Gatek
 }
 
 /**
- * The file's `gatekeepers` entries to remove when the file is not instance `n`'s: its
- * `workers.router.name` is another, so it may be another deployment's in the same account, and
- * binding the Workers it names would deploy over that deployment's Gatekeepers (`cf-os init`'s
- * takeover leaves them out too). Slugs `discovery` found for `n` stay, as its edits rename them to
- * the instance's own Workers. Each removal comes with a note naming the Worker left alone.
+ * Whether `file` is instance `n`'s in account `accountId`, as on a rerun after a deploy: its
+ * `workers.router.name` is `n` and its `accountId` is that account. Only then are the Workers it
+ * names the instance's own. A router of the same name in another account (`--account`, or another
+ * account picked) is another deployment, whose Worker names may be anyone's in this account; so is
+ * a file whose `accountId` is still a placeholder, which was never deployed.
+ */
+export function fileIsInstance(file: Record<string, unknown>, accountId: string, n: string): boolean {
+  const fileAccount = valueAtPath(file, ["accountId"]);
+  return valueAtPath(file, ["workers", "router", "name"]) === n &&
+    typeof fileAccount === "string" && !isPlaceholder(fileAccount) &&
+    fileAccount.toLowerCase() === accountId.toLowerCase();
+}
+
+/**
+ * The file's `gatekeepers` entries to remove when the file is not instance `n`'s in account
+ * `accountId` ({@link fileIsInstance}): it may be another deployment's, and binding the Workers it
+ * names would deploy over them (`cf-os init`'s takeover leaves them out too). Slugs `discovery` found
+ * for `n` stay, as its edits rename them to the instance's own Workers. Each removal comes with a
+ * note naming the Worker left alone.
  */
 export function foreignGatekeepers(
   file: Record<string, unknown>,
+  accountId: string,
   n: string,
   discovery: Discovery,
 ): { removals: DeploymentEdit[]; note?: string } {
   const block = valueAtPath(file, ["gatekeepers"]);
-  if (valueAtPath(file, ["workers", "router", "name"]) === n || !block || typeof block !== "object" ||
-      Array.isArray(block)) {
+  if (fileIsInstance(file, accountId, n) || !block || typeof block !== "object" || Array.isArray(block)) {
     return { removals: [] };
   }
   const slugs = Object.keys(block).filter((slug) => !discovery.foundGatekeepers.some((found) => found.slug === slug));
@@ -62,8 +76,9 @@ export function foreignGatekeepers(
   });
   return {
     removals: slugs.map((slug) => ({ path: ["gatekeepers", slug], value: undefined })),
-    note: `The file's workers.router.name is not ${n}, so the Gatekeeper Workers its gatekeepers block names ` +
-      `may be another deployment's, and are left alone. --out removes their entries: ${listed.join(", ")}.`,
+    note: `The file is not ${n}'s in account ${accountId} (its workers.router.name or accountId differs), so the ` +
+      "Gatekeeper Workers its gatekeepers block names may be another deployment's, and are left alone. --out " +
+      `removes their entries: ${listed.join(", ")}.`,
   };
 }
 
@@ -173,7 +188,7 @@ export async function run(
   const reading = fetchInventory(quiet, account.id);
   const inventory = await (pending() ? waitOn(ctx.prompter, INVENTORY_LABEL, () => reading) : reading);
   const discovery = discoverInstance(instance, inventory, await catalog(ctx.root));
-  const { removals, note } = foreignGatekeepers(file, instance, discovery);
+  const { removals, note } = foreignGatekeepers(file, account.id, instance, discovery);
   if (note) discovery.notes.push(note);
 
   ctx.out.log(`Hosted instance "${instance}" in account ${account.id}:\n`);

@@ -58,8 +58,9 @@ example custom Gatekeeper's name and message. The Gatekeeper question preselects
 Gatekeeper and every optional Gatekeeper the wizard installed that the starter can deploy (an
 `N-gk-github`, say), plus any the file's `gatekeepers` already names whose Worker the account runs
 (a rerun after a deploy), under the file's name. It takes the file's entries only when its
-`workers.router.name` is `N`: a file written for another deployment in the same account names that
-deployment's Gatekeeper Workers, which it lists and leaves alone. Where the instance's own file names
+`workers.router.name` is `N` and its `accountId` is the account being taken over: a file written for
+another deployment, in this account or another, names that deployment's Gatekeeper Workers, which it
+lists and leaves alone. Where the instance's own file names
 a different Worker for a Gatekeeper than its `N-gk-<slug>`, it asks which one to bind, defaulting to
 the instance's. Leaving one out, or picking
 the file's Worker over the instance's, warns that it loses its binding (section 8). Leaving out the
@@ -86,7 +87,8 @@ of the accounts `cf` can reach to search, and with no `N`, which instance; outsi
 in CI, it lists them and stops instead. Without `--out` it prints the values as JSON on stdout (the
 report goes to stderr) and ends with the full command to re-run with `--out`. The values include
 `gatekeepers.<slug>.name` for each optional Gatekeeper it found that the starter can deploy. A
-file whose `workers.router.name` is not `N` may be another deployment's, so the Gatekeeper Workers
+file whose `workers.router.name` is not `N`, or whose `accountId` is not the account read (as with
+`--account`), may be another deployment's, so the Gatekeeper Workers
 its `gatekeepers` block names are left alone: the report lists the entries it did not find for `N`,
 and `--out` removes them rather than bind that deployment's Workers to this one. It
 leaves `access.admins`, the two new Worker names and the custom Gatekeeper's text for you to fill

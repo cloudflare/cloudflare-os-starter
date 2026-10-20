@@ -993,7 +993,7 @@ test("on a takeover, warns that leaving out a live custom Gatekeeper unbinds it"
 });
 
 test("on a takeover, names the file's own custom Gatekeeper Worker when leaving it out unbinds it", async (t) => {
-  const own = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"acme"')
+  const own = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"acme"').replace('"<CLOUDFLARE_ACCOUNT_ID>"', `"${FAKE_ACCOUNT}"`)
     .replace('"<CUSTOM_GATEKEEPER_WORKER_NAME>"', '"acme-example"');
   const { stderr } = await init(t, WITHOUT_CUSTOM, hostedWith("acme-example", "acme-gk-custom"), { template: own });
   assert.match(stderr(), /Warning: leaving out acme-example removes its binding/);
@@ -1018,7 +1018,7 @@ function withCustom(worker: string | typeof DEFAULT): Step[] {
 }
 
 /** The instance's own file, naming `acme-example` as its custom Gatekeeper's Worker. */
-const OWN_CUSTOM = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"acme"')
+const OWN_CUSTOM = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"acme"').replace('"<CLOUDFLARE_ACCOUNT_ID>"', `"${FAKE_ACCOUNT}"`)
   .replace('"<CUSTOM_GATEKEEPER_WORKER_NAME>"', '"acme-example"');
 
 test("on a takeover rerun, keeps the custom Gatekeeper on the Worker the file names", async (t) => {
@@ -1058,9 +1058,13 @@ function renamedGithubAccount(): Record<string, FakeReply> {
   };
 }
 
-/** A template for router `router` whose `gatekeepers` block names `worker` as the GitHub Gatekeeper's Worker. */
-function githubTemplate(router: string, worker: string): string {
+/**
+ * A template for router `router` in account `accountId`, whose `gatekeepers` block names `worker` as
+ * the GitHub Gatekeeper's Worker.
+ */
+function githubTemplate(router: string, worker: string, accountId = FAKE_ACCOUNT): string {
   return TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', JSON.stringify(router))
+    .replace('"<CLOUDFLARE_ACCOUNT_ID>"', JSON.stringify(accountId))
     .replace('"gatekeepers": {},', `"gatekeepers": { "github": { "name": ${JSON.stringify(worker)} } },`);
 }
 
@@ -1188,8 +1192,26 @@ test("on a takeover with another deployment's file, leaves the GitHub Worker it 
   assert.ok(!prompter.asked.some((question) => question.message.startsWith("Which Worker is")));
   assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), {});
   const log = stderr();
-  assert.match(log, /The file's workers\.router\.name is not acme, so the Gatekeeper Workers its gatekeepers block names may be another deployment's, and are left alone: zeta-gk-github\./);
+  assert.match(log, new RegExp(`The file is not acme's in account ${FAKE_ACCOUNT} \\(its workers\\.router\\.name or accountId differs\\), so the Gatekeeper Workers its gatekeepers block names may be another deployment's, and are left alone: zeta-gk-github\\.`));
   assert.doesNotMatch(log, /zeta-gk-github already runs|Warning: leaving out/);
+});
+
+test("on a takeover, a file for the same router in another account binds none of the Workers it names", async (t) => {
+  // The account runs a Worker by the name the file gives its GitHub Gatekeeper, but the file is
+  // another account's: not asked about, not bound, and the custom Gatekeeper keeps the instance's name.
+  const { written, prompter, stderr } = await init(t, withCustom(DEFAULT), {
+    ...otherGithubAccount(),
+    "workers list": [...otherGithubAccount()["workers list"] as { name: string }[], { name: "acme-example" }],
+  }, {
+    flags: { account: FAKE_ACCOUNT },
+    template: githubTemplate("acme", "other-gk-github", "f".repeat(32))
+      .replace('"<CUSTOM_GATEKEEPER_WORKER_NAME>"', '"acme-example"'),
+  });
+  assert.ok(!prompter.asked.some((question) => question.message.startsWith("Which Worker is")));
+  assert.equal(prompter.asked.find((question) => question.message === "Custom Gatekeeper Worker name")!.initial,
+    "acme-gk-custom");
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), { github: { name: "acme-gk-github" } });
+  assert.match(stderr(), /accountId differs\), so the Gatekeeper Workers its gatekeepers block names may be another deployment's, and are left alone: other-gk-github\./);
 });
 
 test("without a Gatekeeper catalog, still asks about the custom Gatekeeper", async (t) => {

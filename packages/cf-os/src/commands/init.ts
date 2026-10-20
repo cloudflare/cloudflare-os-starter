@@ -71,7 +71,7 @@ import { localBin } from "../local-bin.ts";
 import { type Prompter, waitOn } from "../prompt.ts";
 import { defaultCapture, defaultSpawn, succeeded, type CaptureTool, type SpawnTool, type ToolResult } from "../tools.ts";
 import { accountFlag, resolveAccount, type ResolvedAccount } from "./account.ts";
-import { discoverInstance, formatReport, pickInstance } from "./import.ts";
+import { discoverInstance, fileIsInstance, formatReport, pickInstance } from "./import.ts";
 
 const accountIdPattern = /^[a-f\d]{32}$/i;
 
@@ -435,11 +435,10 @@ function gatekeepersIn(file: Record<string, unknown>): string[] {
 
 /**
  * The optional Gatekeepers the account already runs for instance `n`: the `<n>-gk-<slug>` Workers
- * `discovered` for it and, when the file is this deployment's (its `workers.router.name` is `n`, as
- * on a rerun after a deploy), the file's `gatekeepers` entries whose Worker exists, under whatever
- * name it has. A file for another router may be another deployment's in the same account, and
- * binding the Workers it names would deploy over that deployment's Gatekeepers, so its entries are
- * left out. Where the file and discovery name different Workers for one slug, the file may name a
+ * `discovered` for it and, when the file is this deployment's ({@link fileIsInstance}, as on a rerun
+ * after a deploy), the file's `gatekeepers` entries whose Worker exists, under whatever name it has.
+ * Any other file may be another deployment's, and binding the Workers it names would deploy over
+ * them, so its entries are left out. Where the file and discovery name different Workers for one slug, the file may name a
  * Worker renamed by hand, so the operator picks; `passedOver` holds the instance's Worker when it is
  * not picked, which loses its binding as a deselected one does.
  */
@@ -457,12 +456,13 @@ async function liveGatekeepers(
         workers.some((worker) => worker.name === name)
       ? [{ slug, name }] : [];
   });
-  const router = valueAtPath(file, ["workers", "router", "name"]);
-  const fromFile = router === n ? running : [];
+  const instanceFile = fileIsInstance(file, session.account.id, n);
+  const fromFile = instanceFile ? running : [];
   const foreign = running.filter(({ name }) => !discovered.some((gatekeeper) => gatekeeper.name === name));
-  if (router !== n && foreign.length) {
-    session.ctx.out.log(`The file's workers.router.name is not ${n}, so the Gatekeeper Workers its gatekeepers ` +
-      `block names may be another deployment's, and are left alone: ${foreign.map(({ name }) => name).join(", ")}.`);
+  if (!instanceFile && foreign.length) {
+    session.ctx.out.log(`The file is not ${n}'s in account ${session.account.id} (its workers.router.name or ` +
+      "accountId differs), so the Gatekeeper Workers its gatekeepers block names may be another deployment's, " +
+      `and are left alone: ${foreign.map(({ name }) => name).join(", ")}.`);
   }
   const found: FoundGatekeeper[] = [];
   const passedOver: FoundGatekeeper[] = [];
@@ -488,24 +488,26 @@ async function liveGatekeepers(
 }
 
 /**
- * The example custom Gatekeeper's Worker the account runs for instance `n`, if any: the file's
- * `workers.customGatekeeper.name` when the file is this deployment's (its `workers.router.name` is
- * `n`), else `<n>-gk-custom`. None when that file deploys no custom Gatekeeper, as nothing binds it.
- * Leaving the custom Gatekeeper out unbinds this Worker, with its Durable Object's state.
+ * The example custom Gatekeeper's Worker the account runs for instance `n` in account `accountId`, if
+ * any: the file's `workers.customGatekeeper.name` when the file is this deployment's
+ * ({@link fileIsInstance}), else `<n>-gk-custom`. None when that file deploys no custom Gatekeeper, as
+ * nothing binds it. Leaving the custom Gatekeeper out unbinds this Worker, with its Durable Object's
+ * state.
  */
-function liveCustomGatekeeper(file: Record<string, unknown>, n: string, workers: CfWorker[]): string[] {
-  const own = valueAtPath(file, ["workers", "router", "name"]) === n;
+function liveCustomGatekeeper(file: Record<string, unknown>, accountId: string, n: string, workers: CfWorker[]): string[] {
+  const own = fileIsInstance(file, accountId, n);
   if (own && valueAtPath(file, ["customGatekeeper", "enabled"]) === false) return [];
-  const name = fileCustomGatekeeper(file, n) ?? workerNames(n).customGatekeeper;
+  const name = fileCustomGatekeeper(file, accountId, n) ?? workerNames(n).customGatekeeper;
   return workers.some((worker) => worker.name === name) ? [name] : [];
 }
 
 /**
- * The custom Gatekeeper's Worker name the file gives instance `n`: its `workers.customGatekeeper.name`
- * when the file is this deployment's (its `workers.router.name` is `n`) and the name is filled in.
+ * The custom Gatekeeper's Worker name the file gives instance `n` in account `accountId`: its
+ * `workers.customGatekeeper.name` when the file is this deployment's ({@link fileIsInstance}) and the
+ * name is filled in.
  */
-function fileCustomGatekeeper(file: Record<string, unknown>, n: string): string | undefined {
-  if (valueAtPath(file, ["workers", "router", "name"]) !== n) return undefined;
+function fileCustomGatekeeper(file: Record<string, unknown>, accountId: string, n: string): string | undefined {
+  if (!fileIsInstance(file, accountId, n)) return undefined;
   const named = valueAtPath(file, ["workers", "customGatekeeper", "name"]);
   return typeof named === "string" && !isPlaceholder(named) ? named : undefined;
 }
@@ -689,14 +691,14 @@ async function takeover(
     "Web Search Gatekeeper Worker name (the instance has none; the deploy creates it)", names.websearch);
   const { found, passedOver } = await liveGatekeepers(session, instance, file, inventory.workers, catalog, discovery.foundGatekeepers);
   const choice = await askGatekeepers(session, catalog, [CUSTOM_GATEKEEPER_CHOICE, ...found.map(({ slug }) => slug)]);
-  const liveCustom = liveCustomGatekeeper(file, instance, inventory.workers);
+  const liveCustom = liveCustomGatekeeper(file, account.id, instance, inventory.workers);
   const unbinds = (name: string) => ctx.out.log(`Warning: leaving out ${name} removes its binding, so it ` +
     "disappears from the app along with every user's connection to it. The Worker keeps running; " +
     `\`CLOUDFLARE_ACCOUNT_ID=${account.id} pnpm exec wrangler delete --name ${name}\` removes it.`);
   [...passedOver, ...found.filter(({ slug }) => !choice.slugs.includes(slug))].forEach(({ name }) => unbinds(name));
   if (!choice.custom) liveCustom.forEach(unbinds);
   // A rerun keeps the custom Gatekeeper on the Worker the file names, which holds its users' connections.
-  const ownCustom = liveCustom.find((name) => name === fileCustomGatekeeper(file, instance));
+  const ownCustom = liveCustom.find((name) => name === fileCustomGatekeeper(file, account.id, instance));
   const customWorker = choice.custom
     ? await askNewWorker(session, inventory.workers, "Custom Gatekeeper Worker name",
       ownCustom ?? names.customGatekeeper, ownCustom)
