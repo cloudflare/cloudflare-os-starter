@@ -1,0 +1,33 @@
+packages/cf-os/README.md
+  s_ead67d6ad8a0d3::t_d9a164bac7624f 21
+packages/cf-os/src/back.test.ts
+  s_ead67d6ad8a0d3::t_636128fa1539ad 1-135
+packages/cf-os/src/back.ts
+  s_ead67d6ad8a0d3::t_1f72b67db034f3 1-118
+packages/cf-os/src/commands/init.test.ts
+  s_ead67d6ad8a0d3::t_0d88bcccb394ba 8,10,1133-1251
+packages/cf-os/src/commands/init.ts
+  s_ead67d6ad8a0d3::t_a7f58311a01b42 18-21,28,135-159,277,280-289,292,310,877-899,901-905
+packages/cf-os/src/prompt.ts
+  s_ead67d6ad8a0d3::t_7811e41625aceb 5-7,9,50-54,64-70,80,82,88-93,96-120,124,129-130,134-135,144-146,149,151
+packages/cf-os/src/test-support.ts
+  s_ead67d6ad8a0d3::t_e09df600a12c80 14,22-24,42-43,58-59,64-67,69,77-80,84
+packages/cf-os/src/prompt.test.ts
+  s_ead67d6ad8a0d3::t_3b6ba005b1d170 1-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "197d2414c3d5201e7a5fc3fe4ed59152a51e343f",
+  "prompts": {},
+  "sessions": {
+    "s_ead67d6ad8a0d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "21b00b20-c504-4834-b7f9-fa9454afe5bf",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
