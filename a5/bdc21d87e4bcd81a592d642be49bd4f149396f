@@ -1,0 +1,21 @@
+packages/cf-os/src/prompt.test.ts
+  s_53746b44a2d906::t_5c416e0e7f14d0 5-6,84-96,100,103-106,110-113
+packages/cf-os/src/prompt.ts
+  s_53746b44a2d906::t_6286e87610369e 14-17,121-124,126,128-131,135-141,203,249-251,262,264-265,267,269
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a5bdc21d87e4bcd81a592d642be49bd4f149396f",
+  "prompts": {},
+  "sessions": {
+    "s_53746b44a2d906": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a076fd1f-5661-4872-8579-0961ded799fe",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
