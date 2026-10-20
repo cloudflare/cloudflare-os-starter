@@ -1,0 +1,25 @@
+packages/cf-os/src/core/deployment.test.ts
+  s_d5152c2bc63aeb::t_78622160a0e1de 27,867-890
+docs/customization.md
+  s_d5152c2bc63aeb::t_3586d123f0530b 98
+packages/cf-os/src/core/deployment.ts
+  s_d5152c2bc63aeb::t_0ef11e6b0565dc 794-796,801-806
+packages/cf-os/src/test-support.ts
+  s_d5152c2bc63aeb::t_1f20b336bccb46 300-306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6604296c908761feae74ecc45d9e6822ffc5ded3",
+  "prompts": {},
+  "sessions": {
+    "s_d5152c2bc63aeb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "92dcecce-6b08-423e-a39a-0c4541bdf031",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
