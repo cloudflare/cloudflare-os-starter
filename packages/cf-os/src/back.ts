@@ -1,6 +1,7 @@
 // Going back a question. A command runs its questions as one function, and Esc on one runs it again:
 // the answers before the previous question are replayed without asking, and that question is asked
-// again with its earlier answer as the default. A replay repeats whatever ran between the questions,
+// again with its earlier answer as the default. At the first question there is nothing to go back
+// to, so Esc there cancels, as it does anywhere else. A replay repeats whatever ran between the questions,
 // so that has to be reads, which the command can cache; nothing it creates may come before a question.
 
 import type { Output } from "./context.ts";
@@ -25,8 +26,8 @@ interface Answered {
 
 /**
  * Runs `run`, whose questions go back on Esc. `run` asks through the prompter it is handed and prints
- * through the output, which is silent while answers are replayed, so nothing prints twice. Esc at the
- * first question asks it again. Without a {@link Prompter.backable} view, `run` runs once, as is.
+ * through the output, which is silent while answers are replayed, so nothing prints twice. Without a
+ * {@link Prompter.backable} view, `run` runs once, as is.
  */
 export async function withBack<T>(
   prompter: Prompter,
@@ -67,19 +68,16 @@ export async function withBack<T>(
       reask = undefined;
       if (!hinted) out.log(BACK_HINT);
       hinted = true;
-      for (;;) {
-        try {
-          const answer = await prompt(live, previous);
-          history.push({ kind, message, answer });
-          return answer;
-        } catch (error) {
-          if (!(error instanceof Back)) throw error;
-          if (at === 0) continue;
+      try {
+        const answer = await prompt(at === 0 ? prompter : live, previous);
+        history.push({ kind, message, answer });
+        return answer;
+      } catch (error) {
+        if (error instanceof Back) {
           reask = history[at - 1];
           history.length = at - 1;
-          out.log(`Back to: ${reask.message}`);
-          throw error;
         }
+        throw error;
       }
     };
 

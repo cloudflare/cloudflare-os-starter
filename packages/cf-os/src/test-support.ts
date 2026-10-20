@@ -19,7 +19,7 @@ export const DEFAULT = Symbol("default");
 /** Cancel the prompt, as Ctrl-C would. */
 export const CANCEL = Symbol("cancel");
 
-/** Press Esc, to go back a question: only on the {@link Prompter.backable} view. */
+/** Press Esc: on the {@link Prompter.backable} view it goes back a question; elsewhere it cancels. */
 export const BACK = Symbol("back");
 
 /** One scripted answer: the prompt it expects (a substring or pattern of its message), and the reply. */
@@ -56,7 +56,7 @@ function describeChoices(choices: Choice[]): Pick<Asked, "choices" | "hints"> {
  * script fails the test -- so a script is also an assertion about what was asked. A password answer
  * the validation refuses is asked again, as the terminal does, from the next step; the record never
  * holds a password answer. Its {@link Prompter.backable} view answers from the same script, and only
- * there may a step answer {@link BACK}.
+ * there does a step answering {@link BACK} go back.
  */
 export function scriptedPrompter(script: Step[]): Prompter & { asked: Asked[]; remaining: () => Step[] } {
   const steps = [...script];
@@ -73,11 +73,8 @@ function scriptedView(steps: Step[], asked: Asked[], backable: boolean): Prompte
     const [expected, answer] = step;
     if (typeof expected === "string") assert.ok(record.message.includes(expected), `expected a prompt about "${expected}", got "${record.message}"`);
     else assert.match(record.message, expected);
-    if (answer === CANCEL) throw new Cancelled();
-    if (answer === BACK) {
-      assert.ok(backable, `Esc goes back only where a command lets you: "${record.message}"`);
-      throw new Back();
-    }
+    if (answer === CANCEL || answer === BACK && !backable) throw new Cancelled();
+    if (answer === BACK) throw new Back();
     return answer === DEFAULT ? record.initial : answer;
   };
   return {

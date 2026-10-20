@@ -18,6 +18,7 @@ import {
   type Step,
 } from "../test-support.ts";
 import type { Context } from "../context.ts";
+import { Cancelled } from "../prompt.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import type { PendingSecrets } from "../gatekeeper-secrets.ts";
 import { configure, NO_TERMINAL, run, type InitDeps } from "./init.ts";
@@ -1147,7 +1148,6 @@ test("Esc at the route question goes back to the base name, offering the old one
   assert.equal(valueAtPath(file, ["workers", "router", "name"]), "acme-two");
   assert.equal(valueAtPath(file, ["workers", "errorReporter", "name"]), "acme-two-errors");
   assert.equal(stderr().split(BACK_HINT).length, 2, "the hint once");
-  assert.match(stderr(), /Back to: Base name/);
   // The way back reads nothing again: as many `cf` calls as going straight there.
   const straight = await init(t, [["What are you setting up?", "new"], ["Base name", "acme-two"], ...tail]);
   assert.equal(calls.length, straight.calls.length);
@@ -1245,7 +1245,7 @@ test("the Access step creates the One-time PIN provider only after its last ques
   assert.equal(valueAtPath(accepted.written(), ["access", "audience"]), "aud-new");
 });
 
-test("Esc does not go back once the file is written", async (t) => {
-  await assert.rejects(init(t, [...COMPLETE, ["Deploy now?", BACK]], completeAccount()),
-    /Esc goes back only where a command lets you: "Deploy now\?"/);
+test("Esc cancels at the first question, and once the file is written", async (t) => {
+  await assert.rejects(init(t, [["What are you setting up?", BACK]]), Cancelled);
+  await assert.rejects(init(t, [...COMPLETE, ["Deploy now?", BACK]], completeAccount()), Cancelled);
 });

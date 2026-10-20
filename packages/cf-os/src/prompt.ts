@@ -96,10 +96,40 @@ export function terminalPrompter(): Prompter | null {
   return isInteractive() ? clackPrompter() : null;
 }
 
+/** How clack moves the cursor down and up: a newline, or CSI A (up) and B (down) with a count. */
+// eslint-disable-next-line no-control-regex -- terminal escapes are what is matched
+const CURSOR_MOVES = /(\n)|\x1b\[(\d*)([AB])/g;
+
+/**
+ * `output`, counting the rows clack has moved the cursor down since it began a prompt. Clack wraps
+ * each frame to the terminal's width itself, so every line it writes is one row, and it moves the
+ * cursor up and down only with newlines and CSI A and B.
+ */
+function counted(output: Writable): { output: Writable; rows: () => number } {
+  let rows = 0;
+  const write = (chunk: unknown, ...rest: unknown[]) => {
+    for (const [, newline, count, direction] of String(chunk).matchAll(CURSOR_MOVES)) {
+      rows += newline ? 1 : (direction === "A" ? -1 : 1) * Number(count || 1);
+    }
+    return (output.write as (...args: unknown[]) => boolean)(chunk, ...rest);
+  };
+  return {
+    output: new Proxy(output, {
+      get(target, key) {
+        if (key === "write") return write;
+        const value: unknown = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }),
+    rows: () => rows,
+  };
+}
+
 /**
  * A {@link Prompter} drawing with clack on `streams`, the process's own by default. With `back`, Esc
  * throws {@link Back}: clack cancels on Esc and Ctrl-C alike, so a listener beside clack's notes
- * which key it was. Clack still draws the question as cancelled, and Ctrl-C still cancels.
+ * which key it was. Going back is not cancelling, so the question is then erased rather than left
+ * drawn as cancelled. Ctrl-C still cancels.
  */
 export function clackPrompter({ input = process.stdin, output = process.stdout }: Streams = {}, back = false): Prompter {
   const ask = async <T>(prompt: (streams: { input: Readable; output: Writable }) => Promise<T | symbol>): Promise<T> => {
@@ -107,12 +137,17 @@ export function clackPrompter({ input = process.stdin, output = process.stdout }
     const onKeypress = (_: unknown, key?: { name?: string }) => {
       if (key?.name === "escape") escaped = true;
     };
+    const drawn = counted(output);
     // After clack's own, which the prompt adds as it starts: clack then sees the key first.
-    const pending = prompt({ input, output });
+    const pending = prompt({ input, output: drawn.output });
     if (back) input.on("keypress", onKeypress);
     try {
       const value = await pending;
-      if (back && escaped && isCancel(value)) throw new Back();
+      if (back && escaped && isCancel(value)) {
+        // Up to where the prompt began, then everything below it.
+        output.write(`${drawn.rows() > 0 ? `\x1b[${drawn.rows()}A` : ""}\x1b[G\x1b[J`);
+        throw new Back();
+      }
       return answered<T>(value, output);
     } finally {
       input.off("keypress", onKeypress);

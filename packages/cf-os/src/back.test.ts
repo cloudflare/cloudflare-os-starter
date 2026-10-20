@@ -36,9 +36,10 @@ test("Esc asks the previous question again, its earlier answer the default, and 
   assert.deepEqual(await result, { name: "first", color: "blue", sure: true });
   assert.deepEqual(prompter.asked.map(({ message, initial }) => [message, initial]),
     [["Name", "acme"], ["Color", "red"], ["Name", "first"], ["Color", "red"], ["Sure?", true]]);
-  assert.ok(prompter.asked.every((asked) => asked.backable));
+  // The first question cannot go back, so it is asked as any other prompt is.
+  assert.deepEqual(prompter.asked.map(({ backable }) => Boolean(backable)), [false, true, false, true, true]);
   assert.deepEqual(log, [
-    "before name", BACK_HINT, "before color, after first", "Back to: Name",
+    "before name", BACK_HINT, "before color, after first",
     "before name", "before color, after first", "before sure",
   ]);
 });
@@ -55,7 +56,7 @@ test("a changed answer on the way back carries on from there", async () => {
 });
 
 test("Esc twice goes back two questions, replaying none of them", async () => {
-  const { prompter, log, result } = run([
+  const { prompter, result } = run([
     ["Name", "first"],
     ["Color", "blue"],
     ["Sure?", BACK],
@@ -69,7 +70,6 @@ test("Esc twice goes back two questions, replaying none of them", async () => {
     ["Name", "acme"], ["Color", "red"], ["Sure?", true],
     ["Color", "blue"], ["Name", "first"], ["Color", "red"], ["Sure?", true],
   ]);
-  assert.deepEqual(log.filter((line) => line.startsWith("Back to")), ["Back to: Color", "Back to: Name"]);
 });
 
 test("replayed questions are not asked, and what they print is muted until the question asked again", async () => {
@@ -83,24 +83,16 @@ test("replayed questions are not asked, and what they print is muted until the q
   assert.deepEqual(await result, { name: "first", color: "blue", sure: true });
   assert.equal(prompter.asked.filter(({ message }) => message === "Name").length, 1);
   assert.deepEqual(log, [
-    "before name", BACK_HINT, "before color, after first", "before sure", "Back to: Color",
+    "before name", BACK_HINT, "before color, after first", "before sure",
     "before color, after first", "before sure",
   ]);
 });
 
-test("Esc at the first question asks it again", async () => {
-  const { prompter, log, result } = run([
-    ["Name", "first"],
-    ["Color", BACK],
-    ["Name", BACK],
-    ["Name", "second"],
-    ["Color", DEFAULT],
-    ["Sure?", DEFAULT],
-  ]);
-  assert.deepEqual(await result, { name: "second", color: "red", sure: true });
-  assert.deepEqual(prompter.asked.slice(2).map(({ message, initial }) => [message, initial]),
-    [["Name", "first"], ["Name", "first"], ["Color", "red"], ["Sure?", true]]);
-  assert.equal(log.filter((line) => line === BACK_HINT).length, 1);
+test("Esc at the first question cancels, there being nothing to go back to", async () => {
+  await assert.rejects(run([["Name", BACK]]).result, Cancelled);
+  const back = run([["Name", "first"], ["Color", BACK], ["Name", BACK]]);
+  await assert.rejects(back.result, Cancelled);
+  assert.equal(back.prompter.asked[2].initial, "first");
 });
 
 test("a replay whose question changed asks from there", async () => {
@@ -128,8 +120,7 @@ test("Ctrl-C and any other failure pass through", async () => {
   }).result, /boom/);
 });
 
-test("without a backable view, the questions run once and Esc is the test's failure", async () => {
+test("without a backable view, the questions run once and Esc cancels", async () => {
   const { backable: _, ...plain } = scriptedPrompter([["Name", "first"], ["Color", BACK]]);
-  await assert.rejects(withBack(plain, { json: () => {}, log: () => {} }, threeQuestions),
-    /Esc goes back only where a command lets you/);
+  await assert.rejects(withBack(plain, { json: () => {}, log: () => {} }, threeQuestions), Cancelled);
 });
