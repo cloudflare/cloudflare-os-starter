@@ -22,6 +22,19 @@ export interface FakeCall {
   /** The `--profile` it was given, if any. */
   profile?: string;
   env: NodeJS.ProcessEnv;
+  /** What {@link FakeCfOptions.stamp} returned when the call was spawned. */
+  at?: unknown;
+}
+
+/** How a {@link fakeCf} times its calls. */
+export interface FakeCfOptions {
+  /**
+   * Milliseconds before the call with these arguments settles, so a test can make calls finish in
+   * another order than they started. Every call settles on a later tick even without it.
+   */
+  delay?: (args: string[]) => number;
+  /** Called as each call is spawned, its value recorded as the call's `at`: which question was open, say. */
+  stamp?: () => unknown;
 }
 
 function isFailure(reply: unknown): reply is FakeFailure {
@@ -45,15 +58,28 @@ export function flag(args: string[], name: string): string | undefined {
  * A fake `cf`. `replies` is keyed by the command words before the first flag
  * (`"workers list"`), or a function of the full argument list for anything finer. An array reply
  * to a call carrying `--page`/`--per-page` is served one page at a time; `{ fail }` exits 1 with
- * that text on stderr; a command with no reply fails the way an unknown one would.
+ * that text on stderr; a command with no reply fails the way an unknown one would. A call is recorded
+ * in `calls` as it is spawned, before it settles.
  */
 export function fakeCf(
   replies: Record<string, FakeReply>,
+  { delay, stamp }: FakeCfOptions = {},
 ): { spawn: SpawnCf; calls: FakeCall[] } {
   const calls: FakeCall[] = [];
   const spawn: SpawnCf = (command, argv, options) => {
     const args = cfArgs(command, argv);
-    calls.push({ args, profile: flag(argv, "--profile"), env: options.env });
+    const call: FakeCall = { args, profile: flag(argv, "--profile"), env: options.env };
+    if (stamp) call.at = stamp();
+    calls.push(call);
+    const result = answer(args);
+    return new Promise((resolve) => {
+      if (delay) setTimeout(() => resolve(result), delay(args));
+      else setImmediate(() => resolve(result));
+    });
+  };
+
+  /** What `cf <args>` prints, and how it exits. */
+  function answer(args: string[]): Awaited<ReturnType<SpawnCf>> {
     const firstFlag = args.findIndex((arg) => arg.startsWith("-"));
     const key = (firstFlag < 0 ? args : args.slice(0, firstFlag)).join(" ");
     const entry = replies[key];
@@ -71,7 +97,7 @@ export function fakeCf(
       reply = reply.slice(start, start + Number(perPage));
     }
     return { status: 0, stdout: JSON.stringify(reply), stderr: "" };
-  };
+  }
   return { spawn, calls };
 }
 

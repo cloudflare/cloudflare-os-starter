@@ -160,13 +160,16 @@ function githubProject(t: Parameters<typeof scratchProject>[0]): { root: string;
   return { root, github };
 }
 
-/** An account matching {@link FILLED}, whose Worker secrets are `secrets`, read at each call. */
-function filledAccount(secrets: Record<string, string[]>) {
+/**
+ * An account matching {@link FILLED}, whose Worker secrets are `secrets`, read at each call, each
+ * call settling after `delay`.
+ */
+function filledAccount(secrets: Record<string, string[]>, delay?: (args: string[]) => number) {
   return fakeCf({
     "zero-trust organization get": { auth_domain: "acme.cloudflareaccess.com" },
     "zero-trust access applications list": [{ name: "Cloudflare OS", aud: "aud-1", domain: "os.example.com" }],
     "workers secrets list": workerSecretsReply(secrets),
-  });
+  }, { delay });
 }
 
 test("check warns on stderr about a Gatekeeper secret that is not set, and carries on", async (t) => {
@@ -336,4 +339,48 @@ test("deploy exits 1, naming cf-os secrets, when an upload does not show up on t
   assert.ok(harness.log.includes("\nDeployed, but the github Gatekeeper's OAuth credentials were not set: Wrangler " +
     "finished, but acme-gk-github has no CLIENT_ID or CLIENT_SECRET. `pnpm cf-os secrets github` tries again."));
   assertNoValues(harness);
+});
+
+test("prints the same whichever account read finishes first, and with a spinner over each check", async (t) => {
+  const { root } = githubProject(t);
+  const deploy = async (prompter: ReturnType<typeof scriptedPrompter> | null, delay?: (args: string[]) => number) => {
+    const secrets: Record<string, string[]> = { "acme-gk-github": ["CLIENT_ID"] };
+    const harness = testContext({ root, prompter, client: cfClient({ spawn: filledAccount(secrets, delay).spawn }) });
+    const { deps } = recordingDeploy(secrets);
+    const code = await run({ command: "deploy", values: {}, positionals: [] }, harness.ctx, {}, deps);
+    return { code, stderr: harness.stderr(), json: harness.json };
+  };
+  const plain = await deploy(null);
+  assert.equal(plain.code, 0);
+  assert.match(plain.stderr, /Cloudflare-side checks passed[\s\S]*Warning: acme-gk-github has no CLIENT_SECRET/);
+  let started = 0;
+  assert.deepEqual(await deploy(null, () => 60 - 10 * started++), plain);
+  const prompter = scriptedPrompter([]);
+  assert.deepEqual(await deploy(prompter), plain);
+  assert.deepEqual(prompter.waited, ["Checking the account against the deployment file", "Checking the Gatekeepers' secrets"]);
+});
+
+test("the account checks that fail print the same whichever read finishes first", async (t) => {
+  const { root } = githubProject(t);
+  writeFileSync(join(root, "deployment.jsonc"), FILLED
+    .replace('"gatekeepers": {}', '"gatekeepers": { "github": { "name": "acme-gk-github" } }')
+    .replace('"blueprintContentBucket": null', '"blueprintContentBucket": "acme-content"')
+    .replace('"blueprintsKvNamespaceId": null', '"blueprintsKvNamespaceId": "kv-blueprints"'));
+  const check = async (delay?: (args: string[]) => number) => {
+    const cf = fakeCf({
+      "zero-trust organization get": { auth_domain: "other.cloudflareaccess.com" },
+      "zero-trust access applications list": [],
+      "kv namespaces list": [],
+      "r2 buckets list": { buckets: [] },
+    }, { delay });
+    const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }) });
+    const message = await run({ command: "deploy", values: {}, positionals: [] }, harness.ctx, {}, recordingDeploy({}).deps)
+      .then(() => "", (error: Error) => error.message);
+    return { message, stderr: harness.stderr(), calls: cf.calls.length };
+  };
+  const plain = await check();
+  assert.match(plain.message, /does not match the account:\n {2}- access\.issuer is .*\n {2}- access\.audience: .*\n {2}- resources\.blueprintsKvNamespaceId: .*\n {2}- resources\.blueprintContentBucket: /);
+  assert.equal(plain.calls, 4);
+  let started = 0;
+  assert.deepEqual(await check(() => 60 - 10 * started++), plain);
 });

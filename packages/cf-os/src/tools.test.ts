@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { defaultSpawn } from "./tools.ts";
+import { defaultCapture, defaultSpawn } from "./tools.ts";
 
 test("a shown tool's stdout goes to stderr, leaving stdout to the command's results", () => {
   // In a child of its own, so this process's stdout is the one under test.
@@ -34,4 +34,19 @@ test("writes input to the tool's stdin, shown or captured", () => {
   assert.equal(shown.status, 0, shown.stderr);
   assert.equal(shown.stdout, "");
   assert.equal(shown.stderr, "piped-value-123");
+});
+
+test("captures a status read's output and exit status, the event loop turning while it runs", async () => {
+  let turned = false;
+  setImmediate(() => turned = true);
+  const result = await defaultCapture()(process.execPath, ["-e", "process.stdout.write('me'); process.stderr.write('why'); process.exitCode = 3"],
+    { cwd: process.cwd() });
+  assert.deepEqual(result, { status: 3, stdout: "me", stderr: "why" });
+  assert.ok(turned, "blocked the event loop");
+});
+
+test("reports a command that cannot run as an error, without throwing", async () => {
+  const result = await defaultCapture()("cf-os-no-such-command", [], { cwd: process.cwd() });
+  assert.equal(result.status, null);
+  assert.equal((result.error as NodeJS.ErrnoException | undefined)?.code, "ENOENT");
 });

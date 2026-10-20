@@ -18,7 +18,8 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { UsageError, type CommandArgs, type Context } from "../context.ts";
 import { delegate, localEntry, type SpawnDelegate } from "../project.ts";
-import { defaultSpawn, succeeded, type SpawnTool } from "../tools.ts";
+import { waitOn } from "../prompt.ts";
+import { defaultCapture, defaultSpawn, succeeded, type CaptureTool, type SpawnTool } from "../tools.ts";
 
 /** The starter `init` clones by default. */
 export const DEFAULT_TEMPLATE = "https://github.com/cloudflare/cloudflare-os-starter";
@@ -38,6 +39,8 @@ const PNPM_MAJOR = 11;
 /** What scaffolding runs against, so tests can record the sequence instead of running it. */
 export interface ScaffoldDeps {
   spawn: SpawnTool;
+  /** The GitHub CLI's sign-in check. */
+  capture: CaptureTool;
   /** `process.versions.node`. */
   nodeVersion: string;
   /** Hands the new project's `cf-os init` the terminal. Resolves to its exit code. */
@@ -47,6 +50,7 @@ export interface ScaffoldDeps {
 function defaultDeps(): ScaffoldDeps {
   return {
     spawn: defaultSpawn(),
+    capture: defaultCapture(),
     nodeVersion: process.versions.node,
     configure: (entry, argv, cwd) => delegate(entry, argv, { cwd, env: process.env, spawn: spawnSync as SpawnDelegate }),
   };
@@ -130,8 +134,9 @@ async function offerRepository(ctx: Context, deps: ScaffoldDeps, target: string)
   const prompter = ctx.prompter!;
   // The active account's login, or "" when it cannot be used. Not `gh auth status`: that fails when
   // any stored account's token is stale, even with a working active one.
-  const whoami = () => deps.spawn("gh", ["api", "user", "-q", ".login"], { cwd: target, capture: true });
-  const user = whoami();
+  const whoami = () => waitOn(ctx.prompter, "Checking the GitHub CLI's sign-in",
+    () => deps.capture("gh", ["api", "user", "-q", ".login"], { cwd: target }));
+  const user = await whoami();
   if (user.error) {
     ctx.out.log(`\n${MANUAL_REPOSITORY}`);
     return;
@@ -145,7 +150,7 @@ async function offerRepository(ctx: Context, deps: ScaffoldDeps, target: string)
   if (!login) {
     ctx.out.log("\nThe GitHub CLI is not signed in. Signing in with `gh auth login`.\n");
     deps.spawn("gh", ["auth", "login"], { cwd: target, capture: false });
-    const after = whoami();
+    const after = await whoami();
     login = succeeded(after) ? after.stdout.trim() : "";
     if (!login) {
       ctx.out.log(`\nThe GitHub CLI still cannot reach your account, so no repository was created. Later, ` +

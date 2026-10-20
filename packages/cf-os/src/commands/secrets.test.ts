@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { cfClient } from "../cf-client.ts";
-import { FAKE_ACCOUNT, fakeCf, workerSecretsReply } from "../fake-cf.ts";
+import { FAKE_ACCOUNT, fakeCf, WORKER_NOT_FOUND_FAILURE, workerSecretsReply, type FakeReply } from "../fake-cf.ts";
 import {
   scratchProject, scriptedPrompter, TEMPLATE, testCatalog, testCatalogWithGitlab, testContext, type Step,
 } from "../test-support.ts";
@@ -28,20 +28,22 @@ const WITH_GITLAB = FILLED.replace('"github": { "name": "acme-gk-github" },',
   '"github": { "name": "acme-gk-github" }, "gitlab": { "name": "acme-gk-gitlab" },');
 
 /**
- * Runs `cf-os secrets <positionals>` against a fake account whose Workers have `secrets`, answering
- * from `script` (no terminal when null). Its `wrangler secret bulk` adds the names on its stdin, but
- * fails for Worker `failing`. With `gitlab`, the file selects GitLab too.
+ * Runs `cf-os secrets <positionals>` against a fake account whose Workers have `secrets` (or whose
+ * `workers secrets list` answers `list`), answering from `script` (no terminal when null), each `cf`
+ * call settling after `delay`. Its `wrangler secret bulk` adds the names on its stdin, but fails for
+ * Worker `failing`. With `gitlab`, the file selects GitLab too.
  */
 async function secrets(
   t: Parameters<typeof scratchProject>[0],
-  { script = [], positionals = [], secrets: present = {}, flags = {}, gitlab = false, failing }: {
+  { script = [], positionals = [], secrets: present = {}, flags = {}, gitlab = false, failing, list, delay }: {
     script?: Step[] | null; positionals?: string[]; secrets?: Record<string, string[]>; flags?: { account?: string };
-    gitlab?: boolean; failing?: string;
+    gitlab?: boolean; failing?: string; list?: FakeReply; delay?: (args: string[]) => number;
   } = {},
 ) {
   const root = scratchProject(t, gitlab ? WITH_GITLAB : FILLED);
-  const cf = fakeCf({ "workers secrets list": workerSecretsReply(present) });
   const ran: { args: string[]; input?: string }[] = [];
+  // Each `cf` call stamped with how many tools had run when it started.
+  const cf = fakeCf({ "workers secrets list": list ?? workerSecretsReply(present) }, { delay, stamp: () => ran.length });
   const spawn: SpawnTool = (_command, args, { input }) => {
     ran.push({ args, input });
     const worker = args[args.indexOf("--name") + 1];
@@ -150,4 +152,54 @@ test("without a terminal, fails naming the wrangler secret put commands for what
   });
   assert.deepEqual(ran, []);
   assert.deepEqual(json, []);
+});
+
+/** A `delay` settling the `cf` calls in the reverse of the order they started: the first waits longest. */
+function reversing(): (args: string[]) => number {
+  let started = 0;
+  return () => 60 - 10 * started++;
+}
+
+/** A `workers secrets list` reply: GitHub's Worker is not deployed, and GitLab's read fails. */
+const undeployedAndFailing: FakeReply = (args) =>
+  ({ fail: args.includes("acme-gk-gitlab") ? "[10013] internal error" : WORKER_NOT_FOUND_FAILURE });
+
+test("without a terminal, prints and fails the same whichever Worker's read finishes first", async (t) => {
+  const missing = { "acme-gk-github": ["CLIENT_ID"], "acme-gk-gitlab": [] };
+  const manual = async (delay?: (args: string[]) => number) => {
+    const { result, stderr, json, calls } = await secrets(t, { script: null, gitlab: true, secrets: { ...missing }, delay });
+    const message = await result.then(() => "", (error: Error) => error.message);
+    // Both read before either settled.
+    assert.equal(calls.length, 2);
+    return { message, stderr: stderr(), json };
+  };
+  const reversed = await manual(reversing());
+  assert.deepEqual(reversed, await manual());
+  assert.match(reversed.message, /wrangler secret put CLIENT_SECRET --name acme-gk-github\n.*--name acme-gk-gitlab\n.*--name acme-gk-gitlab$/);
+
+  // Not deployed, and a read that fails: each reported at its Gatekeeper's turn, nothing set.
+  const failing = async (delay?: (args: string[]) => number) => {
+    const { result, stderr, json } = await secrets(t, { script: null, gitlab: true, list: undeployedAndFailing, delay });
+    return { code: await result, stderr: stderr(), json };
+  };
+  const failed = await failing(reversing());
+  assert.deepEqual(failed, await failing());
+  assert.equal(failed.code, 1);
+  assert.deepEqual(failed.json, [{ set: [] }]);
+  assert.match(failed.stderr, /acme-gk-github is not deployed yet[\s\S]*The gitlab Gatekeeper's OAuth credentials were not set: cf workers secrets list .*\[10013\] internal error/);
+});
+
+test("confirms an upload with a fresh read after wrangler secret bulk, and shows what it waits on", async (t) => {
+  const { result, calls, prompter } = await secrets(t, {
+    secrets: { "acme-gk-github": [] },
+    script: [
+      ["Set the github Gatekeeper's OAuth credentials now?", "now"],
+      ["OAuth client ID (CLIENT_ID)", ID],
+      ["OAuth client secret (CLIENT_SECRET)", SECRET],
+    ],
+  });
+  assert.equal(await result, 0);
+  // The first read before any tool ran, the second once wrangler secret bulk had.
+  assert.deepEqual(calls.map(({ args, at }) => [args.at(-1), at]), [["acme-gk-github", 0], ["acme-gk-github", 1]]);
+  assert.deepEqual(prompter!.waited, ["Reading acme-gk-github's secrets", "Confirming acme-gk-github's secrets"]);
 });

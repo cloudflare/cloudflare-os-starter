@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { cfClient } from "./cf-client.ts";
+import { CfError, type CloudflareClient } from "./core/client.ts";
 import type { DeploymentConfig } from "./core/deployment-config.ts";
 import { memoryClient, type MemoryAccount } from "./core/memory-client.ts";
-import { FAKE_ACCOUNT } from "./fake-cf.ts";
-import { askAndSetSecrets, putWorkerSecrets, secretsCommand, type SecretsOutcome } from "./gatekeeper-secrets.ts";
-import { scriptedPrompter, testCatalog, testContext, type Step } from "./test-support.ts";
+import { FAKE_ACCOUNT, fakeCf, workerSecretsReply } from "./fake-cf.ts";
+import {
+  askAndSetSecrets, putWorkerSecrets, readSecretsAhead, secretsCommand, type SecretsOutcome,
+} from "./gatekeeper-secrets.ts";
+import { CANCEL, scriptedPrompter, testCatalog, testCatalogWithGitlab, testContext, type Step } from "./test-support.ts";
 import type { SpawnTool } from "./tools.ts";
 
 /** GitHub, which reads CLIENT_ID and CLIENT_SECRET, and Home Assistant, which reads none. */
@@ -217,4 +221,116 @@ test("without a terminal, asks nothing and returns the wrangler secret put comma
     commands: [`CLOUDFLARE_ACCOUNT_ID=${FAKE_ACCOUNT} pnpm exec wrangler secret put CLIENT_SECRET --name acme-gk-github`],
   }]);
   assert.deepEqual(ran, []);
+});
+
+/** {@link config} with GitLab, a second Gatekeeper that reads secrets, between GitHub and Home Assistant. */
+const withGitlab = {
+  ...config,
+  gatekeepers: { github: { name: "acme-gk-github" }, gitlab: { name: "acme-gk-gitlab" }, homeassistant: { name: "acme-gk-homeassistant" } },
+} as unknown as DeploymentConfig;
+
+test("takes a Worker's secrets from reads started ahead, and confirms an upload with a fresh one", async () => {
+  const account: MemoryAccount = { workers: [{ name: "acme-gk-github" }] };
+  const client = memoryClient(account);
+  const { spawn, ran } = recordingSpawn(account);
+  const prompter = scriptedPrompter(ENTER);
+  const harness = testContext({ root: "/project", prompter });
+  // What a caller read earlier: no secrets yet. Read again, after the upload, the Worker has both.
+  const present = new Map([["github", Promise.resolve<string[] | null>([])]]);
+  const outcome = await askAndSetSecrets(harness.ctx, { prompter, client, spawn },
+    { config, catalog: testCatalog(), slugs: ["github", "homeassistant"], upload: "now", present });
+  assert.deepEqual(outcome.set, [{ gatekeeper: "github", worker: "acme-gk-github", secrets: ["CLIENT_ID", "CLIENT_SECRET"] }]);
+  assert.equal(ran.length, 1);
+  // No first read of its own; the one read is the confirmation.
+  assert.deepEqual(client.calls, ["listWorkerSecrets"]);
+  // Settled already, the read started ahead shows no spinner.
+  assert.deepEqual(prompter.waited, ["Confirming acme-gk-github's secrets"]);
+});
+
+test("reads a slug missing from the reads started ahead when its turn comes", async () => {
+  const client = memoryClient({ secrets: { "acme-gk-github": ["CLIENT_ID", "CLIENT_SECRET"], "acme-gk-gitlab": [] } });
+  const harness = testContext({ root: "/project" });
+  const present = new Map([["gitlab", Promise.resolve<string[] | null>(["CLIENT_ID", "CLIENT_SECRET"])]]);
+  const outcome = await askAndSetSecrets(harness.ctx, { prompter: null, client, spawn: recordingSpawn({}).spawn },
+    { config: withGitlab, catalog: testCatalogWithGitlab(), slugs: ["github", "gitlab"], upload: "now", present });
+  assert.deepEqual(outcome.complete, ["github", "gitlab"]);
+  assert.deepEqual(client.calls, ["listWorkerSecrets"]);
+});
+
+test("starts the reads in slug order, no more than four at once", async () => {
+  const slugs = ["a", "b", "c", "d", "e", "f"];
+  const catalog = testCatalog();
+  catalog.offered.push(...slugs.map((slug) => ({ ...catalog.offered[0], slug })));
+  const many = { ...config, gatekeepers: Object.fromEntries(slugs.map((slug) => [slug, { name: `acme-gk-${slug}` }])) } as DeploymentConfig;
+  let inFlight = 0;
+  let most = 0;
+  const read: string[] = [];
+  const client = {
+    ...memoryClient({}),
+    listWorkerSecrets: async (_accountId: string, worker: string) => {
+      read.push(worker);
+      most = Math.max(most, ++inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      inFlight--;
+      return worker === "acme-gk-a" ? null : ["CLIENT_ID"];
+    },
+  } satisfies CloudflareClient;
+  const reads = readSecretsAhead(client, many, catalog, ["homeassistant", ...slugs]);
+  // Home Assistant reads no secrets: not read. The first four started at once.
+  assert.deepEqual([...reads.keys()], slugs);
+  assert.deepEqual(read, ["acme-gk-a", "acme-gk-b", "acme-gk-c", "acme-gk-d"]);
+  assert.deepEqual(await reads.get("a"), null);
+  assert.deepEqual(await reads.get("f"), ["CLIENT_ID"]);
+  assert.equal(most, 4);
+  assert.deepEqual(read, slugs.map((slug) => `acme-gk-${slug}`));
+});
+
+/**
+ * {@link askAndSetSecrets} for GitHub and GitLab, both complete, from reads started ahead: GitHub's
+ * settled by then, GitLab's still in flight.
+ */
+async function readGitlabLate(prompter: ReturnType<typeof scriptedPrompter> | null) {
+  const cf = fakeCf({ "workers secrets list": workerSecretsReply({
+    "acme-gk-github": ["CLIENT_ID", "CLIENT_SECRET"],
+    "acme-gk-gitlab": ["CLIENT_ID", "CLIENT_SECRET"],
+  }) }, { delay: (args) => args.includes("acme-gk-gitlab") ? 30 : 0 });
+  const client = cfClient({ spawn: cf.spawn });
+  const present = readSecretsAhead(client, withGitlab, testCatalogWithGitlab(), ["github", "gitlab"]);
+  await present.get("github");
+  const harness = testContext({ root: "/project", prompter });
+  const outcome = await askAndSetSecrets(harness.ctx, { prompter, client, spawn: recordingSpawn({}).spawn },
+    { config: withGitlab, catalog: testCatalogWithGitlab(), slugs: ["github", "gitlab"], upload: "now", present });
+  assert.equal(cf.calls.length, 2);
+  return { outcome, stderr: harness.stderr() };
+}
+
+test("shows a spinner only while a Worker's read is still in flight, and none without a terminal", async () => {
+  const prompter = scriptedPrompter([]);
+  const shown = await readGitlabLate(prompter);
+  // GitHub's had settled by its turn; GitLab's had not.
+  assert.deepEqual(prompter.waited, ["Reading acme-gk-gitlab's secrets"]);
+  assert.deepEqual(shown.outcome.complete, ["github", "gitlab"]);
+  assert.deepEqual(await readGitlabLate(null), shown);
+});
+
+test("a cancelled question leaves no later read that fails unhandled", async (t) => {
+  const unhandled: unknown[] = [];
+  const listener = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", listener);
+  t.after(() => process.off("unhandledRejection", listener));
+  const client = {
+    ...memoryClient({ workers: [{ name: "acme-gk-github" }] }),
+    listWorkerSecrets: async (_accountId: string, worker: string) => {
+      if (worker === "acme-gk-github") return [];
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      throw new CfError("[10013] internal error");
+    },
+  } satisfies CloudflareClient;
+  const prompter = scriptedPrompter([["Set the github Gatekeeper's OAuth credentials now?", CANCEL]]);
+  const harness = testContext({ root: "/project", prompter });
+  await assert.rejects(askAndSetSecrets(harness.ctx, { prompter, client, spawn: recordingSpawn({}).spawn },
+    { config: withGitlab, catalog: testCatalogWithGitlab(), slugs: ["github", "gitlab"], upload: "now" }), /Cancelled/);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(unhandled, []);
+  assert.deepEqual(prompter.waited, ["Reading acme-gk-github's secrets"]);
 });

@@ -16,6 +16,10 @@ import {
   accessAppFor,
   accessAppHosts,
   issuerOf,
+  type CfAccessApp,
+  type CfAiGateway,
+  type CfKvNamespace,
+  type CfOrganization,
   type CloudflareClient,
 } from "./client.ts";
 import type { DeploymentConfig } from "./deployment-config.ts";
@@ -27,20 +31,26 @@ export type AccountCheck = { skipped: string } | { problems: string[] };
 /**
  * Checks `config` against the account it names. `origin` is the deployment's public origin
  * (`publicOrigin(config)`), passed in rather than recomputed so the two can never disagree.
+ *
+ * Every read it needs runs at once ({@link startReads}), and the results are judged one by one in a
+ * fixed order: the organization, the Access applications, then the storage. So the problems, and the
+ * read a signed-out or partly permitted token stops at, are the same whichever read finishes first.
  */
 export async function verifyAccount(
   client: CloudflareClient,
   config: DeploymentConfig,
   origin: string,
 ): Promise<AccountCheck> {
+  const reads = startReads(client, config);
   const problems: string[] = [];
   try {
-    await checkAccess(client, config, origin, problems);
-    await checkStorage(client, config, problems);
+    await checkAccess(reads, config, origin, problems);
+    await checkStorage(reads, config, problems);
     return { problems };
   } catch (error) {
     // Signed out, or `cf` missing or broken: not the deployment's fault either way. A token that
-    // reads some of the account but not the rest still showed that what it read is wrong.
+    // reads some of the account but not the rest still showed that what it read is wrong; what was
+    // read after the read it stopped at is not looked at.
     if (error instanceof CfAuthError || error instanceof CfUnavailableError) {
       return problems.length ? { problems } : { skipped: error.message };
     }
@@ -48,9 +58,62 @@ export async function verifyAccount(
   }
 }
 
+/** The reads {@link verifyAccount} judges, started; a storage read is absent when nothing needs it. */
+interface AccountReads {
+  organization: Promise<CfOrganization>;
+  accessApps: Promise<CfAccessApp[]>;
+  kvNamespaces?: Promise<CfKvNamespace[]>;
+  buckets?: Promise<string[]>;
+  gateways?: Promise<CfAiGateway[]>;
+}
+
+/** The KV IDs `config` names, by config path. */
+function kvPaths(config: DeploymentConfig) {
+  return [
+    ["context.kvNamespaceId", config.context.kvNamespaceId],
+    ["resources.blueprintsKvNamespaceId", config.resources.blueprintsKvNamespaceId],
+    ["resources.avatarsKvNamespaceId", config.resources.avatarsKvNamespaceId],
+  ] as const;
+}
+
+/**
+ * The AI Gateway to look for in the account, if any. "default" is exempt: Cloudflare creates it on
+ * first use, so a fresh account legitimately lacks it. A gateway in another account is out of reach
+ * of this account's credentials.
+ */
+function gatewayToFind(config: DeploymentConfig): string | undefined {
+  const gateway = config.aiGateway;
+  return gateway.enabled && gateway.name && gateway.name !== "default" &&
+    (gateway.accountId ?? config.accountId).toLowerCase() === config.accountId.toLowerCase()
+    ? gateway.name
+    : undefined;
+}
+
+/**
+ * Starts every read `config` calls for, at once, in the order they are judged. Each carries a no-op
+ * catch: one that fails while an earlier one is still awaited is not an unhandled rejection, and the
+ * await that reaches it still sees the failure.
+ */
+function startReads(client: CloudflareClient, config: DeploymentConfig): AccountReads {
+  return {
+    organization: started(client.getOrganization(config.accountId)),
+    accessApps: started(client.listAccessApps(config.accountId)),
+    // Only explicit IDs: null asks wrangler to provision, which needs nothing to exist yet.
+    ...(kvPaths(config).some(([, id]) => id) ? { kvNamespaces: started(client.listKvNamespaces(config.accountId)) } : {}),
+    ...(config.resources.blueprintContentBucket ? { buckets: started(client.listR2Buckets(config.accountId)) } : {}),
+    ...(gatewayToFind(config) ? { gateways: started(client.listAiGateways(config.accountId)) } : {}),
+  };
+}
+
+/** `promise`, with a no-op catch attached so it may reject before anything awaits it. */
+function started<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => {});
+  return promise;
+}
+
 /** Pushes onto `problems` as it goes, so a later read that is not permitted keeps what was found. */
 async function checkAccess(
-  client: CloudflareClient,
+  reads: AccountReads,
   config: DeploymentConfig,
   origin: string,
   problems: string[],
@@ -59,7 +122,7 @@ async function checkAccess(
 
   let issuer: string | undefined;
   try {
-    issuer = issuerOf(await client.getOrganization(config.accountId));
+    issuer = issuerOf(await reads.organization);
   } catch (error) {
     if (error instanceof CfAuthError || error instanceof CfUnavailableError) throw error;
     problems.push(`access.issuer: the account has no readable Zero Trust organization (${(error as Error).message}).`);
@@ -71,7 +134,7 @@ async function checkAccess(
       `${issuer}. The Workshop would reject every Access token it is sent.`);
   }
 
-  const all = await client.listAccessApps(config.accountId);
+  const all = await reads.accessApps;
   const apps = all.filter((app) => app.aud === config.access.audience);
   const applied = accessAppFor(all, host);
   if (!apps.length) {
@@ -94,33 +157,23 @@ async function checkAccess(
   }
 }
 
-async function checkStorage(client: CloudflareClient, config: DeploymentConfig, problems: string[]): Promise<void> {
-  const kvPaths = [
-    ["context.kvNamespaceId", config.context.kvNamespaceId],
-    ["resources.blueprintsKvNamespaceId", config.resources.blueprintsKvNamespaceId],
-    ["resources.avatarsKvNamespaceId", config.resources.avatarsKvNamespaceId],
-  ] as const;
-  // Only explicit IDs: null asks wrangler to provision, which needs nothing to exist yet.
-  if (kvPaths.some(([, id]) => id)) {
-    const ids = new Set((await client.listKvNamespaces(config.accountId)).map((namespace) => namespace.id));
-    for (const [path, id] of kvPaths) {
+async function checkStorage(reads: AccountReads, config: DeploymentConfig, problems: string[]): Promise<void> {
+  if (reads.kvNamespaces) {
+    const ids = new Set((await reads.kvNamespaces).map((namespace) => namespace.id));
+    for (const [path, id] of kvPaths(config)) {
       if (id && !ids.has(id)) {
         problems.push(`${path}: no KV namespace with ID ${id} in account ${config.accountId}.`);
       }
     }
   }
   const bucket = config.resources.blueprintContentBucket;
-  if (bucket && !(await client.listR2Buckets(config.accountId)).includes(bucket)) {
+  if (bucket && reads.buckets && !(await reads.buckets).includes(bucket)) {
     problems.push(`resources.blueprintContentBucket: no R2 bucket named ${bucket} in account ${config.accountId}.`);
   }
-  // "default" is exempt: Cloudflare creates it on first use, so a fresh account legitimately lacks it.
-  // A gateway in another account is out of reach of this account's credentials.
-  const gateway = config.aiGateway;
-  if (gateway.enabled && gateway.name && gateway.name !== "default" &&
-      (gateway.accountId ?? config.accountId).toLowerCase() === config.accountId.toLowerCase() &&
-      !(await client.listAiGateways(config.accountId)).some((candidate) => candidate.id === gateway.name)) {
+  const gateway = gatewayToFind(config);
+  if (gateway && reads.gateways && !(await reads.gateways).some((candidate) => candidate.id === gateway)) {
     problems.push(
-      `aiGateway.name: no AI Gateway named ${gateway.name} in account ${config.accountId}. The ` +
+      `aiGateway.name: no AI Gateway named ${gateway} in account ${config.accountId}. The ` +
       "Workshop would advertise models whose every request fails.");
   }
 }
@@ -130,12 +183,41 @@ export function prose(names: string[], conjunction: "and" | "or"): string {
   return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} ${conjunction} ${names.at(-1)}`;
 }
 
+/** How many Workers' secrets are read at once: a handful of `cf` processes, never one per Gatekeeper. */
+export const SECRET_READS_AT_ONCE = 4;
+
+/**
+ * Starts `task` on each of `items`, at most `limit` at a time, each next one as an earlier one
+ * settles, and returns their promises in `items`' order. The first `limit` start before it returns.
+ * Each carries a no-op catch, so one that fails before anything awaits it is not an unhandled
+ * rejection; awaiting it still throws.
+ *
+ * `mapConcurrent` (run-tasks.ts) is the same pool, but resolves only once every task has, and the
+ * core cannot import it.
+ */
+export function startBounded<T, R>(items: readonly T[], limit: number, task: (item: T) => Promise<R>): Promise<R>[] {
+  const results = items.map(() => Promise.withResolvers<R>());
+  // A bare `next++` is a safe claim: JS runs it to completion before any other runner resumes.
+  let next = 0;
+  const runner = async () => {
+    for (let i = next++; i < items.length; i = next++) {
+      try {
+        results[i].resolve(await task(items[i]));
+      } catch (error) {
+        results[i].reject(error);
+      }
+    }
+  };
+  for (let i = 0; i < Math.min(limit, items.length); i++) void runner();
+  return results.map(({ promise }) => started(promise));
+}
+
 /**
  * One line of warning for each optional Gatekeeper in `config` whose Worker lacks a secret its
  * catalog entry reads, pointing at `cf-os secrets <slug>`, which shows the setup and sets them, with
  * `configFlag` (` --config <path>`, or empty for deployment.jsonc) so it reads the same file. A
  * Worker not deployed yet lacks all of them, and is told so. A Gatekeeper that takes no secrets is
- * not looked up.
+ * not looked up. The Workers are read {@link SECRET_READS_AT_ONCE} at a time.
  *
  * Never a problem: `wrangler deploy` keeps a Worker's secrets, so they can as well be set after the
  * deploy as before it. Signed out, or with a client that cannot run, it stops quietly with what it
@@ -148,20 +230,30 @@ export async function gatekeeperSecretWarnings(
   catalog: GatekeeperCatalog,
   configFlag = "",
 ): Promise<string[]> {
-  const warnings: string[] = [];
-  for (const [slug, { name: worker }] of Object.entries(config.gatekeepers ?? {})) {
+  const looked = Object.entries(config.gatekeepers ?? {}).flatMap(([slug, { name: worker }]) => {
     const entry = catalog.offered.find((gatekeeper) => gatekeeper.slug === slug);
-    if (!entry?.secrets.length) continue;
-    let present: string[] | null;
+    return entry?.secrets.length ? [{ slug, worker, names: entry.secrets.map(({ name }) => name) }] : [];
+  });
+  // Read a few at a time, every read awaited, then judged in the file's order, so the warnings, and
+  // where a signed-out read stops them, do not depend on which read finishes first.
+  type Read = { present: string[] | null } | { error: Error };
+  const reads = await Promise.all(startBounded(looked, SECRET_READS_AT_ONCE, async ({ worker }): Promise<Read> => {
     try {
-      present = await client.listWorkerSecrets(config.accountId, worker);
+      return { present: await client.listWorkerSecrets(config.accountId, worker) };
     } catch (error) {
-      if (error instanceof CfAuthError || error instanceof CfUnavailableError) return warnings;
-      const names = prose(entry.secrets.map(({ name }) => name), "and");
-      warnings.push(`Warning: could not read ${worker}'s secrets to check for ${names}: ${(error as Error).message}`);
+      return { error: error as Error };
+    }
+  }));
+  const warnings: string[] = [];
+  for (const [index, { slug, worker, names }] of looked.entries()) {
+    const read = reads[index];
+    if ("error" in read) {
+      if (read.error instanceof CfAuthError || read.error instanceof CfUnavailableError) return warnings;
+      warnings.push(`Warning: could not read ${worker}'s secrets to check for ${prose(names, "and")}: ${read.error.message}`);
       continue;
     }
-    const missing = entry.secrets.map(({ name }) => name).filter((name) => !present?.includes(name));
+    const { present } = read;
+    const missing = names.filter((name) => !present?.includes(name));
     if (!missing.length) continue;
     const command = `\`pnpm cf-os secrets ${slug}${configFlag}\``;
     warnings.push(present === null

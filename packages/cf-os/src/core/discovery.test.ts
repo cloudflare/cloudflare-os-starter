@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { cfClient } from "../cf-client.ts";
+import { FAKE_ACCOUNT, fakeCf } from "../fake-cf.ts";
+import { hostedAccount as fakeHostedAccount } from "../test-support.ts";
 import { CfAuthError } from "./client.ts";
 import { discover, fetchInventory, type Inventory } from "./discovery.ts";
 import { editsAsFragment } from "./edits.ts";
@@ -142,4 +145,70 @@ test("survives an account with no Zero Trust organization, but not missing crede
   const discovery = discover("acme", await inventory({ ...hostedAccount(), organization: null }));
   assert.ok(discovery.rows.some((row) => row.path === "access.issuer" && row.found === null));
   await assert.rejects(inventory({ signedOut: true }), CfAuthError);
+});
+
+/** The command words of a `cf` call, before its first flag. */
+function command(args: string[]): string {
+  const end = args.findIndex((arg) => arg.startsWith("-"));
+  return args.slice(0, end < 0 ? undefined : end).join(" ");
+}
+
+/**
+ * A `delay` for {@link fakeCf} that settles the calls in the reverse of the order they started: the
+ * first waits longest.
+ */
+function reversing(): (args: string[]) => number {
+  let started = 0;
+  return () => 60 - 10 * started++;
+}
+
+test("reads everything at once, and gives the same inventory whichever read finishes first", async () => {
+  const inOrder = fakeCf(fakeHostedAccount());
+  const expected = await fetchInventory(cfClient({ spawn: inOrder.spawn }), FAKE_ACCOUNT);
+  const reversed = fakeCf(fakeHostedAccount(), { delay: reversing() });
+  const reading = fetchInventory(cfClient({ spawn: reversed.spawn }), FAKE_ACCOUNT);
+  // All six started before any settled.
+  assert.deepEqual(reversed.calls.map(({ args }) => command(args)), [
+    "zero-trust organization get",
+    "workers list",
+    "kv namespaces list",
+    "r2 buckets list",
+    "ai-gateway gateways list",
+    "zero-trust access applications list",
+  ]);
+  assert.deepEqual(await reading, expected);
+  assert.equal(expected.workers.length, 6);
+  assert.deepEqual(expected.buckets, ["acme-blueprint-content"]);
+});
+
+test("throws the first failure in order, not the first to happen", async () => {
+  // The organization is signed out but answers last; the KV list fails first.
+  const cf = fakeCf({
+    ...fakeHostedAccount(),
+    "zero-trust organization get": { fail: "[10000] Authentication error" },
+    "kv namespaces list": { fail: "[10013] internal error" },
+  }, { delay: reversing() });
+  await assert.rejects(fetchInventory(cfClient({ spawn: cf.spawn }), FAKE_ACCOUNT), CfAuthError);
+  // The organization merely missing is null, and the KV failure is then the one thrown.
+  const missing = fakeCf({
+    ...fakeHostedAccount(),
+    "zero-trust organization get": { fail: "[12000] organization not found" },
+    "kv namespaces list": { fail: "[10013] internal error" },
+  }, { delay: reversing() });
+  await assert.rejects(fetchInventory(cfClient({ spawn: missing.spawn }), FAKE_ACCOUNT), /cf kv namespaces list .*\[10013\] internal error/);
+});
+
+test("leaves no read that fails after the one thrown unhandled", async (t) => {
+  const unhandled: unknown[] = [];
+  const listener = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", listener);
+  t.after(() => process.off("unhandledRejection", listener));
+  // The organization fails first, while every later read is still in flight and fails after it.
+  const failing = Object.fromEntries(Object.keys(fakeHostedAccount()).map((key) => [key, { fail: "[10013] internal error" }]));
+  const cf = fakeCf({ ...failing, "zero-trust organization get": { fail: "[10000] Authentication error" } },
+    { delay: (args) => command(args) === "zero-trust organization get" ? 0 : 20 });
+  await assert.rejects(fetchInventory(cfClient({ spawn: cf.spawn }), FAKE_ACCOUNT), CfAuthError);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(cf.calls.length, 6);
+  assert.deepEqual(unhandled, []);
 });

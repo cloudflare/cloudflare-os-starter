@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { cli, invocationDir, type CliDeps } from "./main.ts";
+import { cli, finish, invocationDir, type CliDeps } from "./main.ts";
 import { DELEGATION_SENTINEL, type SpawnDelegate } from "./project.ts";
 import { scratchProject, TEMPLATE } from "./test-support.ts";
 
@@ -182,6 +182,65 @@ test("install runs, and says what to do, with no submodule checked out", (t) => 
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /cf-os install: cloudflare-os\/ is empty, so the submodule is not checked out/);
   assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND|Cannot find/);
+});
+
+test("a cancelled or failed run exits once its output has flushed; a successful one leaves the exit to the event loop", async (t) => {
+  const before = process.exitCode;
+  t.after(() => {
+    process.exitCode = before;
+  });
+  const order: string[] = [];
+  // Each stream reports its write done a turn of the event loop later, as a pipe does. The test
+  // runner's own output, on stdout too, is not finish's, and goes through.
+  const writes = (["stdout", "stderr"] as const).map((name) => {
+    const write = process[name].write.bind(process[name]) as (chunk: string, done?: () => void) => boolean;
+    return t.mock.method(process[name], "write", (chunk: string, done?: () => void) => {
+      if (chunk !== "") return write(chunk, done);
+      order.push(`${name} write`);
+      setImmediate(() => {
+        order.push(`${name} flushed`);
+        done?.();
+      });
+      return true;
+    });
+  });
+  const exits: number[] = [];
+  await finish(130, (code) => {
+    order.push("exit");
+    exits.push(code);
+  });
+  assert.deepEqual(exits, [130]);
+  assert.deepEqual(order, ["stdout write", "stderr write", "stdout flushed", "stderr flushed", "exit"]);
+  assert.equal(process.exitCode, before, "set the exit code it exits with");
+
+  // A failed run exits the same way, so the reads still running beside the failed one end with it.
+  order.length = 0;
+  await finish(1, (code) => {
+    order.push("exit");
+    exits.push(code);
+  });
+  for (const write of writes) write.mock.restore();
+  assert.deepEqual(exits, [130, 1]);
+  assert.deepEqual(order, ["stdout write", "stderr write", "stdout flushed", "stderr flushed", "exit"]);
+
+  await finish(0, (code) => exits.push(code));
+  assert.deepEqual(exits, [130, 1]);
+  assert.equal(process.exitCode, 0);
+});
+
+test("a failed run ends the cf reads still running beside it, rather than waiting on them", () => {
+  // A cf child that would run for 20 s, then a failure: the process exits at once, and takes the child with it.
+  const script = `
+    import { spawnCf } from ${JSON.stringify(join(SRC, "cf-client.ts"))};
+    import { finish } from ${JSON.stringify(MAIN)};
+    const env = { ...process.env, CLOUDFLARE_API_TOKEN: "unused" };
+    spawnCf(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { cwd: process.cwd(), env });
+    await finish(1);
+  `;
+  const started = Date.now();
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 15000 });
+  assert.equal(result.status, 1, result.stderr);
+  assert.ok(Date.now() - started < 10000, `exited after ${Date.now() - started} ms`);
 });
 
 /** A module's imports: static ones (`import type` excluded: erased) and literal dynamic ones. */

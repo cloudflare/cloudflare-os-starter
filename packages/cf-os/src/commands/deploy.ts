@@ -57,6 +57,7 @@ import { undeclaredVarWarnings, type GatekeeperCatalog } from "../core/gatekeepe
 import { gatekeeperSecretWarnings, prose, verifyAccount } from "../core/verify-account.ts";
 import { parseDeployment } from "../deployment-file.ts";
 import { loadCatalog } from "../gatekeeper-catalog.ts";
+import { waitOn } from "../prompt.ts";
 import { configFlag, secretsCommand, uploadSecrets, withRetry, type PendingSecrets } from "../gatekeeper-secrets.ts";
 import { CancelledError, concurrencyLimit, mapConcurrent, runCaptured } from "../run-tasks.ts";
 import { defaultSpawn, type SpawnTool } from "../tools.ts";
@@ -228,10 +229,10 @@ async function warnMissingSecrets(
 ): Promise<void> {
   const unset = Object.entries(config.gatekeepers ?? {})
     .filter(([slug]) => !pending.some(({ gatekeeper }) => gatekeeper === slug));
-  for (const warning of await gatekeeperSecretWarnings(await ctx.client(),
-    { ...config, gatekeepers: Object.fromEntries(unset) }, catalog, configFlag(ctx))) {
-    ctx.out.log(`\n${warning}`);
-  }
+  const client = await ctx.client();
+  const warnings = await waitOn(ctx.prompter, "Checking the Gatekeepers' secrets", () =>
+    gatekeeperSecretWarnings(client, { ...config, gatekeepers: Object.fromEntries(unset) }, catalog, configFlag(ctx)));
+  for (const warning of warnings) ctx.out.log(`\n${warning}`);
   for (const { worker, values } of pending) {
     ctx.out.log(`\n${worker}'s ${prose(Object.keys(values), "and")} will be set once it is deployed.`);
   }
@@ -249,7 +250,9 @@ async function checkAccount(
   catalog: GatekeeperCatalog,
   pending: PendingSecrets[],
 ): Promise<void> {
-  const result = await verifyAccount(await ctx.client(), config, publicOrigin(config));
+  const client = await ctx.client();
+  const result = await waitOn(ctx.prompter, "Checking the account against the deployment file",
+    () => verifyAccount(client, config, publicOrigin(config)));
   if ("skipped" in result) {
     ctx.out.log(`\nSkipped Cloudflare-side checks: ${result.skipped}`);
     return;

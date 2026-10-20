@@ -7,19 +7,25 @@ import { parseDeployment, valueAtPath } from "../deployment-file.ts";
 import { FAKE_ACCOUNT, fakeCf, type FakeReply } from "../fake-cf.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import { CANCEL, hostedAccount, scratchProject, scriptedPrompter, TEMPLATE, testCatalog, testContext } from "../test-support.ts";
+import { INVENTORY_LABEL } from "../cached-reads.ts";
 import { run } from "./import.ts";
 
-/** Runs `cf-os import <positionals>` in `root` against `account`, with {@link testCatalog} by default. */
+/**
+ * Runs `cf-os import <positionals>` in `root` against `account`, with {@link testCatalog} by default,
+ * each `cf` call settling after `delay`.
+ */
 async function importing(
   root: string,
   positionals: string[],
-  { out, account = hostedAccount(), flags = {}, prompter = null, catalog = testCatalog() }:
+  { out, account = hostedAccount(), flags = {}, prompter = null, catalog = testCatalog(), delay }:
     {
       out?: string; account?: Record<string, FakeReply>; flags?: object;
       prompter?: ReturnType<typeof scriptedPrompter> | null; catalog?: GatekeeperCatalog;
+      delay?: (args: string[]) => number;
     } = {},
 ) {
-  const cf = fakeCf(account);
+  // Each `cf` call stamped with how many questions had been answered when it started.
+  const cf = fakeCf(account, { delay, stamp: () => prompter?.answered.length });
   const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), flags, prompter });
   const code = await run({ command: "import", values: { out }, positionals }, harness.ctx, async () => catalog);
   return { code, ...harness, calls: cf.calls };
@@ -190,4 +196,116 @@ test("rejects malformed arguments", async (t) => {
   const root = scratchProject(t, TEMPLATE);
   await assert.rejects(importing(root, ["Not A Name"]), /not a Worker name/);
   await assert.rejects(importing(root, ["acme"], { flags: { account: "nope" } }), /--account must be a 32-hex/);
+});
+
+/** The command words of a `cf` call, before its first flag. */
+function command(args: string[]): string {
+  const end = args.findIndex((arg) => arg.startsWith("-"));
+  return args.slice(0, end < 0 ? undefined : end).join(" ");
+}
+
+/** A `delay` settling the `cf` calls in the reverse of the order they started: the first waits longest. */
+function reversing(): (args: string[]) => number {
+  let started = 0;
+  return () => 60 - 10 * started++;
+}
+
+test("prints the same, byte for byte, whichever read finishes first", async (t) => {
+  const outputs = [];
+  for (const delay of [undefined, reversing()]) {
+    const root = scratchProject(t, TEMPLATE);
+    const { code, json, stderr } = await importing(root, ["acme"], { flags: { account: FAKE_ACCOUNT }, delay });
+    outputs.push({ code, stdout: JSON.stringify(json), stderr: stderr() });
+  }
+  assert.equal(outputs[0].code, 0);
+  assert.deepEqual(outputs[1], outputs[0]);
+});
+
+test("fails on a read that fails, with the same message whichever read finishes first", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const account = { ...hostedAccount(), "kv namespaces list": { fail: "[10013] internal error" } };
+  for (const delay of [undefined, reversing()]) {
+    await assert.rejects(importing(root, ["acme"], { flags: { account: FAKE_ACCOUNT }, account, delay }),
+      /^Error: cf kv namespaces list --page 1 --per-page 100: APIError \[10013\] internal error$/);
+  }
+});
+
+test("at a terminal, lists the Workers once, and reads the rest while it asks which instance", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const prompter = scriptedPrompter([["Which hosted instance?", "acme"]]);
+  // The rest settle well after the question is answered, so each is still in flight when needed.
+  const { code, calls } = await importing(root, [], {
+    flags: { account: FAKE_ACCOUNT }, prompter, delay: (args) => command(args) === "workers list" ? 0 : 30,
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(calls.map(({ args, at }) => [command(args), at]), [
+    ["workers list", 0],
+    ["zero-trust organization get", 0],
+    ["kv namespaces list", 0],
+    ["r2 buckets list", 0],
+    ["ai-gateway gateways list", 0],
+    ["zero-trust access applications list", 0],
+  ]);
+  // The Workers' list shown once, while it was in flight; settled, it shows nothing. The rest share
+  // one spinner.
+  assert.deepEqual(prompter.waited, ["Listing the account's Workers", INVENTORY_LABEL]);
+});
+
+test("at a terminal, reads nothing ahead when the account has no hosted instance", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const account = { ...hostedAccount(), "workers list": [{ name: "unrelated" }] };
+  const prompter = scriptedPrompter([]);
+  const { code, calls, stderr } = await importing(root, [], { flags: { account: FAKE_ACCOUNT }, account, prompter });
+  assert.equal(code, 1);
+  assert.match(stderr(), /No hosted instances in account/);
+  assert.deepEqual(calls.map(({ args }) => command(args)), ["workers list"]);
+});
+
+test("at a terminal, clears the spinner when a read fails, though later ones are still in flight", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const account = { ...hostedAccount(), "zero-trust organization get": { fail: "[10000] Authentication error" } };
+  // Spinners still showing, by message: a busy call that has not settled.
+  const showing: string[] = [];
+  const prompter = scriptedPrompter([]);
+  const scripted = prompter.busy!.bind(prompter);
+  prompter.busy = async (message, work) => {
+    showing.push(message);
+    try {
+      return await scripted(message, work);
+    } finally {
+      showing.splice(showing.indexOf(message), 1);
+    }
+  };
+  await assert.rejects(importing(root, ["acme"], {
+    flags: { account: FAKE_ACCOUNT }, account, prompter,
+    delay: (args) => command(args) === "zero-trust organization get" ? 0 : 40,
+  }), /Authentication error/);
+  assert.deepEqual(showing, []);
+  assert.deepEqual(prompter.waited, [INVENTORY_LABEL]);
+  // The reads still in flight settle without drawing.
+  await new Promise((settle) => setTimeout(settle, 60));
+  assert.deepEqual(prompter.waited, [INVENTORY_LABEL]);
+});
+
+test("reads nothing ahead without a terminal, or with the instance given", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const account = { ...hostedAccount(), "accounts list": [{ id: FAKE_ACCOUNT, name: "Acme" }] };
+  const listed = await importing(root, [], { account });
+  assert.equal(listed.code, 1);
+  assert.deepEqual(listed.calls.map(({ args }) => command(args)), ["accounts list", "workers list"]);
+
+  // Given, the instance is not asked for, and each step is shown while its reads are in flight.
+  const prompter = scriptedPrompter([]);
+  const given = await importing(root, ["acme"], { account, prompter });
+  assert.equal(given.code, 0);
+  assert.deepEqual(given.calls.map(({ args }) => command(args)), [
+    "accounts list",
+    "zero-trust organization get",
+    "workers list",
+    "kv namespaces list",
+    "r2 buckets list",
+    "ai-gateway gateways list",
+    "zero-trust access applications list",
+  ]);
+  assert.deepEqual(prompter.waited, ["Listing your accounts", INVENTORY_LABEL]);
 });

@@ -6,9 +6,14 @@
 // name, it asks at a terminal, and otherwise lists the candidates and stops, so the choice is always
 // the operator's. Read-only against Cloudflare; `--out <path>` writes the values into a local copy
 // of the config, comments intact (pass `--config`'s path to update it in place).
+//
+// Each read is made once per run (cached-reads.ts). At a terminal, a step waiting on a read shows a
+// spinner, and while "Which hosted instance?" is open the rest of the account is read in the
+// background.
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { cachedReads, INVENTORY_LABEL } from "../cached-reads.ts";
 import { configPath, displayPath, UsageError, type CommandArgs, type Context } from "../context.ts";
 import type { CloudflareClient } from "../core/client.ts";
 import { discover, fetchInventory, type Discovery, type Inventory } from "../core/discovery.ts";
@@ -17,6 +22,7 @@ import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import { findInstances, WORKER_NAME } from "../core/naming.ts";
 import { parseDeployment, updateDeployment } from "../deployment-file.ts";
 import { loadCatalog } from "../gatekeeper-catalog.ts";
+import { waitOn } from "../prompt.ts";
 import { resolveAccount } from "./account.ts";
 
 /**
@@ -137,7 +143,9 @@ export async function run(
   const inPath = configPath(ctx);
   const where = displayPath(ctx, inPath);
   const file = parseDeployment(await readFile(inPath, "utf8"), where);
-  const client = await ctx.client();
+  const cache = cachedReads(await ctx.client());
+  const { quiet, pending } = cache;
+  const client = cache.loud(ctx.prompter);
 
   const account = await resolveAccount(ctx, client, file, {
     question: "Which account is the hosted instance in?",
@@ -147,11 +155,24 @@ export async function run(
   if (!account) return 1;
   const accountFlag = account.isNew ? `--account ${account.id}` : "";
 
+  // While "Which hosted instance?" is open, the rest of what discovery reads, once there is an
+  // instance to ask about. The read that fails is reported where fetchInventory below awaits it.
+  if (!instance && ctx.prompter) {
+    const id = account.id;
+    quiet.listWorkers(id)
+      .then((workers) => findInstances(workers).length ? fetchInventory(quiet, id) : undefined)
+      .catch(() => {});
+  }
   instance ??= await pickInstance(ctx, client, account.id,
     ["pnpm cf-os import <instance>", accountFlag].filter(Boolean).join(" ")) ?? undefined;
   if (!instance) return 1;
 
-  const discovery = discoverInstance(instance, await fetchInventory(client, account.id), await catalog(ctx.root));
+  // One spinner for the six reads, so it clears when fetchInventory settles, on its first failure
+  // too, though later reads are still in flight. fetchInventory starts or reuses every read
+  // synchronously, so `pending` already covers them all.
+  const reading = fetchInventory(quiet, account.id);
+  const inventory = await (pending() ? waitOn(ctx.prompter, INVENTORY_LABEL, () => reading) : reading);
+  const discovery = discoverInstance(instance, inventory, await catalog(ctx.root));
   const { removals, note } = foreignGatekeepers(file, instance, discovery);
   if (note) discovery.notes.push(note);
 

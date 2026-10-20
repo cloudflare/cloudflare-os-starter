@@ -57,14 +57,34 @@ function describeChoices(choices: Choice[]): Pick<Asked, "choices" | "hints"> {
  * the validation refuses is asked again, as the terminal does, from the next step; the record never
  * holds a password answer. Its {@link Prompter.backable} view answers from the same script, and only
  * there does a step answering {@link BACK} go back.
+ *
+ * `answered` holds the message of every question answered so far, in order, and `waited` the message
+ * of every {@link Prompter.busy} wait, whose work it simply runs: together with `fakeCf`'s `stamp`,
+ * what was open when a read started, and what a step showed it was waiting on.
  */
-export function scriptedPrompter(script: Step[]): Prompter & { asked: Asked[]; remaining: () => Step[] } {
-  const steps = [...script];
-  const asked: Asked[] = [];
-  return { asked, remaining: () => steps, ...scriptedView(steps, asked, false) };
+export function scriptedPrompter(
+  script: Step[],
+): Prompter & { asked: Asked[]; answered: string[]; waited: string[]; remaining: () => Step[] } {
+  const state: ScriptState = { steps: [...script], asked: [], answered: [], waited: [] };
+  const { steps, asked, answered, waited } = state;
+  return { asked, answered, waited, remaining: () => steps, ...scriptedView(state, false) };
 }
 
-function scriptedView(steps: Step[], asked: Asked[], backable: boolean): Prompter {
+/** What a {@link scriptedPrompter} and its views share. */
+interface ScriptState {
+  steps: Step[];
+  asked: Asked[];
+  answered: string[];
+  waited: string[];
+}
+
+function scriptedView(shared: ScriptState, backable: boolean): Prompter {
+  const { steps, asked, answered, waited } = shared;
+  /** `answer`, recorded as `message`'s. */
+  const done = <T>(message: string, answer: T): T => {
+    answered.push(message);
+    return answer;
+  };
   const next = (record: Asked): unknown => {
     if (backable) record.backable = true;
     asked.push(record);
@@ -78,11 +98,15 @@ function scriptedView(steps: Step[], asked: Asked[], backable: boolean): Prompte
     return answer === DEFAULT ? record.initial : answer;
   };
   return {
-    backable: () => scriptedView(steps, asked, true),
+    backable: () => scriptedView(shared, true),
+    async busy(message, work) {
+      waited.push(message);
+      return work();
+    },
     async select(message, choices, initial) {
       const answer = next({ kind: "select", message, ...describeChoices(choices), initial }) as string;
       assert.ok(choices.some((choice) => choice.value === answer), `"${answer}" is not a choice for "${message}"`);
-      return answer as never;
+      return done(message, answer as never);
     },
     async multiselect(message, choices, initial, { required = true } = {}) {
       const answer = next({ kind: "multiselect", message, ...describeChoices(choices), initial, required });
@@ -91,25 +115,25 @@ function scriptedView(steps: Step[], asked: Asked[], backable: boolean): Prompte
         assert.ok(choices.some((choice) => choice.value === value), `"${value}" is not a choice for "${message}"`);
       }
       assert.ok(!required || answer.length, `"${message}" needs at least one choice`);
-      return answer as never;
+      return done(message, answer as never);
     },
     async text(message, { initial, validate } = {}) {
       const answer = String(next({ kind: "text", message, initial }) ?? "");
       const problem = validate?.(answer);
       assert.equal(problem, undefined, `"${answer}" fails "${message}": ${problem}`);
-      return answer;
+      return done(message, answer);
     },
     async password(message, { validate } = {}) {
       for (;;) {
         const record: Asked = { kind: "password", message };
         const answer = String(next(record) ?? "");
         const problem = validate?.(answer);
-        if (problem === undefined) return answer;
+        if (problem === undefined) return done(message, answer);
         record.refused = problem;
       }
     },
     async confirm(message, initial = true) {
-      return next({ kind: "confirm", message, initial }) as boolean;
+      return done(message, next({ kind: "confirm", message, initial }) as boolean);
     },
   };
 }

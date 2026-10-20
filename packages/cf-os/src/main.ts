@@ -347,19 +347,36 @@ function version(): string {
   return String(manifest.version);
 }
 
+/**
+ * Ends the process with exit code `code`. A cancelled or failed run (any code but 0) exits once
+ * stdout and stderr have flushed: a `cf` read still in flight, in the background or beside the one
+ * that failed, would otherwise hold it open until the read ends, and exiting ends those reads
+ * (`stopCfChildren` runs on exit). Pipes are asynchronous on some platforms, and exiting before they
+ * drain would drop lines. A successful run is left to the event loop, which ends with its own work.
+ */
+export async function finish(code: number, exit: (code: number) => void = process.exit): Promise<void> {
+  if (code === 0) {
+    process.exitCode = code;
+    return;
+  }
+  await Promise.all([process.stdout, process.stderr].map((stream) =>
+    new Promise<void>((flushed) => stream.write("", () => flushed()))));
+  exit(code);
+}
+
 const self = realpathSync(fileURLToPath(import.meta.url));
 if (process.argv[1] && samePath(process.argv[1], self)) {
   const argv = process.argv.slice(2);
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
     process.stdout.write(`${version()}\n`);
   } else {
-    process.exitCode = await cli(argv, {
+    await finish(await cli(argv, {
       cwd: invocationDir(process.cwd(), process.env),
       env: process.env,
       self,
       out: consoleOutput(),
       prompter: terminalPrompter(),
       spawn: spawnSync,
-    });
+    }));
   }
 }

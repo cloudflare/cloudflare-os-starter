@@ -5,9 +5,13 @@
 // `@clack/prompts`, as `cf` uses. A cancelled prompt throws {@link Cancelled}, which the CLI turns into
 // exit code 130, as `cf` and wrangler do. Ctrl-C cancels; so does Esc, except on a prompter's
 // {@link Prompter.backable} view, where a command lets Esc go back a question instead (back.ts).
+//
+// A step blocked on the network shows a spinner ({@link Prompter.busy}); like the questions, it is
+// drawn only on a terminal, so a run without one prints nothing extra.
 
 import type { Readable, Writable } from "node:stream";
-import { cancel, confirm, isCancel, multiselect, password, select, text, type Option } from "@clack/prompts";
+import { styleText } from "node:util";
+import { cancel, confirm, isCancel, multiselect, password, select, text, unicode, type Option } from "@clack/prompts";
 
 /** One choice in a {@link Prompter.select}. */
 export interface Choice<T extends string = string> {
@@ -48,6 +52,12 @@ export interface Prompter {
   password(message: string, options?: PasswordOptions): Promise<string>;
   confirm(message: string, initial?: boolean): Promise<boolean>;
   /**
+   * Runs `work`, `message` shown beside a spinner until it settles, for a step waiting on the
+   * network; its value or error passes through. Absent on a prompter that draws nothing:
+   * {@link waitOn} runs the work either way.
+   */
+  busy?<T>(message: string, work: () => Promise<T>): Promise<T>;
+  /**
    * The same prompter, on which Esc throws {@link Back} rather than cancelling. Absent on one that
    * cannot go back.
    */
@@ -66,6 +76,14 @@ export class Back extends Error {
   constructor() {
     super("Back.");
   }
+}
+
+/**
+ * Runs `work` behind `prompter`'s spinner, labelled `message`, or just runs it where there is no
+ * prompter or it draws none.
+ */
+export function waitOn<T>(prompter: Prompter | null | undefined, message: string, work: () => Promise<T>): Promise<T> {
+  return prompter?.busy ? prompter.busy(message, work) : work();
 }
 
 /** Whether to prompt at all: both ends a terminal, and not CI. */
@@ -125,6 +143,110 @@ function counted(output: Writable): { output: Writable; rows: () => number } {
   };
 }
 
+/** Clack's spinner frames, which it draws in magenta, and how often it draws the next. */
+const FRAMES = unicode ? ["◒", "◐", "◓", "◑"] : ["•", "o", "O", "0"];
+const FRAME_INTERVAL = 80;
+
+const HIDE_CURSOR = "\x1b[?25l";
+const SHOW_CURSOR = "\x1b[?25h";
+
+/** An input stream that may be a terminal, which can then be put in raw mode. */
+type TerminalInput = Readable & { isTTY?: boolean; isRaw?: boolean; setRawMode?: (mode: boolean) => unknown };
+
+/**
+ * Holds a terminal `input` while a spinner shows: raw, so a key typed is neither echoed into the
+ * spinner's line nor left for the next prompt, and read, so Ctrl-C, which raw mode delivers as a
+ * byte rather than a signal, still quits (`interrupt`). Returns how to put it back as it was: a
+ * stream left flowing would keep the process alive, and one left raw would confuse the next prompt.
+ */
+function holdInput(input: Readable, interrupt: () => void): () => void {
+  const terminal = input as TerminalInput;
+  if (!terminal.isTTY || !terminal.setRawMode) return () => {};
+  const raw = terminal.isRaw ?? false;
+  const flowing = input.readableFlowing;
+  const onData = (chunk: Buffer | string) => {
+    if (String(chunk).includes("\x03")) interrupt();
+  };
+  terminal.setRawMode(true);
+  input.on("data", onData);
+  input.resume();
+  return () => {
+    input.off("data", onData);
+    terminal.setRawMode!(raw);
+    if (flowing) return;
+    input.pause();
+    // `pause` marks a stream nothing had read yet (null) as paused (false), from which a later
+    // `data` listener would no longer start it.
+    (input as { readableFlowing: boolean | null }).readableFlowing = flowing;
+  };
+}
+
+/**
+ * {@link Prompter.busy} on `output`: one line, a clack spinner frame and the message of the newest
+ * call still in flight, however many overlap. It erases itself once the last settles, leaving the
+ * cursor at the start of that empty line, where whatever comes next draws as if it had never shown.
+ * The first frame waits for a timer, so work already settled (a read cached earlier) draws nothing.
+ *
+ * While it shows, Ctrl-C quits as on a prompt: `Cancelled.` and exit code 130, rather than Node's
+ * default of dying with the spinner's line drawn and the cursor hidden.
+ */
+function spinner(input: Readable, output: Writable): NonNullable<Prompter["busy"]> {
+  /** The calls in flight, oldest first. */
+  const waiting: { message: string }[] = [];
+  let timer: NodeJS.Timeout | undefined;
+  let frame = 0;
+  let shown = false;
+  let releaseInput: (() => void) | undefined;
+
+  const draw = () => {
+    const symbol = FRAMES[frame];
+    // Short of the last column, where some terminals wrap at once.
+    const width = Math.max(1, ((output as { columns?: number }).columns || 80) - 1);
+    const rest = [...`  ${waiting.at(-1)?.message ?? ""}`].slice(0, width - 1).join("");
+    output.write(`\r${styleText("magenta", symbol)}${rest}\x1b[K`);
+  };
+  const clear = () => {
+    clearInterval(timer);
+    timer = undefined;
+    if (!shown) return;
+    shown = false;
+    process.off("SIGINT", interrupt);
+    releaseInput?.();
+    releaseInput = undefined;
+    output.write(`\r\x1b[K${SHOW_CURSOR}`);
+  };
+  const interrupt = () => {
+    clear();
+    cancel("Cancelled.", { output });
+    process.exit(130);
+  };
+  const show = () => {
+    shown = true;
+    output.write(HIDE_CURSOR);
+    process.once("SIGINT", interrupt);
+    releaseInput = holdInput(input, interrupt);
+    draw();
+    timer = setInterval(() => {
+      frame = (frame + 1) % FRAMES.length;
+      draw();
+    }, FRAME_INTERVAL);
+  };
+
+  return async (message, work) => {
+    const call = { message };
+    waiting.push(call);
+    if (waiting.length === 1) timer = setTimeout(show, 0);
+    else if (shown) draw();
+    try {
+      return await work();
+    } finally {
+      waiting.splice(waiting.indexOf(call), 1);
+      if (!waiting.length) clear();
+      else if (shown) draw();
+    }
+  };
+}
+
 /**
  * A {@link Prompter} drawing with clack on `streams`, the process's own by default. With `back`, Esc
  * throws {@link Back}: clack cancels on Esc and Ctrl-C alike, so a listener beside clack's notes
@@ -132,6 +254,11 @@ function counted(output: Writable): { output: Writable; rows: () => number } {
  * drawn as cancelled. Ctrl-C still cancels.
  */
 export function clackPrompter({ input = process.stdin, output = process.stdout }: Streams = {}, back = false): Prompter {
+  return clackView(input, output, back, spinner(input, output));
+}
+
+/** {@link clackPrompter}, its views sharing one spinner, so overlapping waits on either draw one line. */
+function clackView(input: Readable, output: Writable, back: boolean, busy: NonNullable<Prompter["busy"]>): Prompter {
   const ask = async <T>(prompt: (streams: { input: Readable; output: Writable }) => Promise<T | symbol>): Promise<T> => {
     let escaped = false;
     const onKeypress = (_: unknown, key?: { name?: string }) => {
@@ -183,6 +310,7 @@ export function clackPrompter({ input = process.stdin, output = process.stdout }
     async confirm(message, initial = true) {
       return ask<boolean>((streams) => confirm({ ...streams, message, initialValue: initial }));
     },
-    backable: () => clackPrompter({ input, output }, true),
+    busy,
+    backable: () => clackView(input, output, true, busy),
   };
 }

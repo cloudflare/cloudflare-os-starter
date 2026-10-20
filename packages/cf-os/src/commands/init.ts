@@ -17,7 +17,9 @@
 //
 // Until the file is written, Esc goes back to the previous question (back.ts). Going back runs the
 // questions before it again, with the reads between them, which a cache answers; so nothing is
-// created before the last question: the Access step asks both its questions first.
+// created before the last question: the Access step asks both its questions first. At a terminal, a
+// step waiting on `cf` shows a spinner, and reads certain to be needed start early, in the background,
+// while later questions are answered.
 //
 // Interactive only. Without a terminal it refuses, pointing at `import` and `access`, which take
 // every answer as a flag or from the file. Signed out of `cf`, it still runs: the account-aware
@@ -26,6 +28,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { withBack } from "../back.ts";
+import { cachedReads, INVENTORY_LABEL, LABELS, prefetch } from "../cached-reads.ts";
 import { configPath, displayPath, UsageError, type CommandArgs, type Context } from "../context.ts";
 import {
   accessEdits,
@@ -34,7 +37,7 @@ import {
   ONE_TIME_PIN_PROVIDER,
   type AccessTarget,
 } from "../core/access.ts";
-import { CfAuthError, CfError, type CloudflareClient, type CfWorker } from "../core/client.ts";
+import { CfAuthError, CfError, type CloudflareClient, type CfWorker, workersDevSubdomainOf } from "../core/client.ts";
 import { fetchInventory, type FoundGatekeeper } from "../core/discovery.ts";
 import { isPlaceholder, placeholderPaths, valueAtPath, type DeploymentEdit } from "../core/edits.ts";
 import { publicOrigin } from "../core/deployment.ts";
@@ -63,9 +66,9 @@ import {
 } from "../core/wizard.ts";
 import { parseDeployment, updateDeployment } from "../deployment-file.ts";
 import { loadCatalog } from "../gatekeeper-catalog.ts";
-import { askAndSetSecrets, secretsCommand, type PendingSecrets } from "../gatekeeper-secrets.ts";
-import type { Prompter } from "../prompt.ts";
-import { defaultSpawn, succeeded, type SpawnTool } from "../tools.ts";
+import { askAndSetSecrets, readSecretsAhead, secretsCommand, type PendingSecrets } from "../gatekeeper-secrets.ts";
+import { type Prompter, waitOn } from "../prompt.ts";
+import { defaultCapture, defaultSpawn, succeeded, type CaptureTool, type SpawnTool } from "../tools.ts";
 import { accountFlag, resolveAccount, type ResolvedAccount } from "./account.ts";
 import { discoverInstance, formatReport, pickInstance } from "./import.ts";
 
@@ -84,8 +87,10 @@ export const NO_TERMINAL =
 
 /** What init runs besides `cf` lookups, so tests can record it instead. */
 export interface InitDeps {
-  /** The sign-ins, Wrangler's status, and `wrangler secret bulk`. */
+  /** The sign-ins and `wrangler secret bulk`. */
   spawn: SpawnTool;
+  /** Wrangler's sign-in check. */
+  capture: CaptureTool;
   /**
    * `cf-os deploy` against `ctx`, setting `secrets` on their Workers once it has deployed them.
    * Resolves to its exit code.
@@ -98,6 +103,7 @@ export interface InitDeps {
 export function defaultDeps(): InitDeps {
   return {
     spawn: defaultSpawn(),
+    capture: defaultCapture(),
     catalog: loadCatalog,
     deploy: async (ctx, options) => {
       const { run: deploy } = await import("./deploy.ts");
@@ -110,8 +116,15 @@ export function defaultDeps(): InitDeps {
 interface Session {
   ctx: Context;
   prompter: Prompter;
-  /** Null when `cf` is signed out: nothing can be looked up, so everything is typed. */
+  /**
+   * Null when `cf` is signed out: nothing can be looked up, so everything is typed. A read still in
+   * flight shows a spinner while the step waits on it, as does a create.
+   */
   client: CloudflareClient | null;
+  /** The same reads, drawing nothing: what starts a read ahead of the step that uses it. */
+  reads: CloudflareClient | null;
+  /** Whether any read made so far is still in flight. */
+  pending: () => boolean;
   account: ResolvedAccount;
   /** The signed-in email, the default admin. */
   email?: string;
@@ -132,29 +145,49 @@ async function lookup<T>(session: Session, what: string, read: (client: Cloudfla
   }
 }
 
-/** The client methods that only read, which {@link cachedReads} answers a second time from memory. */
-const READ = /^(whoami|list|find|get|workersDevSubdomain)/;
+/**
+ * Right after "A new deployment": the reads both its ways make, whatever the base name turns out to
+ * be. Both read the account's Workers and its Zero Trust organization (for the Access step, or for
+ * the inventory of the hosted instance the name may turn out to be), and both list the Access
+ * applications once the organization has a team domain.
+ */
+function prefetchNew(session: Session): void {
+  const { reads, account } = session;
+  if (!reads) return;
+  prefetch(reads.listWorkers(account.id));
+  prefetch(reads.getOrganization(account.id)
+    .then((organization) => organization.auth_domain ? reads.listAccessApps(account.id) : undefined));
+}
 
 /**
- * `client`, each read answered once per method and arguments, its failure included. Going back a
- * question runs every question before it again, with the reads between them; those then cost no `cf`
- * call. Anything else, a create or its dry run, goes straight through.
+ * Right after "Take over a hosted instance": the account's Workers, which the instance is picked from,
+ * and, once they show one to pick, the rest of the inventory the takeover reads, while the instance
+ * question is open.
  */
-function cachedReads(client: CloudflareClient): CloudflareClient {
-  const cache = new Map<string, unknown>();
-  return new Proxy(client, {
-    get(target, key) {
-      const value: unknown = Reflect.get(target, key);
-      if (typeof key !== "string" || typeof value !== "function") return value;
-      const method = value.bind(target) as (...args: unknown[]) => unknown;
-      if (!READ.test(key)) return method;
-      return (...args: unknown[]) => {
-        const id = `${key} ${JSON.stringify(args)}`;
-        if (!cache.has(id)) cache.set(id, method(...args));
-        return cache.get(id);
-      };
-    },
-  });
+function prefetchTakeover(session: Session): void {
+  const { reads, account } = session;
+  if (!reads) return;
+  prefetch(reads.listWorkers(account.id)
+    .then((workers) => findInstances(workers).length ? fetchInventory(reads, account.id) : undefined));
+}
+
+/**
+ * Once the base name is settled, and the flow can no longer turn into a takeover: the AI Gateways the
+ * gateway question offers, and the identity providers the Access step checks. That step reads them
+ * only once it has an organization with a team domain and the list of applications.
+ */
+function prefetchAfterName(session: Session): void {
+  const { reads, account } = session;
+  if (!reads) return;
+  prefetch(reads.listAiGateways(account.id));
+  prefetch(reads.getOrganization(account.id).then((organization) => organization.auth_domain
+    ? reads.listAccessApps(account.id).then(() => reads.listIdentityProviders(account.id))
+    : undefined));
+}
+
+/** The account list, for the example custom Gatekeeper's default name, once it is chosen and the name is unknown. */
+function prefetchAccountName(session: Session, choice: GatekeeperChoice): void {
+  if (choice.custom && !session.account.name && session.reads) prefetch(session.reads.listAccounts());
 }
 
 function workerNameProblem(name: string): string | undefined {
@@ -204,8 +237,9 @@ async function chooseRoute(session: Session, name: string): Promise<RouteChoice>
   }
 
   if (kind === "workersDev") {
+    // Off the list the base name was checked against, which is already in the cache.
     const subdomain = await lookup(session, "the account's Workers",
-      (client) => client.workersDevSubdomain(account.id));
+      async (client) => workersDevSubdomainOf(await client.listWorkers(account.id)));
     if (subdomain) {
       ctx.out.log(`It will answer on https://${name}.${subdomain}.workers.dev.`);
       return { workersDevSubdomain: subdomain };
@@ -367,6 +401,7 @@ async function newDeployment(session: Session, file: Record<string, unknown>, ca
     suggested = `${name}-2`;
   }
 
+  prefetchAfterName(session);
   const route = await chooseRoute(session, name);
   const admins = parseAdmins(await prompter.text("Admin emails, comma-separated (they can open /admin)", {
     initial: session.email,
@@ -384,6 +419,7 @@ async function newDeployment(session: Session, file: Record<string, unknown>, ca
     ...valueAtPath(file, ["customGatekeeper", "enabled"]) === false ? [] : [CUSTOM_GATEKEEPER_CHOICE],
     ...listed,
   ]);
+  prefetchAccountName(session, choice);
   const customGatekeeper = choice.custom ? await askDisplay(session, file) : null;
   const gatekeepers = await nameGatekeepers(session, workers, name, choice.slugs);
 
@@ -634,7 +670,11 @@ async function takeover(
   const client = session.client!;
   const instance = chosen ?? await pickInstance(ctx, client, account.id, "pnpm cf-os import --account <id>");
   if (!instance) return null;
-  const inventory = await fetchInventory(client, account.id);
+  // One spinner for the six reads, as in import: it clears when fetchInventory settles, on its first
+  // failure too, though later reads are still in flight. fetchInventory starts or reuses every read
+  // synchronously, so `pending` already covers them all.
+  const reading = fetchInventory(session.reads!, account.id);
+  const inventory = await (session.pending() ? waitOn(prompter, INVENTORY_LABEL, () => reading) : reading);
   const discovery = discoverInstance(instance, inventory, catalog);
   ctx.out.log(`Hosted instance "${instance}" in account ${account.id}:\n\n${formatReport(instance, discovery)}\n`);
   if (!discovery.matched) {
@@ -654,6 +694,7 @@ async function takeover(
     "Web Search Gatekeeper Worker name (the instance has none; the deploy creates it)", names.websearch);
   const { found, passedOver } = await liveGatekeepers(session, instance, file, inventory.workers, catalog, discovery.foundGatekeepers);
   const choice = await askGatekeepers(session, catalog, [CUSTOM_GATEKEEPER_CHOICE, ...found.map(({ slug }) => slug)]);
+  prefetchAccountName(session, choice);
   const liveCustom = liveCustomGatekeeper(file, instance, inventory.workers);
   const unbinds = (name: string) => ctx.out.log(`Warning: leaving out ${name} removes its binding, so it ` +
     "disappears from the app along with every user's connection to it. The Worker keeps running; " +
@@ -771,7 +812,8 @@ function reportSecretsLater(
 /**
  * {@link askAndSetSecrets} for `slugs`, each failure reported with the `cf-os secrets` command that
  * tries again. Resolves to the values entered for a `"deferred"` upload, which never leave memory,
- * and the Gatekeepers whose credentials could not be set, which make init exit 1.
+ * and the Gatekeepers whose credentials could not be set, which make init exit 1. `present` holds
+ * their secret listings, started ahead ({@link readSecretsAhead}).
  */
 async function askSecrets(
   ctx: Context,
@@ -781,11 +823,12 @@ async function askSecrets(
   slugs: string[],
   upload: "now" | "deferred",
   originFound: boolean,
+  present?: Map<string, Promise<string[] | null>>,
 ): Promise<{ pending: PendingSecrets[]; failed: string[] }> {
   if (!slugs.length) return { pending: [], failed: [] };
   const origin = originFound ? publicOrigin(config) : UNKNOWN_ORIGIN;
   const outcome = await askAndSetSecrets(ctx, { prompter: ctx.prompter, client: await ctx.client(), spawn: deps.spawn },
-    { config, catalog, slugs, upload, origin });
+    { config, catalog, slugs, upload, origin, present });
   return { pending: outcome.pending, failed: outcome.failed };
 }
 
@@ -809,9 +852,10 @@ export function nextStep(file: Record<string, unknown>, where: string, configFla
 
 /** The `cf` client when signed in, with the signed-in email; null when signed out or unreachable. */
 async function signedIn(ctx: Context): Promise<{ client: CloudflareClient | null; email?: string }> {
+  // The raw client, not the cache: a second check after `cf auth login` has to ask again.
   const client = await ctx.client();
   try {
-    const who = await client.whoami();
+    const who = await waitOn(ctx.prompter, LABELS.whoami(), () => client.whoami());
     return { client: who.authenticated ? client : null, email: who.email };
   } catch (error) {
     if (!(error instanceof CfError || error instanceof CfAuthError)) throw error;
@@ -831,7 +875,9 @@ async function offerCfSignIn(ctx: Context, deps: InitDeps): Promise<boolean> {
 /** `wrangler login`, offered when Wrangler, which does the deploying, is signed out. */
 async function offerWranglerSignIn(ctx: Context, deps: InitDeps): Promise<void> {
   // `wrangler whoami --json` exits non-zero when signed out.
-  if (succeeded(deps.spawn("pnpm", ["exec", "wrangler", "whoami", "--json"], { cwd: ctx.root, capture: true }))) return;
+  const check = await waitOn(ctx.prompter, "Checking the Wrangler sign-in",
+    () => deps.capture("pnpm", ["exec", "wrangler", "whoami", "--json"], { cwd: ctx.root }));
+  if (succeeded(check)) return;
   if (await ctx.prompter!.confirm("Sign in to Wrangler? It opens a browser. Wrangler deploys the Workers.", true)) {
     deps.spawn("pnpm", ["exec", "wrangler", "login"], { cwd: ctx.root, capture: false });
   }
@@ -878,22 +924,29 @@ export async function configure(
   }
 
   const catalog = await deps.catalog(ctx.root);
-  const reads = client && cachedReads(client);
+  const cache = client && cachedReads(client);
   // Every question up to the write, which Esc goes back through.
   const { account, configured } = await withBack(prompter, ctx.out, async (asker, askOut) => {
     const askCtx: Context = { ...ctx, prompter: asker, out: askOut };
-    const chosen = await chooseAccount(askCtx, asker, reads, file, where);
-    const session: Session = { ctx: askCtx, prompter: asker, client: reads, account: chosen, email };
+    // Through this run's asker, which draws nothing while answers are replayed.
+    const reader = cache && cache.loud(asker);
+    const chosen = await chooseAccount(askCtx, asker, reader, file, where);
+    const session: Session = { ctx: askCtx, prompter: asker, client: reader, reads: cache && cache.quiet,
+      pending: () => Boolean(cache?.pending()), account: chosen, email };
 
     // Asked before any lookup: each is a `cf` run, and only the answer says which are needed.
-    const mode = reads
+    const mode = reader
       ? await asker.select("What are you setting up?", [
         { value: "new" as const, label: "A new deployment" },
         { value: "takeover" as const, label: "Take over a hosted instance", hint: "one the hosted deploy created" },
       ])
       : "new";
 
-    if (mode === "takeover") return { account: chosen, configured: await takeover(session, file, catalog) };
+    if (mode === "takeover") {
+      prefetchTakeover(session);
+      return { account: chosen, configured: await takeover(session, file, catalog) };
+    }
+    prefetchNew(session);
     const outcome = await newDeployment(session, file, catalog);
     return {
       account: chosen,
@@ -927,11 +980,13 @@ export async function configure(
     if (placeholderPaths(written).length) ctx.out.log(next);
     return 0;
   }
-  await offerWranglerSignIn(ctx, deps);
   // A Worker the account runs can take its secrets now; a new one only once the deploy creates it.
   const oauth = (live: boolean) => selected.filter((gatekeeper) => gatekeeper.oauth && gatekeeper.live === live)
     .map(({ slug }) => slug);
-  const live = await askSecrets(outCtx, deps, config, catalog, oauth(true), "now", originFound);
+  // Listed while Wrangler's sign-in is checked, through a fresh client: the cache is for the questions.
+  const ahead = oauth(true).length ? readSecretsAhead(await ctx.client(), config, catalog, oauth(true)) : undefined;
+  await offerWranglerSignIn(ctx, deps);
+  const live = await askSecrets(outCtx, deps, config, catalog, oauth(true), "now", originFound, ahead);
   if (!await prompter.confirm("Deploy now?", true)) {
     reportSecretsLater(outCtx, config, catalog, selected, originFound);
     ctx.out.log(next);

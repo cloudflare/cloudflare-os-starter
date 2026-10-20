@@ -6,7 +6,7 @@ import { cfClient } from "../cf-client.ts";
 import { applicationBody } from "../core/access.ts";
 import { parseDeployment, valueAtPath } from "../deployment-file.ts";
 import { FAKE_ACCOUNT, fakeCf, flag, type FakeReply } from "../fake-cf.ts";
-import { scratchProject, testContext } from "../test-support.ts";
+import { scratchProject, scriptedPrompter, testContext } from "../test-support.ts";
 import { run } from "./access.ts";
 
 /** A deployment file ready for `cf-os access`: everything but issuer and audience filled in. */
@@ -25,9 +25,14 @@ const READY = `{
 
 const organization = { auth_domain: "acme.cloudflareaccess.com" };
 
-async function access(root: string, account: Record<string, FakeReply>, dryRun = false) {
+async function access(
+  root: string,
+  account: Record<string, FakeReply>,
+  dryRun = false,
+  prompter: ReturnType<typeof scriptedPrompter> | null = null,
+) {
   const cf = fakeCf(account);
-  const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }) });
+  const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter });
   const code = await run({ command: "access", values: { "dry-run": dryRun }, positionals: [] }, harness.ctx);
   return { code, ...harness, calls: cf.calls };
 }
@@ -104,4 +109,22 @@ test("reuses the application already covering the hostname", async (t) => {
   assert.ok(!calls.some((call) => call.args.includes("create")), "created a duplicate");
   assert.equal(valueAtPath(parseDeployment(readFileSync(join(root, "deployment.jsonc"), "utf8")), ["access", "audience"]),
     "aud-existing");
+});
+
+test("at a terminal, shows one spinner over the lookup, and prints the same", async (t) => {
+  const account: Record<string, FakeReply> = {
+    "zero-trust organization get": organization,
+    "zero-trust access applications list": [],
+    "zero-trust access applications create": (args) => args.includes("--dry-run")
+      ? { method: "POST", body: JSON.parse(flag(args, "--body")!) }
+      : { name: "Cloudflare OS acme-os", aud: "aud-new" },
+  };
+  for (const [dryRun, label] of [[true, "Looking up Access in the account"], [false, "Finding or creating the Access application"]] as const) {
+    const plain = await access(scratchProject(t, READY), account, dryRun);
+    const prompter = scriptedPrompter([]);
+    const shown = await access(scratchProject(t, READY), account, dryRun, prompter);
+    assert.deepEqual(prompter.waited, [label]);
+    assert.deepEqual([shown.code, shown.json, shown.stderr()], [plain.code, plain.json, plain.stderr()]);
+    assert.deepEqual(shown.calls.map(({ args }) => args), plain.calls.map(({ args }) => args));
+  }
 });

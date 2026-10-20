@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { cfClient } from "../cf-client.ts";
 import { parseDeployment, valueAtPath } from "../deployment-file.ts";
-import { FAKE_ACCOUNT, fakeCf, flag, workerSecretsReply, type FakeReply } from "../fake-cf.ts";
+import { FAKE_ACCOUNT, fakeCf, flag, workerSecretsReply, type FakeCall, type FakeCfOptions, type FakeReply } from "../fake-cf.ts";
 import { BACK_HINT } from "../back.ts";
 import {
   BACK,
@@ -19,7 +19,7 @@ import {
   type Step,
 } from "../test-support.ts";
 import type { Context } from "../context.ts";
-import { Cancelled } from "../prompt.ts";
+import { Cancelled, type Prompter } from "../prompt.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import type { PendingSecrets } from "../gatekeeper-secrets.ts";
 import { configure, NO_TERMINAL, run, type InitDeps } from "./init.ts";
@@ -82,6 +82,8 @@ function recording(tools: ToolReplies = {}, catalog: GatekeeperCatalog = testCat
       }
       return { status, stdout: key ? tools[key].stdout ?? "" : "" };
     },
+    // Recorded with the rest, through `spawn`, so a test standing in for `spawn` covers it too.
+    capture: async (command, args, { cwd, env }) => deps.spawn(command, args, { cwd, env, capture: true }),
     deploy: async (ctx, options) => {
       deployed.push(ctx);
       deployOptions.push(options);
@@ -92,30 +94,63 @@ function recording(tools: ToolReplies = {}, catalog: GatekeeperCatalog = testCat
   return { deps, ran, inputs, deployed, deployOptions };
 }
 
-/** Runs `cf-os init --out init.jsonc` in a scratch project, answering from `script`. */
+/**
+ * Runs `cf-os init --out init.jsonc` in a scratch project, answering from `script`. Each `cf` call
+ * is stamped with the questions answered when it started (its `at`), and each line printed with
+ * them too (`logged`). `delay` times the `cf` calls (fakeCf's).
+ */
 async function init(
   t: Parameters<typeof scratchProject>[0],
   script: Step[],
   replies = account(),
-  { flags = {}, tools, values = { out: "init.jsonc" }, offerDeploy, catalog, template = TEMPLATE, secrets }: {
+  { flags = {}, tools, values = { out: "init.jsonc" }, offerDeploy, catalog, template = TEMPLATE, secrets, delay }: {
     flags?: object; tools?: ToolReplies; values?: Record<string, string>; offerDeploy?: boolean;
     catalog?: GatekeeperCatalog; template?: string;
     /** The account's Worker secrets, which `wrangler secret bulk` adds to: replies' must read the same object. */
     secrets?: Record<string, string[]>;
+    delay?: FakeCfOptions["delay"];
   } = {},
 ) {
   const root = scratchProject(t, template);
-  const cf = fakeCf(replies);
   const prompter = scriptedPrompter(script);
+  const cf = fakeCf(replies, { delay, stamp: () => [...prompter.answered] });
   const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter, flags });
+  const logged: { text: string; at: string[] }[] = [];
+  const log = harness.ctx.out.log;
+  harness.ctx.out.log = (text) => {
+    logged.push({ text, at: [...prompter.answered] });
+    log(text);
+  };
   const recorded = recording(tools, catalog, secrets);
   const code = await configure({ command: "init", values, positionals: [] }, harness.ctx, recorded.deps,
     { offerDeploy });
   assert.deepEqual(prompter.remaining(), [], "the script was not used up");
   const out = values.out ?? "deployment.jsonc";
   const written = (): Record<string, unknown> => parseDeployment(readFileSync(join(root, out), "utf8"));
-  return { code, root, prompter, written, calls: cf.calls, ...recorded, ...harness };
+  return { code, root, prompter, written, calls: cf.calls, logged, ...recorded, ...harness };
 }
+
+/** A call's command words, before its first flag: `workers list`. */
+function commandOf(call: FakeCall): string {
+  const firstFlag = call.args.findIndex((arg) => arg.startsWith("-"));
+  return (firstFlag < 0 ? call.args : call.args.slice(0, firstFlag)).join(" ");
+}
+
+/** The calls running `words`. */
+function callsOf(calls: FakeCall[], words: string): FakeCall[] {
+  return calls.filter((call) => commandOf(call) === words);
+}
+
+/** The questions answered when the one call running `words` started. */
+function startedAt(calls: FakeCall[], words: string): string[] {
+  const [call, ...more] = callsOf(calls, words);
+  assert.ok(call, `no ${words} call`);
+  assert.deepEqual(more, [], `more than one ${words} call`);
+  return call.at as string[];
+}
+
+/** The base name question. */
+const BASE_NAME = "Base name: the router Worker's, and the root of every other Worker's";
 
 /** The steps from the AI Gateway question to the end of a new deployment, all defaults. */
 const REST: Step[] = [
@@ -455,9 +490,10 @@ function completeAccount(overrides: Record<string, FakeReply> = {}): Record<stri
 }
 
 test("deploys the file it just wrote, once asked, after checking Wrangler is signed in", async (t) => {
-  const { code, root, ran, deployed, stderr } = await init(t, [...COMPLETE, ["Deploy now?", true]], completeAccount());
+  const { code, root, ran, deployed, stderr, prompter } = await init(t, [...COMPLETE, ["Deploy now?", true]], completeAccount());
   assert.equal(code, 0);
   assert.deepEqual(ran, ["pnpm exec wrangler whoami --json"]);
+  assert.ok(prompter.waited.includes("Checking the Wrangler sign-in"));
   assert.equal(deployed.length, 1);
   assert.equal(deployed[0].flags.config, join(root, "init.jsonc"));
   assert.doesNotMatch(stderr(), /Next:/);
@@ -518,6 +554,8 @@ test("offers the cf sign-in when signed out, and looks the account up once signe
   assert.equal(recorded.ran[0], "pnpm exec cf auth login --profile work");
   assert.ok(cf.calls.some((call) => call.args.join(" ").startsWith("workers list")), "no account lookups");
   assert.doesNotMatch(harness.stderr(), /cf is not signed in/);
+  // Checked again after the sign-in, not answered from before it.
+  assert.equal(cf.calls.filter((call) => call.args.join(" ").startsWith("auth whoami")).length, 2);
 });
 
 test("asks nothing about deploying when its caller deploys", async (t) => {
@@ -1261,4 +1299,221 @@ test("the Access step creates the One-time PIN provider only after its last ques
 test("Esc cancels at the first question, and once the file is written", async (t) => {
   await assert.rejects(init(t, [["What are you setting up?", BACK]]), Cancelled);
   await assert.rejects(init(t, [...COMPLETE, ["Deploy now?", BACK]], completeAccount()), Cancelled);
+});
+
+test("starts each read once an answer makes it certain, while later questions are answered", async (t) => {
+  // The gateways take a while, so the reads chained after the organization's start meanwhile.
+  const { calls, prompter } = await init(t, [...COMPLETE, ["Deploy now?", false]], completeAccount(),
+    { delay: (args) => args.join(" ").startsWith("ai-gateway gateways list") ? 20 : 0 });
+  // Both ways a new deployment can go read these, so they start as soon as it is chosen.
+  assert.deepEqual(startedAt(calls, "workers list"), ["What are you setting up?"]);
+  assert.deepEqual(startedAt(calls, "zero-trust organization get"), ["What are you setting up?"]);
+  // Once the base name is settled, before the route and admin questions it waits behind.
+  assert.deepEqual(startedAt(calls, "ai-gateway gateways list"), ["What are you setting up?", BASE_NAME]);
+  // Access's reads, before the last question ahead of the Access step is answered.
+  assert.ok(prompter.answered.includes("What it tells agents"));
+  for (const words of ["zero-trust access applications list", "zero-trust identity-providers list"]) {
+    assert.ok(!startedAt(calls, words).includes("What it tells agents"), `${words} waited for the last question`);
+  }
+  // A new deployment never takes stock of storage, as a takeover does.
+  assert.deepEqual([...callsOf(calls, "kv namespaces list"), ...callsOf(calls, "r2 buckets list")], []);
+});
+
+test("lists the Workers once on workers.dev, reading the subdomain off the list the base name was checked against", async (t) => {
+  const { calls, stderr } = await init(t, [...COMPLETE, ["Deploy now?", false]], completeAccount());
+  assert.match(stderr(), /answer on https:\/\/acme-os\.acme-sub\.workers\.dev/);
+  assert.equal(callsOf(calls, "workers list").length, 1);
+});
+
+test("reads nothing for a path not taken", async (t) => {
+  // No team domain: Access is skipped, so neither its applications nor its providers are listed.
+  const noTeam = await init(t, COMPLETE, completeAccount({ "zero-trust organization get": {} }));
+  assert.equal(noTeam.code, 0);
+  assert.match(noTeam.stderr(), /has no team domain/);
+  assert.deepEqual([
+    ...callsOf(noTeam.calls, "zero-trust access applications list"),
+    ...callsOf(noTeam.calls, "zero-trust identity-providers list"),
+  ], []);
+
+  // A name colliding with a hosted instance, renamed: no takeover, so no inventory.
+  const renamed = await init(t, [
+    ["What are you setting up?", "new"],
+    ["Base name", "acme"],
+    ['"acme" looks like a hosted instance.', "rename"],
+    ["Base name", DEFAULT],
+    ["Where will people reach it?", "workersDev"],
+    ...REST,
+    ["No Access application covers", "skip"],
+  ], account({ "workers list": hostedAccount()["workers list"] }));
+  assert.equal(renamed.code, 0);
+  assert.equal(valueAtPath(renamed.written(), ["workers", "router", "name"]), "acme-2");
+  assert.deepEqual([...callsOf(renamed.calls, "kv namespaces list"), ...callsOf(renamed.calls, "r2 buckets list")], []);
+
+  // A takeover in an account with no instance: the Workers list, and nothing after it.
+  const none = await init(t, [["What are you setting up?", "takeover"]]);
+  assert.equal(none.code, 1);
+  assert.match(none.stderr(), /No hosted instances in account/);
+  assert.deepEqual(none.calls.filter((call) => (call.at as string[]).length).map(commandOf), ["workers list"]);
+
+  // The account's name is known only from the list; without the custom Gatekeeper nothing needs it.
+  const flags = { account: FAKE_ACCOUNT };
+  const without = await init(t, [...UP_TO_GATEKEEPERS, ["Which Gatekeepers?", []], ["Deploy now?", false]],
+    completeAccount(), { flags });
+  assert.deepEqual(callsOf(without.calls, "accounts list"), []);
+  const named = await init(t, [...COMPLETE, ["Deploy now?", false]], completeAccount(), { flags });
+  // Started as soon as the custom Gatekeeper is chosen.
+  assert.equal(startedAt(named.calls, "accounts list").at(-1), named.prompter.answered.find((message) => message.startsWith("Which Gatekeepers?")));
+  assert.equal(named.prompter.asked.find(({ message }) => message.startsWith("Organization name"))!.initial, "Acme");
+});
+
+test("on a takeover, takes stock of the account while the instance question is open", async (t) => {
+  const { calls, prompter } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    ["Admin emails", DEFAULT],
+    ["Web Search Gatekeeper Worker name", DEFAULT],
+    ["Which Gatekeepers?", DEFAULT],
+    ["Custom Gatekeeper Worker name", DEFAULT],
+    ["Error Reporter Worker name", DEFAULT],
+    ["Which model providers?", ["cloudflare"]],
+    ["Organization name", DEFAULT],
+    ["What it tells agents", DEFAULT],
+    ["Deploy now?", false],
+  ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
+  assert.deepEqual(startedAt(calls, "kv namespaces list"), ["What are you setting up?"]);
+  assert.deepEqual(startedAt(calls, "r2 buckets list"), ["What are you setting up?"]);
+  assert.ok(prompter.waited.includes("Listing the account's Workers"), "no spinner while the instances were listed");
+});
+
+test("on a takeover, clears the spinner once the inventory fails, though reads after the failed one are in flight", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const scripted = scriptedPrompter([
+    ["What are you setting up?", "new"],
+    ["Base name", "acme"],
+    ['"acme" looks like a hosted instance', "takeover"],
+  ]);
+  // How many spinner waits are still showing.
+  let showing = 0;
+  const busy: NonNullable<Prompter["busy"]> = async (message, work) => {
+    showing++;
+    try {
+      return await work();
+    } finally {
+      showing--;
+    }
+  };
+  const prompter: Prompter = { ...scripted, busy, backable: () => ({ ...scripted.backable!(), busy }) };
+  // The collision reads no storage ahead: the KV list fails while R2 and the AI Gateways still run.
+  const cf = fakeCf({
+    ...account(), ...hostedAccount(),
+    "auth whoami": { authenticated: true, email: "me@example.com" },
+    "kv namespaces list": { fail: "[10000] Authentication error" },
+  }, { delay: (args) => args[0] === "r2" || args[0] === "ai-gateway" ? 20 : 0 });
+  const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter });
+  await assert.rejects(configure({ command: "init", values: { out: "init.jsonc" }, positionals: [] }, harness.ctx,
+    recording().deps), /cf kv namespaces list .*Authentication error/);
+  assert.equal(showing, 0, "a spinner is still showing after init failed");
+  assert.deepEqual(scripted.remaining(), []);
+});
+
+test("Esc replays the questions before it without a cf call or a spinner", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const prompter = scriptedPrompter([
+    ["What are you setting up?", "new"],
+    ["Base name", "acme-os"],
+    ["Where will people reach it?", "workersDev"],
+    ["Admin emails", DEFAULT],
+    ["Which AI Gateway", BACK],
+    ["Admin emails", BACK],
+    ["Where will people reach it?", "workersDev"],
+    ...REST,
+    ["Deploy now?", false],
+  ]);
+  const cf = fakeCf(completeAccount());
+  // What had been called and waited on as each question was asked, every background read settled.
+  const seen: { message: string; calls: number; waited: number }[] = [];
+  const settle = async (message: string) => {
+    for (let turn = 0; turn < 10; turn++) await new Promise((next) => setImmediate(next));
+    seen.push({ message, calls: cf.calls.length, waited: prompter.waited.length });
+  };
+  const backable = prompter.backable!;
+  prompter.backable = () => {
+    const view = backable();
+    return {
+      ...view,
+      select: async (message, ...rest) => (await settle(message), view.select(message, ...rest)),
+      text: async (message, ...rest) => (await settle(message), view.text(message, ...rest)),
+    };
+  };
+  const { ctx } = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter });
+  assert.equal(await configure({ command: "init", values: { out: "init.jsonc" }, positionals: [] }, ctx, recording().deps), 0);
+  assert.deepEqual(prompter.remaining(), []);
+  const at = (message: string, nth: number) => seen.filter((entry) => entry.message.startsWith(message))[nth];
+  // Back from the gateway question to the admins, then from the admins to the route.
+  for (const [before, after] of [[at("Which AI Gateway", 0), at("Admin emails", 1)], [at("Admin emails", 1), at("Where will people reach it?", 1)]]) {
+    assert.ok(before && after);
+    assert.deepEqual({ calls: after.calls, waited: after.waited }, { calls: before.calls, waited: before.waited });
+  }
+});
+
+test("a background read's failure is reported where its answer is used, with the same line", async (t) => {
+  const { logged, prompter } = await init(t, [...COMPLETE, ["Deploy now?", false]],
+    completeAccount({ "ai-gateway gateways list": { fail: "Authentication error [10000]" } }));
+  const index = logged.findIndex(({ text }) => text.startsWith("Could not list the account's AI Gateways, so you will type it: "));
+  assert.ok(index > 0, "no failure line");
+  assert.match(logged[index].text, /Authentication error/);
+  assert.equal(logged[index - 1].text, "It will answer on https://acme-os.acme-sub.workers.dev.");
+  // Printed after the admins were answered, ahead of the gateway question.
+  assert.match(logged[index].at.at(-1)!, /^Admin emails/);
+  assert.ok(!logged[index].at.some((message) => message.startsWith("Which AI Gateway")));
+  assert.deepEqual(prompter.asked.find(({ message }) => message.startsWith("Which AI Gateway"))!.choices, ["default"]);
+});
+
+/** An account where `words` fails, after 10 ms, every other call answering at once. */
+function failingLate(words: string): { replies: Record<string, FakeReply>; delay: FakeCfOptions["delay"] } {
+  return {
+    replies: account({ [words]: { fail: "Internal error [10001]" } }),
+    delay: (args) => args.join(" ").startsWith(words) ? 10 : 0,
+  };
+}
+
+/** Long enough for a {@link failingLate} call to fail. */
+const outlast = () => new Promise((done) => setTimeout(done, 30));
+
+test("a background read nobody awaits never becomes an unhandled rejection", async (t) => {
+  const unhandled: unknown[] = [];
+  const listener = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", listener);
+  t.after(() => process.off("unhandledRejection", listener));
+
+  // Cancelled while the Workers are still being listed.
+  const workers = failingLate("workers list");
+  await assert.rejects(init(t, [["What are you setting up?", "new"], ["Base name", CANCEL]], workers.replies,
+    { delay: workers.delay }), Cancelled);
+  await outlast();
+  // Esc out from the question after "new", while the organization is still being read.
+  const organization = failingLate("zero-trust organization get");
+  await assert.rejects(init(t, [["What are you setting up?", "new"], ["Base name", BACK], ["What are you setting up?", BACK]],
+    organization.replies, { delay: organization.delay }), Cancelled);
+  await outlast();
+  assert.deepEqual(unhandled, []);
+});
+
+test("shows a step waiting on a read only while it is still in flight", async (t) => {
+  const script: Step[] = [
+    ["What are you setting up?", "new"],
+    ["Base name", "acme-os"],
+    ["Where will people reach it?", "custom"],
+    ["Which zone?", "zone-1"],
+    ["Hostname", "cf-os.example.com"],
+    ...REST,
+    ["No Access application covers", "skip"],
+  ];
+  const slow = await init(t, script, account(),
+    { delay: (args) => args.join(" ").startsWith("ai-gateway gateways list") ? 20 : 0 });
+  assert.ok(slow.prompter.waited.includes("Listing the account's AI Gateways"));
+  // Settled while the zones and DNS records were read, so the gateway question waits on nothing.
+  const settled = await init(t, script);
+  assert.ok(!settled.prompter.waited.includes("Listing the account's AI Gateways"));
+  assert.ok(settled.prompter.waited.includes("Listing the account's zones"));
 });

@@ -17,7 +17,8 @@ interface Ran {
 type Replies = Record<string, { status?: number; stdout?: string; error?: boolean }>;
 
 /**
- * Deps that record every command. A successful `git clone` lays out what a clone of the starter
+ * Deps that record every command, the captured status reads through `spawn` as well, so a test
+ * standing in for `spawn` covers them too. A successful `git clone` lays out what a clone of the starter
  * would -- `.git`, `deployment.jsonc`, the CLI's own entry -- so later steps see a real project.
  */
 function recording(replies: Replies = {}, nodeVersion = "24.19.0") {
@@ -42,6 +43,7 @@ function recording(replies: Replies = {}, nodeVersion = "24.19.0") {
       }
       return { status, stdout: reply.stdout ?? (command === "pnpm" && args[0] === "--version" ? "11.17.0\n" : "") };
     },
+    capture: async (command, args, { cwd, env }) => deps.spawn(command, args, { cwd, env, capture: true }),
     configure: (entry, argv, cwd) => {
       configured.push({ entry, argv, cwd });
       return 0;
@@ -179,6 +181,18 @@ test("with gh signed out, signs in once asked, then creates the repository", asy
     "gh api user -q .login",
     "gh repo create me/my-os --private --source . --remote origin --push",
   ]);
+  // Each check shows it is waiting on gh.
+  assert.deepEqual(prompter.waited, ["Checking the GitHub CLI's sign-in", "Checking the GitHub CLI's sign-in"]);
+});
+
+test("checks gh's sign-in as it is, at a terminal that draws no spinner", async (t) => {
+  const cwd = workdir(t);
+  const tools = recording(GH);
+  const { busy: _busy, ...prompter } = scriptedPrompter([["Create a private GitHub repository", false]]);
+  const harness = testContext({ root: cwd, prompter });
+  assert.equal(await scaffold({ command: "init", values: {}, positionals: ["my-os"] }, harness.ctx, tools.deps), 0);
+  assert.deepEqual(prompter.remaining(), []);
+  assert.deepEqual(tools.commands().slice(5), ["gh api user -q .login"]);
 });
 
 test("when the gh sign-in does not take, says how to finish later, and carries on to init", async (t) => {

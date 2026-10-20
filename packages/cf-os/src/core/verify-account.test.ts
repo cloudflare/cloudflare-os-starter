@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { cfClient } from "../cf-client.ts";
+import { fakeCf, workerSecretsReply, type FakeReply } from "../fake-cf.ts";
+import { testCatalog, testCatalogWithGitlab } from "../test-support.ts";
 import { CfAuthError, CfUnavailableError, type CloudflareClient } from "./client.ts";
 import type { DeploymentConfig } from "./deployment-config.ts";
+import type { GatekeeperCatalog } from "./gatekeepers.ts";
 import { memoryClient, type MemoryAccount } from "./memory-client.ts";
-import { testCatalog } from "../test-support.ts";
-import { gatekeeperSecretWarnings, verifyAccount } from "./verify-account.ts";
+import { gatekeeperSecretWarnings, startBounded, verifyAccount } from "./verify-account.ts";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
 
@@ -248,4 +251,176 @@ test("turns any other failure to read a Gatekeeper's secrets into a warning, not
   assert.deepEqual(await gatekeeperSecretWarnings(client, withGatekeepers, catalog), [
     "Warning: could not read acme-gk-github's secrets to check for CLIENT_ID and CLIENT_SECRET: [10013] internal error",
   ]);
+});
+
+/**
+ * A `delay` for {@link fakeCf} that settles the calls in the reverse of the order they started: the
+ * first waits longest.
+ */
+function reversing(): (args: string[]) => number {
+  let started = 0;
+  return () => 60 - 10 * started++;
+}
+
+/** {@link matchingAccount} as `cf` prints it, with `changes` on top. */
+function fakeAccount(changes: Record<string, FakeReply> = {}): Record<string, FakeReply> {
+  return {
+    "zero-trust organization get": { auth_domain: "acme.cloudflareaccess.com" },
+    "zero-trust access applications list": [{ name: "Cloudflare OS acme-os", aud: "aud-1", domain: "os.example.com" }],
+    "kv namespaces list": [{ id: "kv-context", title: "c" }, { id: "kv-blueprints", title: "b" }],
+    "r2 buckets list": { buckets: [{ name: "acme-content" }] },
+    "ai-gateway gateways list": [{ id: "acme-ai" }],
+    ...changes,
+  };
+}
+
+/** {@link verifyAccount} against `replies`, the calls settling as `delay` says. */
+function verifyFake(replies: Record<string, FakeReply>, delay?: (args: string[]) => number) {
+  const cf = fakeCf(replies, { delay });
+  return { result: verifyAccount(cfClient({ spawn: cf.spawn }), config, origin), calls: cf.calls };
+}
+
+test("reads at once, and judges the same whichever read finishes first", async () => {
+  const cases: Record<string, FakeReply>[] = [
+    // Wrong in every respect.
+    fakeAccount({
+      "zero-trust organization get": { auth_domain: "other.cloudflareaccess.com" },
+      "zero-trust access applications list": [],
+      "kv namespaces list": [],
+      "r2 buckets list": { buckets: [] },
+      "ai-gateway gateways list": [],
+    }),
+    // No organization, and a token that reads no buckets.
+    fakeAccount({
+      "zero-trust organization get": { fail: "[12000] organization not found" },
+      "r2 buckets list": { fail: "[10000] Authentication error" },
+      "ai-gateway gateways list": [],
+    }),
+    // Signed out.
+    fakeAccount({
+      "zero-trust organization get": { fail: "No authentication token found." },
+      "zero-trust access applications list": { fail: "No authentication token found." },
+      "kv namespaces list": { fail: "No authentication token found." },
+    }),
+  ];
+  for (const replies of cases) {
+    const reversed = verifyFake(replies, reversing());
+    // Every read started before any settled.
+    assert.equal(reversed.calls.length, 5);
+    assert.deepEqual(await reversed.result, await verifyFake(replies).result);
+  }
+  const wrong = await verifyFake(cases[0], reversing()).result;
+  assert.ok("problems" in wrong);
+  assert.deepEqual(wrong.problems.map((problem) => problem.split(/:| is /)[0]), [
+    "access.issuer",
+    "access.audience",
+    "context.kvNamespaceId",
+    "resources.blueprintsKvNamespaceId",
+    "resources.blueprintContentBucket",
+    "aiGateway.name",
+  ]);
+  assert.deepEqual(await verifyFake(cases[1], reversing()).result, {
+    problems: [
+      "access.issuer: the account has no readable Zero Trust organization (cf zero-trust organization get: APIError " +
+      "[12000] organization not found).",
+    ],
+  });
+  const signedOut = await verifyFake(cases[2], reversing()).result;
+  assert.ok("skipped" in signedOut && signedOut.skipped.startsWith("cf zero-trust organization get: "));
+});
+
+test("stops at the first read not permitted, in order, though a later one finished sooner", async () => {
+  // The organization is missing, a problem; the Access applications are not permitted; the KV list,
+  // answering first, lacks both IDs, which is not looked at.
+  const { result } = verifyFake(fakeAccount({
+    "zero-trust organization get": { fail: "[12000] organization not found" },
+    "zero-trust access applications list": { fail: "[10000] Authentication error" },
+    "kv namespaces list": [],
+  }), (args) => args[0] === "kv" ? 0 : args[0] === "zero-trust" && args[1] === "organization" ? 20 : 40);
+  const found = await result;
+  assert.ok("problems" in found);
+  assert.equal(found.problems.length, 1);
+  assert.match(found.problems[0], /^access\.issuer: the account has no readable Zero Trust organization/);
+});
+
+/** {@link withGatekeepers} with three OAuth Gatekeepers, the third an imagined one shaped like GitHub. */
+const threeOAuth = {
+  ...config,
+  gatekeepers: {
+    github: { name: "acme-gk-github" },
+    gitlab: { name: "acme-gk-gitlab" },
+    githubenterprise: { name: "acme-gk-githubenterprise" },
+  },
+} as DeploymentConfig;
+
+/** {@link testCatalogWithGitlab}, offering the imagined third. */
+function threeOAuthCatalog(): GatekeeperCatalog {
+  const offered = testCatalogWithGitlab();
+  offered.offered.push({ ...offered.offered[0], slug: "githubenterprise" });
+  return offered;
+}
+
+test("reads the Gatekeepers' secrets at once, and warns the same whichever read finishes first", async () => {
+  const replies = { "workers secrets list": workerSecretsReply({ "acme-gk-github": ["CLIENT_ID"], "acme-gk-gitlab": [] }) };
+  const warn = (delay?: (args: string[]) => number) => {
+    const cf = fakeCf(replies, { delay });
+    const warnings = gatekeeperSecretWarnings(cfClient({ spawn: cf.spawn }), threeOAuth, threeOAuthCatalog());
+    assert.equal(cf.calls.length, 3);
+    return warnings;
+  };
+  const warnings = await warn(reversing());
+  assert.deepEqual(warnings, await warn());
+  assert.deepEqual(warnings.map((warning) => warning.split(" ")[1]), ["acme-gk-github", "acme-gk-gitlab", "acme-gk-githubenterprise"]);
+});
+
+test("keeps only the warnings before a secrets read that is not permitted, though a later one finished sooner", async () => {
+  const cf = fakeCf({
+    "workers secrets list": (args) => args.includes("acme-gk-gitlab")
+      ? { fail: "[10000] Authentication error" }
+      : [{ name: "CLIENT_ID", type: "secret_text" }],
+  }, { delay: (args) => args.includes("acme-gk-githubenterprise") ? 0 : args.includes("acme-gk-gitlab") ? 20 : 10 });
+  assert.deepEqual(await gatekeeperSecretWarnings(cfClient({ spawn: cf.spawn }), threeOAuth, threeOAuthCatalog()), [
+    "Warning: acme-gk-github has no CLIENT_SECRET; nobody can connect the github Gatekeeper until " +
+    "`pnpm cf-os secrets github` sets it.",
+  ]);
+});
+
+test("reads no more than four Workers' secrets at once", async () => {
+  const slugs = ["a", "b", "c", "d", "e", "f"];
+  const offering = testCatalog();
+  offering.offered.push(...slugs.map((slug) => ({ ...offering.offered[0], slug })));
+  const many = { ...config, gatekeepers: Object.fromEntries(slugs.map((slug) => [slug, { name: `acme-gk-${slug}` }])) } as DeploymentConfig;
+  let inFlight = 0;
+  let most = 0;
+  const read: string[] = [];
+  const client = {
+    ...memoryClient({}),
+    listWorkerSecrets: async (_accountId: string, worker: string) => {
+      read.push(worker);
+      most = Math.max(most, ++inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      inFlight--;
+      return [];
+    },
+  } satisfies CloudflareClient;
+  const warnings = await gatekeeperSecretWarnings(client, many, offering);
+  assert.equal(most, 4);
+  assert.deepEqual(read, slugs.map((slug) => `acme-gk-${slug}`));
+  assert.equal(warnings.length, 6);
+});
+
+test("startBounded's promises may fail before they are awaited, and still throw when they are", async (t) => {
+  const unhandled: unknown[] = [];
+  const listener = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", listener);
+  t.after(() => process.off("unhandledRejection", listener));
+  const reads = startBounded(["a", "b", "c"], 2, async (item) => {
+    if (item === "a") return item;
+    throw new Error(`no ${item}`);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(unhandled, []);
+  assert.equal(await reads[0], "a");
+  await assert.rejects(reads[1], /^Error: no b$/);
+  await assert.rejects(reads[2], /^Error: no c$/);
 });

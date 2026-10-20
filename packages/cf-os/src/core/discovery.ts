@@ -34,23 +34,43 @@ export interface Inventory {
   organization: CfOrganization | null;
 }
 
-/** Reads everything {@link discover} matches against. Six reads, no writes. */
+/**
+ * Reads everything {@link discover} matches against: six reads, no writes, run at once. Whichever
+ * finishes first, the error thrown is the first failure in the order they are listed here, the
+ * organization's first, so a run fails the same way however the reads interleave.
+ */
 export async function fetchInventory(client: CloudflareClient, accountId: string): Promise<Inventory> {
+  // Every read starts before the first await; each carries a no-op catch so one that fails while an
+  // earlier one is still awaited is not an unhandled rejection. The awaits below still see it.
+  const reads = {
+    organization: quietly(client.getOrganization(accountId)),
+    workers: quietly(client.listWorkers(accountId)),
+    kvNamespaces: quietly(client.listKvNamespaces(accountId)),
+    buckets: quietly(client.listR2Buckets(accountId)),
+    gateways: quietly(client.listAiGateways(accountId)),
+    accessApps: quietly(client.listAccessApps(accountId)),
+  };
   let organization: CfOrganization | null;
   try {
-    organization = await client.getOrganization(accountId);
+    organization = await reads.organization;
   } catch (error) {
     if (error instanceof CfAuthError || error instanceof CfUnavailableError) throw error;
     organization = null;
   }
   return {
-    workers: await client.listWorkers(accountId),
-    kvNamespaces: await client.listKvNamespaces(accountId),
-    buckets: await client.listR2Buckets(accountId),
-    gateways: await client.listAiGateways(accountId),
-    accessApps: await client.listAccessApps(accountId),
+    workers: await reads.workers,
+    kvNamespaces: await reads.kvNamespaces,
+    buckets: await reads.buckets,
+    gateways: await reads.gateways,
+    accessApps: await reads.accessApps,
     organization,
   };
+}
+
+/** `promise`, with a no-op catch attached so it may reject before anything awaits it. */
+function quietly<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => {});
+  return promise;
 }
 
 /** One line of the report. */

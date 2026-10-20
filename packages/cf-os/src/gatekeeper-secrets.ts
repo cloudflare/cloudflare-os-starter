@@ -9,6 +9,11 @@
 // exist. And its exit code proves nothing: input it cannot parse is reported and exits 0, so every
 // upload is confirmed by listing the Worker's secrets again.
 //
+// The first read of each Worker's secrets starts together, a few at a time, before anything is
+// asked (readSecretsAhead), and the Gatekeepers are still asked about one by one, in order: a
+// failed read is reported at its Gatekeeper's turn. The read confirming an upload is always a fresh
+// one, made after it.
+//
 // I/O, beside cf-client.ts. Only lazily loaded commands import it.
 
 import { resolve } from "node:path";
@@ -17,8 +22,8 @@ import { CfAuthError, CfError, type CloudflareClient } from "./core/client.ts";
 import type { DeploymentConfig } from "./core/deployment-config.ts";
 import { publicOrigin } from "./core/deployment.ts";
 import { secretSetup, type GatekeeperCatalog } from "./core/gatekeepers.ts";
-import { prose } from "./core/verify-account.ts";
-import type { Prompter } from "./prompt.ts";
+import { prose, SECRET_READS_AT_ONCE, startBounded } from "./core/verify-account.ts";
+import { waitOn, type Prompter } from "./prompt.ts";
 import { succeeded, type SpawnTool } from "./tools.ts";
 
 /** What {@link askAndSetSecrets} and {@link uploadSecrets} run besides the context. */
@@ -133,7 +138,8 @@ export async function uploadSecrets(
   const names = Object.keys(values);
   ctx.out.log(`\nSetting ${prose(names, "and")} on ${worker}.`);
   putWorkerSecrets(deps.spawn, ctx.root, accountId, worker, values);
-  const present = await deps.client.listWorkerSecrets(accountId, worker);
+  const present = await waitOn(ctx.prompter, `Confirming ${worker}'s secrets`,
+    () => deps.client.listWorkerSecrets(accountId, worker));
   const absent = names.filter((name) => !present?.includes(name));
   if (absent.length) {
     throw new SecretUploadError(`Wrangler finished, but ${worker} has no ${prose(absent, "or")}. ` +
@@ -141,6 +147,37 @@ export async function uploadSecrets(
   }
   ctx.out.log(`Set ${prose(names, "and")} on ${worker}.`);
   return { gatekeeper, worker, secrets: names };
+}
+
+/**
+ * Starts reading the secrets of each of `slugs`' Workers whose catalog entry reads secrets, in
+ * `slugs`' order and {@link SECRET_READS_AT_ONCE} at a time, for {@link askAndSetSecrets} to take
+ * each Gatekeeper's from when its turn comes. By slug; each promise may reject before anything
+ * awaits it without being an unhandled rejection, and awaiting it still throws.
+ */
+export function readSecretsAhead(
+  client: CloudflareClient,
+  config: DeploymentConfig,
+  catalog: GatekeeperCatalog,
+  slugs: string[],
+): Map<string, Promise<string[] | null>> {
+  const workers = slugs.flatMap((slug) => {
+    const worker = config.gatekeepers?.[slug]?.name;
+    const entry = catalog.offered.find((gatekeeper) => gatekeeper.slug === slug);
+    return worker && entry?.secrets.length ? [{ slug, worker }] : [];
+  });
+  const reads = startBounded(workers, SECRET_READS_AT_ONCE,
+    ({ worker }) => client.listWorkerSecrets(config.accountId, worker));
+  return new Map(workers.map(({ slug }, index) => [slug, track(reads[index])]));
+}
+
+/** Reads started ahead that have settled, so that waiting on one shows no spinner. */
+const settledReads = new WeakSet<Promise<unknown>>();
+
+/** `read`, added to {@link settledReads} once it settles. */
+function track<T>(read: Promise<T>): Promise<T> {
+  read.then(() => settledReads.add(read), () => settledReads.add(read));
+  return read;
 }
 
 /**
@@ -153,23 +190,37 @@ export async function uploadSecrets(
  * One Gatekeeper's failed lookup or upload is reported, with the `cf-os secrets` command that tries
  * again, and the rest are still asked about: what was set before it stays in the outcome.
  *
+ * Every Worker's first read starts at once, before the first question: from `present`, reads a
+ * caller started earlier ({@link readSecretsAhead}), or else started here. They are taken in
+ * `slugs`' order, so what is printed and asked does not depend on which finishes first. A slug
+ * missing from `present` is read when its turn comes. The read confirming an upload is always
+ * fresh.
+ *
  * `origin` is the public origin the redirect URI is on: `publicOrigin(config)` unless given.
  */
 export async function askAndSetSecrets(
   ctx: Context,
   deps: SecretsDeps,
-  { config, catalog, slugs, upload, origin = publicOrigin(config) }: {
+  { config, catalog, slugs, upload, origin = publicOrigin(config), present }: {
     config: DeploymentConfig;
     catalog: GatekeeperCatalog;
     slugs: string[];
     upload: "now" | "deferred";
     origin?: string;
+    present?: Map<string, Promise<string[] | null>>;
   },
 ): Promise<SecretsOutcome> {
   const outcome: SecretsOutcome = { set: [], pending: [], complete: [], undeployed: [], later: [], manual: [], failed: [] };
+  const reads = present ?? readSecretsAhead(deps.client, config, catalog, slugs);
+  // A caller's own promises too, should they not come from readSecretsAhead. One microtask turn lets
+  // track mark those already settled before the first is taken, so none of them shows a spinner.
+  if (present) {
+    for (const read of present.values()) track(read);
+    await Promise.resolve();
+  }
   for (const slug of slugs) {
     try {
-      await askAndSetOne(ctx, deps, { config, catalog, slug, upload, origin }, outcome);
+      await askAndSetOne(ctx, deps, { config, catalog, slug, upload, origin, read: reads.get(slug) }, outcome);
     } catch (error) {
       if (!(error instanceof SecretUploadError || error instanceof CfError || error instanceof CfAuthError)) throw error;
       ctx.out.log(`\nThe ${slug} Gatekeeper's OAuth credentials were not set: ${withRetry(ctx, error, slug)}`);
@@ -179,23 +230,30 @@ export async function askAndSetSecrets(
   return outcome;
 }
 
-/** {@link askAndSetSecrets} for Gatekeeper `slug`, recording what it did in `outcome`. */
+/**
+ * {@link askAndSetSecrets} for Gatekeeper `slug`, recording what it did in `outcome`. `read` is its
+ * Worker's secrets, started ahead; without it they are read now.
+ */
 async function askAndSetOne(
   ctx: Context,
   deps: SecretsDeps,
-  { config, catalog, slug, upload, origin }: {
+  { config, catalog, slug, upload, origin, read }: {
     config: DeploymentConfig;
     catalog: GatekeeperCatalog;
     slug: string;
     upload: "now" | "deferred";
     origin: string;
+    read?: Promise<string[] | null>;
   },
   outcome: SecretsOutcome,
 ): Promise<void> {
   const worker = config.gatekeepers?.[slug]?.name;
   const entry = catalog.offered.find((gatekeeper) => gatekeeper.slug === slug);
   if (!worker || !entry?.secrets.length) return;
-  const present = await deps.client.listWorkerSecrets(config.accountId, worker);
+  const present = read && settledReads.has(read)
+    ? await read
+    : await waitOn(deps.prompter, `Reading ${worker}'s secrets`,
+      () => read ?? deps.client.listWorkerSecrets(config.accountId, worker));
   const missing = entry.secrets.filter(({ name }) => !present?.includes(name));
   if (!missing.length) {
     outcome.complete.push(slug);

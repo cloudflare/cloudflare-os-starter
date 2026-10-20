@@ -10,8 +10,9 @@
 // `CLOUDFLARE_ACCOUNT_ID`, which every account-scoped call sets explicitly, so neither an ambient
 // value nor `cf`'s per-directory account cache can point it at another account.
 
-import { spawnSync } from "node:child_process";
+import { spawn as spawnChild, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
 import { dirname, resolve } from "node:path";
+import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { resolveBinEntry } from "@gadgets/scripts/bin-entry";
 import { pnpmCommand } from "./pnpm-command.ts";
@@ -42,12 +43,98 @@ export const CF_AUTH_HINT =
   "Policies Edit, Access: Organizations, Identity Providers, and Groups Edit, Workers Scripts Read, Workers KV Storage Read, Workers R2 Storage Read, " +
   "AI Gateway Read, Zone Read and DNS Read";
 
-/** The slice of `spawnSync` this uses, so tests can stand in canned output for the CLI. */
+/**
+ * Runs one `cf` process to completion: its exit status and UTF-8 output, or the error that kept it
+ * from running. A type of its own so tests can stand in canned output for the CLI.
+ */
 export type SpawnCf = (
   command: string,
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; encoding: "utf8" },
-) => { status: number | null; stdout: string; stderr: string; error?: Error };
+  options: { cwd: string; env: NodeJS.ProcessEnv },
+) => Promise<{ status: number | null; stdout: string; stderr: string; error?: Error }>;
+
+/** The `cf` processes still running, which {@link stopCfChildren} ends. */
+const running = new Set<ChildProcess>();
+
+/**
+ * Ends every `cf` process still running. It runs as this process exits: a run cancelled while `cf`
+ * works must not leave it to finish on its own, a create among them, and a failed one must not wait on
+ * the reads started beside the one that failed. A terminal's Ctrl-C would signal the children too,
+ * but not while a spinner holds the terminal in raw mode, and not for a background read left running
+ * behind a cancelled prompt.
+ */
+export function stopCfChildren(): void {
+  for (const child of running) child.kill("SIGTERM");
+}
+
+/**
+ * {@link SpawnCf} on `spawn`: asynchronous, so the event loop keeps turning while `cf` runs (a
+ * spinner can animate, other reads can run beside it). stdin is empty: `cf` never prompts here.
+ */
+const spawnProcess: SpawnCf = (command, args, { cwd, env }) => new Promise((finish) => {
+  let stdout = "";
+  let stderr = "";
+  let settled = false;
+  let child: ChildProcessByStdio<null, Readable, Readable>;
+  // A failed spawn emits `error` and may still emit `close`; the first one decides.
+  const settle = (result: Awaited<ReturnType<SpawnCf>>) => {
+    running.delete(child);
+    if (settled) return;
+    settled = true;
+    finish(result);
+  };
+  try {
+    child = spawnChild(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    settle({ status: null, stdout, stderr, error: error as Error });
+    return;
+  }
+  if (!process.listeners("exit").includes(stopCfChildren)) process.on("exit", stopCfChildren);
+  running.add(child);
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => stdout += chunk);
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => stderr += chunk);
+  child.on("error", (error) => settle({ status: null, stdout, stderr, error }));
+  child.on("close", (status) => settle({ status, stdout, stderr }));
+});
+
+/**
+ * `spawn`, sending the first call of every burst alone: a call made while no other is running goes
+ * at once, and the calls made while it runs wait until it has settled, then run together. Unless
+ * `CLOUDFLARE_API_TOKEN` is set. On an OAuth sign-in, `cf` refreshes an expired access token by
+ * itself, without a lock, and Cloudflare's refresh token is single-use: `cf` processes started
+ * together on an expired token would each spend the same one, and all but the first would fail, or
+ * sign `cf` out. The token can expire at any point of a run (init waits minutes on questions between
+ * its reads), so the gate closes again whenever no call is running: the call that ends an idle spell
+ * refreshes alone, and the rest, run after it, read what it wrote. A token never needs refreshing,
+ * so with one set nothing waits.
+ */
+export function firstAlone(spawn: SpawnCf): SpawnCf {
+  let inFlight = 0;
+  let lead: Promise<void> | undefined;
+  const run: SpawnCf = (command, args, options) => {
+    inFlight++;
+    const result = spawn(command, args, options);
+    const done = () => {
+      inFlight--;
+    };
+    result.then(done, done);
+    return result;
+  };
+  return (command, args, options) => {
+    if (options.env.CLOUDFLARE_API_TOKEN) return spawn(command, args, options);
+    if (lead) return lead.then(() => run(command, args, options));
+    if (inFlight > 0) return run(command, args, options);
+    const result = run(command, args, options);
+    const clear = () => {
+      lead = undefined;
+    };
+    lead = result.then(clear, clear);
+    return result;
+  };
+}
+
+/** {@link SpawnCf} on `spawn`, the first `cf` call of every burst alone ({@link firstAlone}). */
+export const spawnCf: SpawnCf = firstAlone(spawnProcess);
 
 /** How to reach `cf`, and which account it acts on. */
 export interface CfOptions {
@@ -60,7 +147,7 @@ export interface CfOptions {
   profile?: string;
   /** Directory to run `cf` in. */
   cwd?: string;
-  /** Stand-in for `spawnSync`, for tests. */
+  /** Stand-in for spawning `cf`, for tests. */
   spawn?: SpawnCf;
 }
 
@@ -99,16 +186,16 @@ function spawnArgs(args: string[]): [string, string[]] {
  * apart from a real API error, {@link CfUnavailableError} when `cf` will not run, and
  * {@link CfError} for everything else.
  */
-export function cfJson<T>(
+export async function cfJson<T>(
   args: string[],
-  { accountId, profile, cwd = process.cwd(), spawn = spawnSync }: CfOptions,
-): T {
+  { accountId, profile, cwd = process.cwd(), spawn = spawnCf }: CfOptions,
+): Promise<T> {
   const argv = profile ? [...args, "--profile", profile] : args;
   const [command, commandArgs] = spawnArgs(argv);
   const env: NodeJS.ProcessEnv = { ...process.env, CF_QUIET: "1", NO_COLOR: "1" };
   if (accountId) env.CLOUDFLARE_ACCOUNT_ID = accountId;
   else delete env.CLOUDFLARE_ACCOUNT_ID;
-  const result = spawn(command, commandArgs, { cwd, env, encoding: "utf8" });
+  const result = await spawn(command, commandArgs, { cwd, env });
   const label = `cf ${args.join(" ")}`;
   if (result.error) throw new CfUnavailableError(`${label}: could not run cf: ${result.error.message}`);
   if (result.status !== 0) {
@@ -142,12 +229,13 @@ const ACCOUNTS_AND_ZONES_PER_PAGE = 50;
  * Every item of a paged `cf ... list`, fetched `perPage` at a time. A single call returns the API's
  * default page (10 Workers, for one; `zones list` prints no `result_info` to page by either), which
  * on a busy account silently misses what it is looking for. `perPage` must be within the endpoint's
- * ceiling: a page the API caps below it would read as the last.
+ * ceiling: a page the API caps below it would read as the last. Pages are fetched one after another:
+ * whether there is a next one is known only from the size of this one.
  */
-export function cfList<T>(args: string[], options: CfOptions, perPage = PER_PAGE): T[] {
+export async function cfList<T>(args: string[], options: CfOptions, perPage = PER_PAGE): Promise<T[]> {
   const items: T[] = [];
   for (let page = 1; ; page++) {
-    const batch = cfJson<T[]>([...args, "--page", String(page), "--per-page", String(perPage)], options);
+    const batch = await cfJson<T[]>([...args, "--page", String(page), "--per-page", String(perPage)], options);
     if (!Array.isArray(batch)) {
       throw new CfError(`cf ${args.join(" ")}: expected a JSON array, got ${typeof batch}`);
     }
@@ -164,12 +252,12 @@ const R2_PER_PAGE = 1000;
  * no cursor, so this pages by name instead: buckets come back in lexicographic order, and
  * `--start-after` the last one fetches the next page. Unpaged, the API returns 20.
  */
-export function listR2Buckets(options: CfOptions): string[] {
+export async function listR2Buckets(options: CfOptions): Promise<string[]> {
   const names: string[] = [];
   for (;;) {
     const args = ["r2", "buckets", "list", "--per-page", String(R2_PER_PAGE)];
     if (names.length) args.push("--start-after", names.at(-1)!);
-    const batch = (cfJson<{ buckets?: { name: string }[] }>(args, options).buckets ?? [])
+    const batch = ((await cfJson<{ buckets?: { name: string }[] }>(args, options)).buckets ?? [])
       .map((bucket) => bucket.name);
     names.push(...batch);
     if (batch.length < R2_PER_PAGE) return names;
@@ -185,7 +273,7 @@ export function cfClient(
   return {
     async whoami() {
       // Exits 0 either way, with `authenticated: false` when signed out.
-      const result = cfJson<CfWhoami>(["auth", "whoami"], on(null));
+      const result = await cfJson<CfWhoami>(["auth", "whoami"], on(null));
       return { authenticated: result.authenticated === true, email: result.email };
     },
     async listAccounts() {
@@ -198,7 +286,7 @@ export function cfClient(
       // One unpaged list of `{ name, type }`; `--script-name` is `--worker`'s alias.
       let secrets: { name: string }[];
       try {
-        secrets = cfJson<{ name: string }[]>(["workers", "secrets", "list", "--script-name", worker], on(accountId));
+        secrets = await cfJson<{ name: string }[]>(["workers", "secrets", "list", "--script-name", worker], on(accountId));
       } catch (error) {
         if (error instanceof CfError && !(error instanceof CfUnavailableError) && WORKER_NOT_FOUND.test(error.message)) {
           return null;
@@ -212,7 +300,7 @@ export function cfClient(
     },
     async workersDevSubdomain(accountId) {
       // `cf` has no command for it; every Worker's record carries it.
-      return workersDevSubdomainOf(listWorkers(accountId));
+      return workersDevSubdomainOf(await listWorkers(accountId));
     },
     async listKvNamespaces(accountId) {
       return cfList<CfKvNamespace>(["kv", "namespaces", "list"], on(accountId));
