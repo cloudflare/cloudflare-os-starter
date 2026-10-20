@@ -24,7 +24,7 @@ import type {
   GeneratedConfigs,
   ProdWranglerConfig,
 } from "./deployment-config.ts";
-import { testCatalog } from "../test-support.ts";
+import { testCatalog, testCatalogWithGoogle } from "../test-support.ts";
 
 const validConfig: DeploymentConfig = {
   accountId: "0123456789abcdef0123456789abcdef",
@@ -862,6 +862,30 @@ test("generates an optional Gatekeeper from its upstream config", async () => {
     "https://acme-cloudflare-os.acme.workers.dev/gatekeeper/github");
   // None selected, none generated.
   assert.deepEqual(generateConfigs(validConfig, await baseConfigs(), catalog).gatekeepers, {});
+});
+
+test("routes an optional Gatekeeper's own Workers AI binding through the Workshop's gateway", async () => {
+  const google = variant((c) => { c.gatekeepers = { google: { name: "acme-cloudflare-os-google" } }; });
+  const withGoogle = testCatalogWithGoogle();
+  const bases = await baseConfigs();
+
+  // Upstream's binding carries over, and conversion goes through the gateway the AI binding reaches.
+  const generated = generateConfigs(google, bases, withGoogle).gatekeepers.google;
+  assert.equal(generated.ai!.binding, "AI");
+  assert.equal(generated.vars!.CF_AI_GATEWAY, "cloudflare-os");
+  // With the catalog off, or a gateway in another account, through none.
+  const off = variant((c) => { Object.assign(c, structuredClone(google)); c.aiGateway.enabled = false; });
+  assert.equal(generateConfigs(off, bases, withGoogle).gatekeepers.google.vars!.CF_AI_GATEWAY, undefined);
+  const elsewhere = variant((c) => {
+    Object.assign(c, structuredClone(google));
+    c.aiGateway.accountId = "fedcba9876543210fedcba9876543210";
+  });
+  assert.equal(generateConfigs(elsewhere, bases, withGoogle).gatekeepers.google.vars!.CF_AI_GATEWAY, undefined);
+  // The operator's vars win.
+  const own = variant((c) => { c.gatekeepers = { google: { name: "acme-cloudflare-os-google", vars: { CF_AI_GATEWAY: "drive" } } }; });
+  assert.equal(generateConfigs(own, bases, withGoogle).gatekeepers.google.vars!.CF_AI_GATEWAY, "drive");
+  // A Gatekeeper without the binding gets no gateway.
+  assert.equal(generateConfigs(withOptional, bases, catalog).gatekeepers.github.vars!.CF_AI_GATEWAY, undefined);
 });
 
 test("builds each optional Gatekeeper by its package name, uncached", () => {

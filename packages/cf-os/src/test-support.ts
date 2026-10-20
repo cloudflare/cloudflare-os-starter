@@ -297,3 +297,10 @@ export function testCatalogWithGitlab(): GatekeeperCatalog {
   catalog.offered.push(offeredGatekeeper("gitlab", "gatekeeper-gitlab", "@gadgets/gitlab-gatekeeper", false, true));
   return catalog;
 }
+
+/** {@link testCatalog} with Google too: an optional Gatekeeper with a Workers AI binding of its own. */
+export function testCatalogWithGoogle(): GatekeeperCatalog {
+  const catalog = testCatalog();
+  catalog.offered.push(offeredGatekeeper("google", "gatekeeper-google", "@gadgets/google-gatekeeper", false, true));
+  return catalog;
+}

@@ -791,12 +791,19 @@ export function generateConfigs(
   // Base config as upstream ships it -- migrations, rules, build command -- plus the common block,
   // the operator's vars, and `BASE_URL`, which upstream's optional Gatekeepers build their OAuth
   // redirect and every absolute link from, and throw without. The value is the one the hosted
-  // release templates (`buildWorkerEntry` in cloudflare-os/scripts/release/manifest-lib.ts).
+  // release templates (`buildWorkerEntry` in cloudflare-os/scripts/release/manifest-lib.ts). One
+  // with a Workers AI binding of its own (Google, for Drive PDFs) gets the Workshop's gateway as its
+  // `CF_AI_GATEWAY`, as Web Search does; unset, it calls Workers AI through no gateway.
   const gatekeepers: Record<string, ProdWranglerConfig> = {};
   for (const [slug, entry] of optional) {
     const generated = structuredClone(offeredGatekeeper(catalog, slug).config);
     setCommon(generated, config, entry.name);
-    generated.vars = { ...generated.vars, ...entry.vars, BASE_URL: `${origin}/gatekeeper/${slug}` };
+    generated.vars = {
+      ...generated.vars,
+      ...(generated.ai && gateway && !gateway.crossAccount ? { CF_AI_GATEWAY: config.aiGateway.name } : {}),
+      ...entry.vars,
+      BASE_URL: `${origin}/gatekeeper/${slug}`,
+    };
     gatekeepers[slug] = generated;
   }
 

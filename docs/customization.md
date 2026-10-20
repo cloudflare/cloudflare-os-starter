@@ -95,7 +95,7 @@ Each one is an entry under `gatekeepers`, keyed by its slug:
 
 - **The slug** is the hosted install slug (`gatekeeper-mcp-portal` is `mcpportal`). It names the `GATEKEEPER_<SLUG>` binding and the `/gatekeeper/<slug>` route.
 - **`name`** is its Worker's name, a permanent service identity like those under `workers`. `init` suggests `<router name>-gk-<slug>`, as the hosted flow names it.
-- **`vars`** are plain-text vars, merged over the package's own and replacing any set on the Worker another way; the deploy sets `BASE_URL`. The MCP portal needs `MCP_PORTAL_URL`: `init` asks for it, and `check` warns while it is unset.
+- **`vars`** are plain-text vars, merged over the package's own and replacing any set on the Worker another way; the deploy sets `BASE_URL`. One with a Workers AI binding of its own, such as Google's for reading Drive PDFs, also gets `CF_AI_GATEWAY`, set to `aiGateway.name` as for Web Search, unless `aiGateway.enabled` is `false` or the gateway is in another account; without it, those calls go through no gateway. The MCP portal needs `MCP_PORTAL_URL`: `init` asks for it, and `check` warns while it is unset.
 - **Secrets go to the Worker, never into this file.** Register `<public origin>/gatekeeper/<slug>/oauth` as the redirect URI of an OAuth app with the provider, then run `pnpm cf-os secrets <slug>`; `init` offers this when you deploy. By hand, after the first deploy:
 
   ```sh
