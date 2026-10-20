@@ -1,0 +1,29 @@
+docs/migrate-from-hosted.md
+  s_85bfd4081fca2d::t_e5cf32ebe79b0e 61-63,90-91
+packages/cf-os/README.md
+  s_85bfd4081fca2d::t_62faf35c580bfc 21-22
+packages/cf-os/src/commands/import.test.ts
+  s_85bfd4081fca2d::t_8e307e4ad739ce 104-110,122,138-149
+packages/cf-os/src/commands/import.ts
+  s_85bfd4081fca2d::t_4fdae68cc27420 20,41-59,63,68,79-81,191
+packages/cf-os/src/commands/init.test.ts
+  s_85bfd4081fca2d::t_531dd2376b8694 996,1021,1061-1065,1067,1195,1199-1216
+packages/cf-os/src/commands/init.ts
+  s_85bfd4081fca2d::t_f6202b9e817903 74,438-441,459-460,462-465,491-495,497-498,500,505-507,509-510,694,701
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f41768d5f876aa30ce724e5d15600d503c9669bd",
+  "prompts": {},
+  "sessions": {
+    "s_85bfd4081fca2d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec18836d-070a-48ab-b7e5-7c4c15a36cc6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
