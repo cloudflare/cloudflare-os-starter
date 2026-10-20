@@ -1,0 +1,35 @@
+package.json
+  s_d5152c2bc63aeb::t_f66951d4390af4 25
+packages/cf-os/package.json
+  s_d5152c2bc63aeb::t_b8758af30d8e89 44
+packages/cf-os/src/cf-client.ts
+  s_d5152c2bc63aeb::t_3530e0e1daf43f 196
+pnpm-lock.yaml
+  s_d5152c2bc63aeb::t_c3ccf336f53a1c 54-55,85-86,175-176,178-179,185-186,208-209,220-221,232-233,244-245,256-257,1885-1886,2062-2063,2439-2440,2521,2523,2525,2531,2533-2534,2563,2569,2575,2581,2587,3556,3558-3560,3562,3749,3754,4188,4190-4194
+pnpm-workspace.yaml
+  s_db0010c831138c::t_7a1b94fdbd57b7 69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "64c78d86f3a29a31660a119492c8b1bb66bf102d",
+  "prompts": {},
+  "sessions": {
+    "s_d5152c2bc63aeb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "92dcecce-6b08-423e-a39a-0c4541bdf031",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_db0010c831138c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe0abac3-5020-4650-bfe7-5b893de4ee39",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
