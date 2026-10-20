@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { spawn as spawnProcess } from "node:child_process";
+import { once } from "node:events";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { CF_AUTH_HINT, cfClient, cfJson, cfList, firstAlone, listR2Buckets, spawnCf, stopCfChildren, type SpawnCf } from "./cf-client.ts";
+import { CF_AUTH_HINT, cfClient, cfJson, cfList, firstAlone, listR2Buckets, spawnCf, type SpawnCf } from "./cf-client.ts";
 import {
   CfAuthError,
   CfError,
@@ -263,12 +268,23 @@ test("reports a command that cannot be spawned as an error, not an exit status",
   assert.match(result.error?.message ?? "", /ENOENT/);
 });
 
-test("ends the cf processes still running as the process exits", async () => {
-  const running = spawnCf(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], { cwd: process.cwd(), env: process.env });
-  assert.ok(process.listeners("exit").includes(stopCfChildren));
-  stopCfChildren();
-  // Ended by the signal, long before its timer.
-  assert.deepEqual(await running, { status: null, stdout: "", stderr: "" });
+test("leaves a cf process to finish when a terminal's Ctrl-C interrupts this one", { skip: process.platform === "win32" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cf-os-sigint-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const marker = join(dir, "finished");
+  const read = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, ""), 1000)`;
+  // In a process group of its own, as a command at a terminal is: SIGINT to the group is Ctrl-C.
+  const script = `
+    import { spawnCf } from ${JSON.stringify(new URL("./cf-client.ts", import.meta.url).href)};
+    spawnCf(process.execPath, ["-e", ${JSON.stringify(read)}], { cwd: process.cwd(), env: { ...process.env, CLOUDFLARE_API_TOKEN: "unused" } });
+    setTimeout(() => process.kill(-process.pid, "SIGINT"), 200);
+  `;
+  const command = spawnProcess(process.execPath, ["--input-type=module", "-e", script], { detached: true, stdio: "ignore" });
+  const [, signal] = await once(command, "exit");
+  assert.equal(signal, "SIGINT");
+  assert.ok(!existsSync(marker), "the read finished before the interrupt");
+  for (let waited = 0; !existsSync(marker) && waited < 8000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(existsSync(marker), "the interrupt ended the read too");
 });
 
 test("runs the first cf call of every burst alone, and the ones asked for meanwhile at once after it", async (t) => {

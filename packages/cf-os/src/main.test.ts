@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
@@ -228,19 +228,25 @@ test("a cancelled or failed run exits once its output has flushed; a successful 
   assert.equal(process.exitCode, 0);
 });
 
-test("a failed run ends the cf reads still running beside it, rather than waiting on them", () => {
-  // A cf child that would run for 20 s, then a failure: the process exits at once, and takes the child with it.
+test("a failed run exits without waiting on the cf reads still running beside it, which finish on their own", async (t) => {
+  // A cf child that runs for 2 s, then a failure: the process exits at once, and the child carries on.
+  const dir = tempDir(t);
+  const marker = join(dir, "finished");
+  const read = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, ""), 2000)`;
   const script = `
     import { spawnCf } from ${JSON.stringify(join(SRC, "cf-client.ts"))};
     import { finish } from ${JSON.stringify(MAIN)};
     const env = { ...process.env, CLOUDFLARE_API_TOKEN: "unused" };
-    spawnCf(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { cwd: process.cwd(), env });
+    spawnCf(process.execPath, ["-e", ${JSON.stringify(read)}], { cwd: process.cwd(), env });
     await finish(1);
   `;
   const started = Date.now();
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 15000 });
   assert.equal(result.status, 1, result.stderr);
-  assert.ok(Date.now() - started < 10000, `exited after ${Date.now() - started} ms`);
+  assert.ok(Date.now() - started < 1800, `exited after ${Date.now() - started} ms`);
+  assert.ok(!existsSync(marker), "the read finished before the process exited");
+  for (let waited = 0; !existsSync(marker) && waited < 8000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(existsSync(marker), "the read was ended with the process");
 });
 
 /** A module's imports: static ones (`import type` excluded: erased) and literal dynamic ones. */

@@ -10,7 +10,7 @@
 // `CLOUDFLARE_ACCOUNT_ID`, which every account-scoped call sets explicitly, so neither an ambient
 // value nor `cf`'s per-directory account cache can point it at another account.
 
-import { spawn as spawnChild, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
+import { spawn as spawnChild, type ChildProcessByStdio } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -53,23 +53,15 @@ export type SpawnCf = (
   options: { cwd: string; env: NodeJS.ProcessEnv },
 ) => Promise<{ status: number | null; stdout: string; stderr: string; error?: Error }>;
 
-/** The `cf` processes still running, which {@link stopCfChildren} ends. */
-const running = new Set<ChildProcess>();
-
-/**
- * Ends every `cf` process still running. It runs as this process exits: a run cancelled while `cf`
- * works must not leave it to finish on its own, a create among them, and a failed one must not wait on
- * the reads started beside the one that failed. A terminal's Ctrl-C would signal the children too,
- * but not while a spinner holds the terminal in raw mode, and not for a background read left running
- * behind a cancelled prompt.
- */
-export function stopCfChildren(): void {
-  for (const child of running) child.kill("SIGTERM");
-}
-
 /**
  * {@link SpawnCf} on `spawn`: asynchronous, so the event loop keeps turning while `cf` runs (a
  * spinner can animate, other reads can run beside it). stdin is empty: `cf` never prompts here.
+ *
+ * A `cf` still running when this process exits, cancelled or failed, is left to finish on its own,
+ * never killed: on an OAuth sign-in it may be refreshing the access token, and the refresh token is
+ * single-use, so one cut off mid-refresh would leave `cf` signed out. Off Windows it runs in a process
+ * group of its own for the same reason, out of reach of the SIGINT a terminal's Ctrl-C sends to its
+ * foreground group. Exiting does not wait on it either (main.ts `finish`).
  */
 const spawnProcess: SpawnCf = (command, args, { cwd, env }) => new Promise((finish) => {
   let stdout = "";
@@ -78,19 +70,16 @@ const spawnProcess: SpawnCf = (command, args, { cwd, env }) => new Promise((fini
   let child: ChildProcessByStdio<null, Readable, Readable>;
   // A failed spawn emits `error` and may still emit `close`; the first one decides.
   const settle = (result: Awaited<ReturnType<SpawnCf>>) => {
-    running.delete(child);
     if (settled) return;
     settled = true;
     finish(result);
   };
   try {
-    child = spawnChild(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    child = spawnChild(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
   } catch (error) {
     settle({ status: null, stdout, stderr, error: error as Error });
     return;
   }
-  if (!process.listeners("exit").includes(stopCfChildren)) process.on("exit", stopCfChildren);
-  running.add(child);
   child.stdout.setEncoding("utf8").on("data", (chunk: string) => stdout += chunk);
   child.stderr.setEncoding("utf8").on("data", (chunk: string) => stderr += chunk);
   child.on("error", (error) => settle({ status: null, stdout, stderr, error }));
