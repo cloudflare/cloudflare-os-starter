@@ -1,0 +1,81 @@
+packages/cf-os/README.md
+  s_85bfd4081fca2d::t_62f168bc71c1c4 38
+packages/cf-os/src/back.test.ts
+  s_85bfd4081fca2d::t_bc40582e467c3f 127-146
+packages/cf-os/src/back.ts
+  s_85bfd4081fca2d::t_80dd3cabab76e3 6,16,110-112
+packages/cf-os/src/cached-reads.test.ts
+  s_85bfd4081fca2d::t_008c760677c304 1-40
+packages/cf-os/src/cached-reads.ts
+  s_85bfd4081fca2d::t_c713db100684c2 1-100
+packages/cf-os/src/cf-client.test.ts
+  s_85bfd4081fca2d::t_2e1c7ae67fc3d3 3,17,22,34,36,42,51,58,64-65,68-69,71,74-75,77,106,109,118-130,146,148,151,161,244-349
+packages/cf-os/src/cf-client.ts
+  s_85bfd4081fca2d::t_73722dd6a8d874 13,15,46-49,53-137,150,189,191-192,198,232-233,235,238,255,260,276,289,303
+packages/cf-os/src/commands/access.test.ts
+  s_85bfd4081fca2d::t_ede672d0379a9b 9,28-33,35,113-130
+packages/cf-os/src/commands/access.ts
+  s_85bfd4081fca2d::t_3d556923f18418 14,26-29
+packages/cf-os/src/commands/deploy.test.ts
+  s_85bfd4081fca2d::t_c8a38f74d3bd38 163-167,172,343-386
+packages/cf-os/src/commands/deploy.ts
+  s_85bfd4081fca2d::t_e8c4eed70e132b 60,232-235,253-255
+packages/cf-os/src/commands/import.test.ts
+  s_85bfd4081fca2d::t_21f8e5e983ef3b 10,13-16,20,24,27-28,200-311
+packages/cf-os/src/commands/import.ts
+  s_85bfd4081fca2d::t_6822b290ea3993 9-12,16,25,146-148,158-165,170-175
+packages/cf-os/src/commands/init.test.ts
+  s_85bfd4081fca2d::t_8ceaed9b669154 7,22,85-86,97-101,106,111,116,118-123,130,133-154,493,496,557-558,1303-1519
+packages/cf-os/src/commands/init.ts
+  s_85bfd4081fca2d::t_e63a0af758f3ef 20-22,31,40,69-71,90,92-93,106,119-122,124-127,148-160,163-165,167-190,240,242,404,422,673-677,697,815-816,826,831,855,858,878-880,927,931-935,938,945-949,986-989
+packages/cf-os/src/commands/scaffold.test.ts
+  s_85bfd4081fca2d::t_e85a43667052b3 20-21,46,184-195
+packages/cf-os/src/commands/scaffold.ts
+  s_85bfd4081fca2d::t_c3734ed018cfe8 21-22,42-43,53,137-139,153
+packages/cf-os/src/commands/secrets.test.ts
+  s_85bfd4081fca2d::t_53a45e6f5be2a6 4,31-34,38,40,45-46,156-205
+packages/cf-os/src/core/discovery.test.ts
+  s_85bfd4081fca2d::t_b58203d2e327f7 3-5,149-214
+packages/cf-os/src/core/discovery.ts
+  s_85bfd4081fca2d::t_4d8821dfd29230 37-41,43-52,55,61-65,70-75
+packages/cf-os/src/core/verify-account.test.ts
+  s_85bfd4081fca2d::t_bee9d27e4979ac 3-5,8,10,255-426
+packages/cf-os/src/core/verify-account.ts
+  s_85bfd4081fca2d::t_8c58b5d01c9abd 19-22,34-37,44,47-48,52-53,61-113,116,125,137,160-163,170,173-174,176,186-214,220,233,235-240,242,244-252,255-256
+packages/cf-os/src/fake-cf.ts
+  s_85bfd4081fca2d::t_e961b10b875c5e 25-37,61-62,66,71-82,100
+packages/cf-os/src/gatekeeper-secrets.test.ts
+  s_85bfd4081fca2d::t_d368535ca617e4 3-4,7-11,225-336
+packages/cf-os/src/gatekeeper-secrets.ts
+  s_85bfd4081fca2d::t_1822be9cc22e32 12-16,25-26,141-142,152-182,193-198,204,210,214-220,223,233-236,240,246,253-256
+packages/cf-os/src/main.test.ts
+  s_85bfd4081fca2d::t_fb79ba88cfa699 8,187-245
+packages/cf-os/src/main.ts
+  s_85bfd4081fca2d::t_663795a60c5de3 350-366,373,380
+packages/cf-os/src/prompt.test.ts
+  s_85bfd4081fca2d::t_cd7b90cd2a0696 4-15,19-20,22-24,32,111-260
+packages/cf-os/src/prompt.ts
+  s_85bfd4081fca2d::t_58c1e4905808e2 8-10,13-14,54-59,81-88,146-249,257-261,313-314
+packages/cf-os/src/test-support.ts
+  s_85bfd4081fca2d::t_8eaac562a93789 60-63,65-70,73-87,101-105,109,118,124,131,136
+packages/cf-os/src/tools.test.ts
+  s_85bfd4081fca2d::t_c3913dd3f0a7ff 4,38-52
+packages/cf-os/src/tools.ts
+  s_85bfd4081fca2d::t_b8dbf108cda53b 2-4,8-16,28-39,42,56,61-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7196dbec579f01f2bb9031c38d85f835f8f9fda0",
+  "prompts": {},
+  "sessions": {
+    "s_85bfd4081fca2d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec18836d-070a-48ab-b7e5-7c4c15a36cc6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
