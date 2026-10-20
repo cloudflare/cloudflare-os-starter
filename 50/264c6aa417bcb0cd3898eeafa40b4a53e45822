@@ -1,0 +1,49 @@
+packages/cf-os/README.md
+  s_85bfd4081fca2d::t_81878a6381e37e 38
+packages/cf-os/src/commands/access.test.ts
+  s_85bfd4081fca2d::t_b795216ea204d7 131-157
+packages/cf-os/src/commands/access.ts
+  s_85bfd4081fca2d::t_803f41b97c366f 11,27-32
+packages/cf-os/src/commands/deploy.test.ts
+  s_85bfd4081fca2d::t_fdf2c486688a10 190-192,386-387
+packages/cf-os/src/commands/deploy.ts
+  s_85bfd4081fca2d::t_dca2d35e8e4288 33,35,222-223,225,227,231,234-244,263-265,278
+packages/cf-os/src/commands/init.test.ts
+  s_85bfd4081fca2d::t_baecefaf008332 2,210,218-219,455,523-524,556,559,561,564-584,1326-1329,1376-1380,1535-1549
+packages/cf-os/src/commands/init.ts
+  s_85bfd4081fca2d::t_f00c4e3d38ac85 21-22,70,72,866,869-874,876,913-933,935-968,971-1014
+packages/cf-os/src/commands/scaffold.test.ts
+  s_85bfd4081fca2d::t_9f8437c75604a9 143,145,159,179,181,197,205,215,283-299
+packages/cf-os/src/commands/scaffold.ts
+  s_85bfd4081fca2d::t_f7a645fceb7b5a 22,129-136,139-140,142,144-145,154,156,159-161,168,214-216,219,234
+packages/cf-os/src/gatekeeper-secrets.test.ts
+  s_85bfd4081fca2d::t_5ba3ab867107b9 134,139,147
+packages/cf-os/src/gatekeeper-secrets.ts
+  s_85bfd4081fca2d::t_f899636435d50e 27,106,112-114,142
+packages/cf-os/src/local-bin.test.ts
+  s_85bfd4081fca2d::t_fac530fc63f431 1-19
+packages/cf-os/src/local-bin.ts
+  s_85bfd4081fca2d::t_89d293af748b63 1-15
+packages/cf-os/src/main.test.ts
+  s_85bfd4081fca2d::t_c0491611696c45 288-297
+packages/cf-os/src/tools.test.ts
+  s_85bfd4081fca2d::t_957c84400d4605 3-5,56-78
+packages/cf-os/src/tools.ts
+  s_85bfd4081fca2d::t_9febf3a26d18b6 33-36,41,76,97-104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "50264c6aa417bcb0cd3898eeafa40b4a53e45822",
+  "prompts": {},
+  "sessions": {
+    "s_85bfd4081fca2d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec18836d-070a-48ab-b7e5-7c4c15a36cc6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
