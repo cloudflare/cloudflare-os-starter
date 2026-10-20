@@ -1,0 +1,37 @@
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_d8d08170eabaa9::t_059a406121e86f 183
+docs/customization.md
+  s_d8d08170eabaa9::t_dc383bcc88521c 98
+packages/cf-os/README.md
+  s_d8d08170eabaa9::t_12c5595ea26adf 21,25
+packages/cf-os/src/commands/deploy.test.ts
+  s_d8d08170eabaa9::t_1e5d4284493332 189-215
+packages/cf-os/src/commands/deploy.ts
+  s_d8d08170eabaa9::t_2d8d3d8379fbad 56,388
+packages/cf-os/src/commands/init.ts
+  s_d8d08170eabaa9::t_3af5159d63667f 37,77-78,354,510-535,641-645
+packages/cf-os/src/core/wizard.ts
+  s_d8d08170eabaa9::t_d1d10e6eb98da3 10,101,104
+packages/cf-os/src/gatekeeper-catalog.test.ts
+  s_d8d08170eabaa9::t_2cde029c8e759d 6,148-178
+packages/cf-os/src/commands/init.test.ts
+  s_d8d08170eabaa9::t_a41aa265d072b6 534-597
+packages/cf-os/src/core/gatekeepers.ts
+  s_d8d08170eabaa9::t_665900bd38cf73 47-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d0684bbd744a6430686234e867847f2d7a7b136a",
+  "prompts": {},
+  "sessions": {
+    "s_d8d08170eabaa9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5206a450-1362-413a-82ca-38c19def0564",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
