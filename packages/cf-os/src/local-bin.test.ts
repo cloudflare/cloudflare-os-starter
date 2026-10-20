@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { localBin } from "./local-bin.ts";
+import { pnpmCommand } from "./pnpm-command.ts";
 
 test("runs an installed CLI's entry with node, and falls back to pnpm exec", async (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cf-os-bin-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  assert.deepEqual(await localBin(root, "wrangler", ["whoami", "--json"]), ["pnpm", ["exec", "wrangler", "whoami", "--json"]]);
+  // Not found: through pnpmCommand, which spawns pnpm on Windows without a shell.
+  assert.deepEqual(await localBin(root, "wrangler", ["whoami", "--json"]), pnpmCommand(["exec", "wrangler", "whoami", "--json"]));
 
   const installed = join(root, "node_modules", "wrangler");
   mkdirSync(join(installed, "bin"), { recursive: true });

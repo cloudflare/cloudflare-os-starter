@@ -33,7 +33,9 @@ export type SpawnTool = (
  * through. `signal` stops waiting on one started ahead that turns out not to be needed: it resolves
  * at once, and the command is left to finish on its own without holding this process open. Not
  * killed: a sign-in check may be refreshing a single-use OAuth token, and one cut off mid-refresh
- * would leave the CLI signed out.
+ * would leave the CLI signed out. For the same reason it runs, off Windows, in a process group of its
+ * own, out of reach of the SIGINT a terminal's Ctrl-C sends while a sign-in holds the terminal, as
+ * `cf` does (cf-client.ts).
  */
 export type CaptureTool = (
   command: string,
@@ -85,7 +87,8 @@ export function defaultCapture(): CaptureTool {
     };
     let child;
     try {
-      child = spawn(command, args, { cwd, env: env ?? process.env, stdio: ["ignore", "pipe", "pipe"], shell: needsShell(command) });
+      child = spawn(command, args, { cwd, env: env ?? process.env, stdio: ["ignore", "pipe", "pipe"],
+        shell: needsShell(command), detached: process.platform !== "win32" });
     } catch (error) {
       settle({ status: null, stdout, stderr, error: error as Error });
       return;

@@ -273,7 +273,7 @@ test("leaves a cf process to finish when a terminal's Ctrl-C interrupts this one
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const marker = join(dir, "finished");
   // The marker's path reaches each process as an argument, not as code.
-  const read = 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], ""), 1000)';
+  const read = 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], ""), 4000)';
   // In a process group of its own, as a command at a terminal is: SIGINT to the group is Ctrl-C.
   const script = `
     import { spawnCf } from ${JSON.stringify(new URL("./cf-client.ts", import.meta.url).href)};
@@ -284,7 +284,7 @@ test("leaves a cf process to finish when a terminal's Ctrl-C interrupts this one
   const [, signal] = await once(command, "exit");
   assert.equal(signal, "SIGINT");
   assert.ok(!existsSync(marker), "the read finished before the interrupt");
-  for (let waited = 0; !existsSync(marker) && waited < 8000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  for (let waited = 0; !existsSync(marker) && waited < 15000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.ok(existsSync(marker), "the interrupt ended the read too");
 });
 

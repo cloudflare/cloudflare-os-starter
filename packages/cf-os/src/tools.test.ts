@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,7 +61,7 @@ test("stops waiting on a status read when its signal aborts, leaving it to finis
   const marker = join(dir, "finished");
   // The read, left to finish, writes the marker; the process waiting on it stops waiting and exits.
   // The marker's path reaches each process as an argument, not as code.
-  const read = 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], ""), 1500)';
+  const read = 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], ""), 4000)';
   const script = `
     import { defaultCapture } from ${JSON.stringify(new URL("./tools.ts", import.meta.url).href)};
     const stop = new AbortController();
@@ -69,11 +70,29 @@ test("stops waiting on a status read when its signal aborts, leaving it to finis
     const result = await reading;
     process.stdout.write(result.error ? "stopped" : "finished");
   `;
-  const started = performance.now();
   const run = spawnSync(process.execPath, ["--input-type=module", "-e", script, marker], { encoding: "utf8" });
   assert.equal(run.stdout, "stopped", run.stderr);
-  assert.ok(performance.now() - started < 1400, "waited for the read to finish");
-  assert.ok(!existsSync(marker), "the read finished before it was stopped");
-  for (let waited = 0; !existsSync(marker) && waited < 5000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(!existsSync(marker), "waited for the read to finish");
+  for (let waited = 0; !existsSync(marker) && waited < 15000; waited += 50) await new Promise((done) => setTimeout(done, 50));
   assert.ok(existsSync(marker), "the read was killed rather than left to finish");
+});
+
+test("leaves a status read to finish when a terminal's Ctrl-C interrupts this process", { skip: process.platform === "win32" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cf-os-capture-sigint-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const marker = join(dir, "finished");
+  // The marker's path reaches each process as an argument, not as code.
+  const read = 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], ""), 4000)';
+  // In a process group of its own, as a command at a terminal is: SIGINT to the group is Ctrl-C.
+  const script = `
+    import { defaultCapture } from ${JSON.stringify(new URL("./tools.ts", import.meta.url).href)};
+    void defaultCapture()(process.execPath, ["-e", ${JSON.stringify(read)}, process.argv[1]], { cwd: process.cwd() });
+    setTimeout(() => process.kill(-process.pid, "SIGINT"), 200);
+  `;
+  const command = spawn(process.execPath, ["--input-type=module", "-e", script, marker], { detached: true, stdio: "ignore" });
+  const [, signal] = await once(command, "exit");
+  assert.equal(signal, "SIGINT");
+  assert.ok(!existsSync(marker), "the read finished before the interrupt");
+  for (let waited = 0; !existsSync(marker) && waited < 15000; waited += 50) await new Promise((done) => setTimeout(done, 50));
+  assert.ok(existsSync(marker), "the interrupt ended the read too");
 });

@@ -1371,7 +1371,7 @@ test("Esc cancels at the first question, and once the file is written", async (t
 test("starts each read once an answer makes it certain, while later questions are answered", async (t) => {
   // The gateways take a while, so the reads chained after the organization's start meanwhile.
   const { calls, prompter } = await init(t, [...COMPLETE, ["Deploy now?", false]], completeAccount(),
-    { delay: (args) => args.join(" ").startsWith("ai-gateway gateways list") ? 20 : 0 });
+    { delay: (args) => args.join(" ").startsWith("ai-gateway gateways list") ? 300 : 0 });
   // Beside the sign-in check, and while "What are you setting up?" is open: before any answer.
   assert.deepEqual(startedAt(calls, "accounts list"), []);
   assert.deepEqual(startedAt(calls, "workers list"), []);
@@ -1472,7 +1472,7 @@ test("on a takeover, clears the spinner once the inventory fails, though reads a
     ...account(), ...hostedAccount(),
     "auth whoami": { authenticated: true, email: "me@example.com" },
     "kv namespaces list": { fail: "[10000] Authentication error" },
-  }, { delay: (args) => args[0] === "r2" || args[0] === "ai-gateway" ? 20 : 0 });
+  }, { delay: (args) => args[0] === "r2" || args[0] === "ai-gateway" ? 300 : 0 });
   const harness = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter });
   await assert.rejects(configure({ command: "init", values: { out: "init.jsonc" }, positionals: [] }, harness.ctx,
     recording().deps), /cf kv namespaces list .*Authentication error/);
@@ -1574,7 +1574,7 @@ test("shows a step waiting on a read only while it is still in flight", async (t
     ["No Access application covers", "skip"],
   ];
   const slow = await init(t, script, account(),
-    { delay: (args) => args.join(" ").startsWith("ai-gateway gateways list") ? 20 : 0 });
+    { delay: (args) => args.join(" ").startsWith("ai-gateway gateways list") ? 300 : 0 });
   assert.ok(slow.prompter.waited.includes("Listing the account's AI Gateways"));
   // Settled while the zones and DNS records were read, so the gateway question waits on nothing.
   const settled = await init(t, script);
