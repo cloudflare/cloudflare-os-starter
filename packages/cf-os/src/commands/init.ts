@@ -191,11 +191,13 @@ async function chooseAccount(
 /** The router's address: a hostname in one of the account's zones, or workers.dev. */
 async function chooseRoute(session: Session, name: string): Promise<RouteChoice> {
   const { prompter, ctx, account } = session;
-  const zones = await lookup(session, "the account's zones", (client) => client.listZones(account.id));
   let kind = await prompter.select("Where will people reach it?", [
     { value: "custom" as const, label: "A custom domain", hint: "a hostname in one of your zones" },
     { value: "workersDev" as const, label: "workers.dev", hint: `https://${name}.<subdomain>.workers.dev` },
   ]);
+  const zones = kind === "custom"
+    ? await lookup(session, "the account's zones", (client) => client.listZones(account.id))
+    : null;
   if (kind === "custom" && zones && !zones.length) {
     ctx.out.log("The account has no active zones, and a custom domain has to be in one. Using workers.dev.");
     kind = "workersDev";
@@ -339,17 +341,19 @@ type NewOutcome = Configured | { takeover: string };
 
 async function newDeployment(session: Session, file: Record<string, unknown>, catalog: GatekeeperCatalog): Promise<NewOutcome> {
   const { prompter, ctx, account } = session;
-  const workers = await lookup<CfWorker[]>(session, "the account's Workers", (client) => client.listWorkers(account.id));
   const current = valueAtPath(file, ["workers", "router", "name"]);
   let suggested = typeof current === "string" && !isPlaceholder(current) ? current : "cloudflare-os";
 
   let name: string;
+  // Listed once a name is typed, to check it against: undefined until then, null if it failed.
+  let workers: CfWorker[] | null | undefined;
   for (;;) {
     name = await prompter.text("Base name: the router Worker's, and the root of every other Worker's", {
       initial: suggested,
       validate: baseNameProblem,
     });
     ctx.out.log(`Workers: ${Object.values(workerNames(name)).join(", ")}`);
+    workers ??= await lookup<CfWorker[]>(session, "the account's Workers", (client) => client.listWorkers(account.id));
     const taken = workers ? nameCollisions(name, workers) : [];
     if (!taken.length) break;
     ctx.out.log(`Already in the account: ${taken.join(", ")}. Deploying would overwrite them.`);
@@ -881,18 +885,11 @@ export async function configure(
     const chosen = await chooseAccount(askCtx, asker, reads, file, where);
     const session: Session = { ctx: askCtx, prompter: asker, client: reads, account: chosen, email };
 
-    let instances: string[] = [];
-    if (reads) {
-      instances = findInstances(await lookup(session, "the account's Workers",
-        (reader) => reader.listWorkers(chosen.id)) ?? []);
-    }
+    // Asked before any lookup: each is a `cf` run, and only the answer says which are needed.
     const mode = reads
       ? await asker.select("What are you setting up?", [
         { value: "new" as const, label: "A new deployment" },
-        {
-          value: "takeover" as const, label: "Take over a hosted instance",
-          hint: `${instances.length} in this account`,
-        },
+        { value: "takeover" as const, label: "Take over a hosted instance", hint: "one the hosted deploy created" },
       ])
       : "new";
 

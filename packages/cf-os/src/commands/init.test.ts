@@ -8,6 +8,7 @@ import { FAKE_ACCOUNT, fakeCf, flag, workerSecretsReply, type FakeReply } from "
 import { BACK_HINT } from "../back.ts";
 import {
   BACK,
+  CANCEL,
   DEFAULT,
   hostedAccount,
   scratchProject,
@@ -171,6 +172,17 @@ test("configures a new deployment on a custom domain, steering around a taken ho
   assert.equal(JSON.parse(flag(create.args, "--body")!).domain, "cf-os.example.com");
 });
 
+test("asks what is being set up before reading the account's Workers", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const cf = fakeCf(account());
+  const prompter = scriptedPrompter([["What are you setting up?", CANCEL]]);
+  const { ctx } = testContext({ root, client: cfClient({ spawn: cf.spawn }), prompter });
+  await assert.rejects(configure({ command: "init", values: { out: "init.jsonc" }, positionals: [] }, ctx, recording().deps),
+    Cancelled);
+  assert.deepEqual(prompter.remaining(), []);
+  assert.ok(!cf.calls.some((call) => call.args.join(" ").startsWith("workers list")), "listed the Workers");
+});
+
 test("derives the workers.dev subdomain, and reuses an Access application already covering it", async (t) => {
   const { code, written, calls, stderr } = await init(t, [
     ["What are you setting up?", "new"],
@@ -191,6 +203,7 @@ test("derives the workers.dev subdomain, and reuses an Access application alread
   assert.deepEqual(valueAtPath(file, ["workers", "router", "route"]), { workersDev: true });
   assert.equal(valueAtPath(file, ["access", "audience"]), "aud-existing");
   assert.ok(!calls.some((call) => call.args.includes("create")), "created a duplicate");
+  assert.ok(!calls.some((call) => call.args.join(" ").startsWith("zones list")), "listed zones for workers.dev");
 });
 
 test("asks for the subdomain when no Worker carries it, and can leave Access for later", async (t) => {
@@ -281,7 +294,7 @@ test("switches to a takeover when the name is a hosted instance", async (t) => {
   ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
   assert.equal(code, 0);
   assert.equal(prompter.asked.find((asked) => asked.message.startsWith("What are you setting up?"))!.hints!.takeover,
-    "1 in this account");
+    "one the hosted deploy created");
   const file = written();
   assert.equal(valueAtPath(file, ["workers", "workshop", "name"]), "acme-backend");
   assert.equal(valueAtPath(file, ["workers", "websearch", "name"]), "acme-gk-websearch");
