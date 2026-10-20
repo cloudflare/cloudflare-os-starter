@@ -272,14 +272,15 @@ test("leaves a cf process to finish when a terminal's Ctrl-C interrupts this one
   const dir = mkdtempSync(join(tmpdir(), "cf-os-sigint-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const marker = join(dir, "finished");
-  const read = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, ""), 1000)`;
+  // The marker's path reaches each process as an argument, not as code.
+  const read = 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], ""), 1000)';
   // In a process group of its own, as a command at a terminal is: SIGINT to the group is Ctrl-C.
   const script = `
     import { spawnCf } from ${JSON.stringify(new URL("./cf-client.ts", import.meta.url).href)};
-    spawnCf(process.execPath, ["-e", ${JSON.stringify(read)}], { cwd: process.cwd(), env: { ...process.env, CLOUDFLARE_API_TOKEN: "unused" } });
+    spawnCf(process.execPath, ["-e", ${JSON.stringify(read)}, process.argv[1]], { cwd: process.cwd(), env: { ...process.env, CLOUDFLARE_API_TOKEN: "unused" } });
     setTimeout(() => process.kill(-process.pid, "SIGINT"), 200);
   `;
-  const command = spawnProcess(process.execPath, ["--input-type=module", "-e", script], { detached: true, stdio: "ignore" });
+  const command = spawnProcess(process.execPath, ["--input-type=module", "-e", script, marker], { detached: true, stdio: "ignore" });
   const [, signal] = await once(command, "exit");
   assert.equal(signal, "SIGINT");
   assert.ok(!existsSync(marker), "the read finished before the interrupt");

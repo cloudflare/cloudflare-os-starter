@@ -59,17 +59,18 @@ test("stops waiting on a status read when its signal aborts, leaving it to finis
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const marker = join(dir, "finished");
   // The read, left to finish, writes the marker; the process waiting on it stops waiting and exits.
-  const read = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, ""), 1500)`;
+  // The marker's path reaches each process as an argument, not as code.
+  const read = 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], ""), 1500)';
   const script = `
     import { defaultCapture } from ${JSON.stringify(new URL("./tools.ts", import.meta.url).href)};
     const stop = new AbortController();
-    const reading = defaultCapture()(process.execPath, ["-e", ${JSON.stringify(read)}], { cwd: process.cwd(), signal: stop.signal });
+    const reading = defaultCapture()(process.execPath, ["-e", ${JSON.stringify(read)}, process.argv[1]], { cwd: process.cwd(), signal: stop.signal });
     setTimeout(() => stop.abort(), 50);
     const result = await reading;
     process.stdout.write(result.error ? "stopped" : "finished");
   `;
   const started = performance.now();
-  const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" });
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e", script, marker], { encoding: "utf8" });
   assert.equal(run.stdout, "stopped", run.stderr);
   assert.ok(performance.now() - started < 1400, "waited for the read to finish");
   assert.ok(!existsSync(marker), "the read finished before it was stopped");

@@ -232,20 +232,21 @@ test("a failed run exits without waiting on the cf reads still running beside it
   // A cf child that runs for 2 s, then a failure: the process exits at once, and the child carries on.
   const dir = tempDir(t);
   const marker = join(dir, "finished");
-  const read = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, ""), 2000)`;
+  // The marker's path reaches each process as an argument, not as code.
+  const read = 'setTimeout(() => require("node:fs").writeFileSync(process.argv[1], ""), 2000)';
   const script = `
     import { spawnCf } from ${JSON.stringify(join(SRC, "cf-client.ts"))};
     import { finish } from ${JSON.stringify(MAIN)};
     const env = { ...process.env, CLOUDFLARE_API_TOKEN: "unused" };
-    spawnCf(process.execPath, ["-e", ${JSON.stringify(read)}], { cwd: process.cwd(), env });
+    spawnCf(process.execPath, ["-e", ${JSON.stringify(read)}, process.argv[1]], { cwd: process.cwd(), env });
     await finish(1);
   `;
   const started = Date.now();
-  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 15000 });
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, marker], { encoding: "utf8", timeout: 15000 });
   assert.equal(result.status, 1, result.stderr);
   assert.ok(Date.now() - started < 1800, `exited after ${Date.now() - started} ms`);
   assert.ok(!existsSync(marker), "the read finished before the process exited");
-  for (let waited = 0; !existsSync(marker) && waited < 8000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  for (let waited = 0; !existsSync(marker) && waited < 8000; waited += 50) await new Promise((done) => setTimeout(done, 50));
   assert.ok(existsSync(marker), "the read was ended with the process");
 });
 
