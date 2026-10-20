@@ -40,7 +40,7 @@ A dependency's new major can need code changes as well as a version bump, such a
 - Vars a Worker reads that no base config declares, in `env.d.ts` or as `env.X ?? <default>` in its code. Upstream's deploy service sets these itself, so `generateConfigs()` has to as well, and nothing fails without them: Web Search's `CF_AI_GATEWAY` silently falls back to `default`.
 - New bindings.
 - Routes that need adding to lists the starter overrides, such as `assets.run_worker_first`.
-- For the optional Gatekeepers a deployment selects: their configs are upstream's as shipped, plus the common block, the deployment's `vars` and `BASE_URL`. A var upstream's deploy service starts setting for them has to be set in `generateConfigs()` too, and a new `var` input in a package's `deploy-inputs.json` makes `check` ask for `gatekeepers.<slug>.vars.<NAME>`.
+- For the optional Gatekeepers a deployment selects: their configs are upstream's as shipped, plus the common block, the deployment's `vars` and `BASE_URL`. A var upstream's deploy service starts setting for them has to be set in `generateConfigs()` too, and a new `var` input in a package's `deploy-inputs.json` makes `check` fail until `gatekeepers.<slug>.vars.<NAME>` is set, which `init` does not ask for: set it by hand, or teach `init` to ask.
 - A change in how upstream produces its configs.
 
 `pnpm cf-os check` generates and validates the configs, so it is the test for this section.
