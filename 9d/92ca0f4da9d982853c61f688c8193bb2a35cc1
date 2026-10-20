@@ -1,0 +1,27 @@
+packages/cf-os/README.md
+  s_85bfd4081fca2d::t_ba24e807ceefc7 38
+packages/cf-os/src/cf-client.test.ts
+  s_85bfd4081fca2d::t_dbc539ef507a78 2-6,8,271-287
+packages/cf-os/src/cf-client.ts
+  s_85bfd4081fca2d::t_2affcd65a88941 13,59-64,78
+packages/cf-os/src/main.test.ts
+  s_85bfd4081fca2d::t_1a5e482b336bf5 3,231-235,240,246-249
+packages/cf-os/src/main.ts
+  s_85bfd4081fca2d::t_173b77bcc7cf83 353-355
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9d92ca0f4da9d982853c61f688c8193bb2a35cc1",
+  "prompts": {},
+  "sessions": {
+    "s_85bfd4081fca2d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec18836d-070a-48ab-b7e5-7c4c15a36cc6",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
