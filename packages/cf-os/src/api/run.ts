@@ -14,7 +14,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import { UsageError, type Output } from "../context.ts";
-import { callbackStub, functionStub, ndjsonEvents } from "./callbacks.ts";
+import { callbackStub, drainingWriter, functionStub, ndjsonEvents } from "./callbacks.ts";
 import { admitsString, decodeArg, decodeUntyped, encodeValue, StreamArg, type ArgSource } from "./codec.ts";
 import { nodePrefixes, PUBLIC_SEGMENT } from "./paths.ts";
 import type { Remote, Session } from "./session.ts";
@@ -778,7 +778,7 @@ export async function execute(
   }
 
   const disposables: Disposable[] = [];
-  const emit = ndjsonEvents((line) => io.stdout.write(line));
+  const emit = ndjsonEvents(drainingWriter(io.stdout));
   const args = calls.map((call) => call.args.map((arg) => {
     if (arg instanceof StreamArg) return io.openStream(arg.path);
     if (!(arg instanceof CallbackArg)) return arg;

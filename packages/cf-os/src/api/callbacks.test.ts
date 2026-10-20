@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { newMessagePortRpcSession, RpcTarget } from "capnweb";
-import { callbackStub, callbackTarget, functionStub, ndjsonEvents } from "./callbacks.ts";
+import { Writable } from "node:stream";
+import { callbackStub, callbackTarget, drainingWriter, functionStub, ndjsonEvents } from "./callbacks.ts";
 import { table } from "./generated/commands.ts";
 import type { Remote } from "./session.ts";
 
@@ -36,12 +37,12 @@ test("a callback target answers every method its table entry lists, as prototype
   const names = entry.methods.map((method) => method.name);
   assert.ok(names.includes("changeApplied"));
   const events: [string, Record<string, unknown>][] = [];
-  const target = callbackTarget("AiChatSubscriber", entry, (event, args) => events.push([event, args]));
+  const target = callbackTarget("AiChatSubscriber", entry, (event, args) => void events.push([event, args]));
   assert.deepEqual(Object.getOwnPropertyNames(target), []);
   for (const name of names) assert.equal(typeof Object.getPrototypeOf(target)[name], "function");
 
   const main = session(t);
-  const stub = callbackStub("AiChatSubscriber", entry, (event, args) => events.push([event, args]));
+  const stub = callbackStub("AiChatSubscriber", entry, (event, args) => void events.push([event, args]));
   assert.deepEqual(await main.drive(stub, names), names.map(() => undefined));
   stub[Symbol.dispose]();
   assert.deepEqual(events.map(([event]) => event), names);
@@ -54,7 +55,7 @@ test("every callback interface in the table gets its own complete target", async
   const main = session(t);
   for (const [name, entry] of Object.entries(table.callbacks)) {
     const seen: string[] = [];
-    const stub = callbackStub(name, entry, (event) => seen.push(event));
+    const stub = callbackStub(name, entry, (event) => void seen.push(event));
     await main.drive(stub, entry.methods.map((method) => method.name));
     stub[Symbol.dispose]();
     assert.deepEqual(seen, entry.methods.map((method) => method.name), name);
@@ -64,7 +65,7 @@ test("every callback interface in the table gets its own complete target", async
 test("a bare-function callback emits events named after its parameter, keyed by the function's", async (t) => {
   const main = session(t);
   const events: [string, Record<string, unknown>][] = [];
-  const stub = functionStub("callback", ["metadata"], (event, args) => events.push([event, args]));
+  const stub = functionStub("callback", ["metadata"], (event, args) => void events.push([event, args]));
   assert.equal(await main.fire(stub, { title: "x" }), undefined);
   stub[Symbol.dispose]();
   assert.deepEqual(events, [["callback", { metadata: { title: "x" } }]]);
@@ -72,6 +73,38 @@ test("a bare-function callback emits events named after its parameter, keyed by 
 
 test("events are NDJSON lines, their arguments encoded as results are", () => {
   const lines: string[] = [];
-  ndjsonEvents((line) => lines.push(line))("added", { note: { when: new Date(0), size: 3n, body: new Uint8Array([1]) }, extra: undefined });
+  ndjsonEvents((line) => void lines.push(line))("added", { note: { when: new Date(0), size: 3n, body: new Uint8Array([1]) }, extra: undefined });
   assert.deepEqual(lines, ['{"event":"added","args":{"note":{"when":"1970-01-01T00:00:00.000Z","size":"3","body":{"base64":"AQ=="}},"extra":null}}\n']);
+});
+
+test("while stdout is full, an event's call returns only once it drains: the server is held back", async (t) => {
+  const main = session(t);
+  // A reader that takes nothing until released.
+  const taken: string[] = [];
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => release = resolve);
+  const stdout = new Writable({
+    highWaterMark: 1,
+    write(chunk: Buffer, _encoding, done) {
+      void released.then(() => {
+        taken.push(chunk.toString());
+        done();
+      });
+    },
+  });
+  const stub = functionStub("callback", ["value"], ndjsonEvents(drainingWriter(stdout)));
+  let delivered = false;
+  const fired = Promise.resolve(main.fire(stub, 1)).then((result) => {
+    delivered = true;
+    return result;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(delivered, false);
+  release();
+  assert.equal(await fired, undefined);
+  stub[Symbol.dispose]();
+  assert.deepEqual(taken, ['{"event":"callback","args":{"value":1}}\n']);
+
+  // With room to spare, nothing waits.
+  assert.equal(drainingWriter(new Writable({ write: (_chunk, _encoding, done) => done() }))("x"), undefined);
 });
