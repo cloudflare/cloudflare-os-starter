@@ -1,11 +1,14 @@
 // `cf-os api [public] <command> [arguments] [<command> [arguments]]... [options]`
 // `cf-os api search "<task>"`
+// `cf-os api types [<service>]`
 //
 // Drives a running Cloudflare OS instance through its Cap'n Web API, the one the browser uses. The
 // commands are not written here: they are the generated table (src/api/generated/commands.ts),
-// from the pinned upstream's workshop-shared/src/api.ts, which `pnpm api:generate` rewrites when the
-// pin moves. This module reads the instance's address and the sign-in to use, then hands the walk
-// to src/api/run.ts, or, for `search`, ranks the table's commands against the task.
+// from the pinned upstream's schema of its API
+// (packages/api-schema/generated/workshop-api.schema.json), which `pnpm api:generate` rewrites when
+// the pin moves. This module reads the instance's address and the sign-in to use, then hands the
+// walk to src/api/run.ts, or, for `search`, ranks the table's commands against the task, or, for
+// `types`, prints upstream's agent declarations (src/api/types.ts).
 //
 // main.ts passes every token after `api` through untouched except the global `--config`,
 // `--account` and `--profile`, so the flags of each segment are parsed here, against that segment's
@@ -27,6 +30,7 @@ import {
   nodeHelp,
   parseInvocation,
   parseSearch,
+  parseTypes,
   searchCommands,
   searchHelp,
   untypedHelp,
@@ -34,6 +38,7 @@ import {
 } from "../api/run.ts";
 import { connect, defaultSessionDeps, resolveAuth, resolveTarget, type SessionDeps } from "../api/session.ts";
 import type { ApiTable } from "../api/table.ts";
+import { agentTypes, typesHelp } from "../api/types.ts";
 
 /** Everything `cf-os api` touches besides the context, so tests can stand in for each. */
 export interface ApiDeps extends SessionDeps {
@@ -77,6 +82,18 @@ function webBytes(stream: NodeJS.ReadableStream): ReadableStream<Uint8Array> {
 /** `cf-os api`. */
 export async function run(args: CommandArgs, ctx: Context, deps: ApiDeps = defaultDeps()): Promise<number> {
   const { table } = deps;
+  // `types` prints declarations, the result itself, as plain text, as a byte stream's result is
+  // written raw: wrapped in JSON, TypeScript would have to be unescaped before it could be read.
+  const types = parseTypes(args.positionals);
+  if (types) {
+    // The declarations outgrow a pipe's buffer, so `| head` closes it mid-write: that EPIPE is the
+    // reader being done, not a failure. Any other error is still thrown, as with no listener.
+    deps.stdout.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPIPE") throw error;
+    });
+    deps.stdout.write(types.help ? `${typesHelp()}\n` : agentTypes(types.service));
+    return 0;
+  }
   // `search` finds commands in the table, before any walk: it connects to nothing.
   const search = parseSearch(args.positionals);
   if (search?.help) {

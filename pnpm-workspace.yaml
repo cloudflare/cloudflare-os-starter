@@ -30,9 +30,6 @@ catalog:
   # Exact: TypeScript 7 (tsgo). The submodule's tsconfig sets `singleThreaded`, which TS 5.9
   # rejects outright, so every package extending it has to be on 7.x.
   typescript: 7.0.2
-  # Exact: the JS compiler API, which TypeScript 7 no longer ships, aliased so it can sit beside
-  # tsgo. `cf-os`'s API generator reads the Workshop's `api.ts` with it. Follows upstream's.
-  typescript6: npm:typescript@6.0.3
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
   vite: 7.3.6

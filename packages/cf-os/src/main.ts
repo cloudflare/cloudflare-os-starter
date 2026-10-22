@@ -14,7 +14,8 @@
 // `@gadgets/scripts` modules other commands import only resolve once it is -- so nothing imported
 // statically here, or by `commands/scaffold.ts` or `commands/update.ts`, may reach them. Nor may
 // it reach `api`'s modules (`src/api`), whose packages (capnweb, hash-wasm) are development
-// dependencies a published copy lacks, nor the generator's (typescript6). `main.test.ts` checks both.
+// dependencies a published copy lacks, nor the generator's (`@gadgets/api-schema`). `main.test.ts`
+// checks both.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";

@@ -752,8 +752,9 @@ function apiStep(state: Update): string[] {
       `pin. ${check}`];
   }
   if (api.status === "failed") {
-    return [`\`pnpm run ${API_GENERATE}\` failed: fix what it reports (the install, or a type in the new \`api.ts\` the ` +
-      `generator does not handle), run it again, and review the files it regenerates with the pin. ${check}`];
+    return [`\`pnpm run ${API_GENERATE}\` failed: fix what it reports (the install, a pin older than ` +
+      `cloudflare/cloudflare-os#860, which added \`packages/api-schema\`, or a method the command table cannot express), ` +
+      `run it again, and review the files it regenerates with the pin. ${check}`];
   }
   if (!api.files.length) {
     return ["Some `cf-os api` commands were removed or changed (listed under \"API commands\"): that breaks the scripts, " +

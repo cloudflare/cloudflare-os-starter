@@ -350,11 +350,29 @@ test("the packed path never reaches @gadgets/scripts, or api's modules and packa
     .filter((file) => file.startsWith("commands/")).toSorted(),
     ["commands/scaffold.ts", "commands/update.ts"]);
   assert.deepEqual([...files].map((file) => relative(SRC, file).replaceAll("\\", "/")).filter((file) => file.startsWith("api/")), []);
-  assert.deepEqual([...packages].filter((name) => ["capnweb", "hash-wasm", "typescript6"].includes(name)), []);
+  assert.deepEqual([...packages].filter((name) => ["capnweb", "hash-wasm"].includes(name)), []);
   assert.deepEqual([...packages].filter((name) => !name.startsWith("node:")), ["@clack/prompts"]);
   // What a global install gets is exactly that: everything else is the project copy's, from its own install.
   const manifest = JSON.parse(readFileSync(join(SRC, "..", "package.json"), "utf8"));
   assert.deepEqual(Object.keys(manifest.dependencies), ["@clack/prompts"]);
+});
+
+test("api's modules never reach @gadgets/*, and import nothing from it even for types", () => {
+  // The generator reads upstream's schema package; the runtime keeps its own copy of the table's
+  // types (`api/table.ts`), so it runs from its generated table alone, whatever the submodule holds.
+  const api = join(SRC, "api");
+  // With `commands/api.ts`, the module `cf-os api` loads.
+  const modules = [join(SRC, "commands", "api.ts"), ...readdirSync(api, { recursive: true, encoding: "utf8" })
+    .filter((file) => file.endsWith(".ts")).map((file) => join(api, file))];
+  const { files, packages } = staticClosure(modules);
+  assert.deepEqual([...packages].filter((name) => name.startsWith("@gadgets/")), [],
+    `reachable from ${[...files].map((file) => relative(SRC, file)).join(", ")}`);
+  for (const file of modules) {
+    const typeOnly = [...readFileSync(file, "utf8").matchAll(/^(?:import|export)\s+type\b[^;]*?from\s+"([^"]+)"/gm)]
+      .map((match) => match[1]);
+    assert.deepEqual([...typeOnly, ...importsOf(file).dynamic].filter((name) => name.startsWith("@gadgets/")), [],
+      relative(SRC, file));
+  }
 });
 
 test("init and secrets load without the submodule, to refuse or fail as they would", () => {

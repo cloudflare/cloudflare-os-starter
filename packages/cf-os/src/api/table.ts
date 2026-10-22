@@ -1,14 +1,17 @@
 // The contract between the API generator (`packages/cf-os/generator`) and the `cf-os api` runtime
-// beside this file. The generator turns upstream's `workshop-shared/src/api.ts` into one
-// `ApiTable` (`generated/commands.ts`); the runtime walks argv against it. The table holds the
-// CLI's decisions only -- names, argument encodings, what each return does to the chain -- and no
-// logic, so a change in upstream's API is a regenerated table, never a hand edit.
+// beside this file. The generator turns upstream's schema of its API (`packages/api-schema`'s
+// `workshop-api.schema.json`) into one `ApiTable` (`generated/commands.ts`); the runtime walks argv
+// against it. The table holds the CLI's decisions only -- names, argument encodings, what each
+// return does to the chain -- and no logic, so a change in upstream's API is a regenerated table,
+// never a hand edit.
 //
-// Shapes mirror capnweb-validate's `TypeShape` (its `transform/type-introspector.ts`), with named
-// object and union types hoisted into `ApiTable.shapes` and referenced by name.
+// Shapes are the schema's (capnweb-schema's `ApiShape`, which mirrors capnweb-validate's
+// `TypeShape`), with named object and union types hoisted into `ApiTable.shapes` and referenced by
+// name. This is the runtime's own copy, so it imports nothing from upstream; the generator fails to
+// type-check when upstream's no longer fit it.
 
 /**
- * A value's type, as the extractor resolved it. Named object and union types appear as `ref`s into
+ * A value's type, as upstream's schema records it. Named object and union types appear as `ref`s into
  * {@link ApiTable.shapes} (or the schema's `shapes`), so a recursive type stays finite.
  */
 export type ApiShape =
@@ -36,8 +39,16 @@ export type ApiShape =
   | { kind: "ref"; name: string }
   | {
     kind:
-      | "date" | "bytes" | "error" | "readableStream" | "writableStream" | "arrayBuffer" | "dataView"
-      | "regexp" | "blob" | "url" | "headers" | "request" | "response";
+      | "date" | "bytes" | "error" | "arrayBuffer" | "dataView" | "regexp" | "blob" | "url" | "headers"
+      | "request" | "response";
+  }
+  | {
+    kind: "readableStream" | "writableStream";
+    /**
+     * The type of what it carries (`ReadableStream<Uint8Array>`), when declared and not `any`.
+     * Carried along from the schema, so an embedded shape type-checks; the runtime does not read it.
+     */
+    element?: ApiShape;
   }
   | { kind: "typedArray"; name: string }
   /**

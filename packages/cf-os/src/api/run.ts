@@ -493,7 +493,10 @@ export function nodeHelp(table: ApiTable, node: string, path: string[]): string 
     ...entry.doc ? [...wrap(entry.doc, ""), ""] : [],
     `Commands on ${node}${isRoot ? ", after signing in" : ""}:`,
     ...nodeCommandLines(table, node),
-    ...isRoot ? ["", `\`cf-os api public <command>\` calls ${table.public} without signing in (run \`cf-os api public --help\`).`] : [],
+    ...isRoot ? [
+      "", `\`cf-os api public <command>\` calls ${table.public} without signing in (run \`cf-os api public --help\`).`,
+      "`cf-os api types [<service>]` prints the API as TypeScript declarations, to write code against.",
+    ] : [],
     "",
     `Run \`${prefix} <command> --help\` for a command's arguments.`,
     "",
@@ -663,6 +666,27 @@ export function parseSearch(tokens: string[]): { query: string; help: boolean } 
   } catch (error) {
     throw new UsageError(withHelpPointer((error as Error).message, ["search"]));
   }
+}
+
+/**
+ * The service when `tokens` -- everything after `cf-os api` but the global options -- ask for the
+ * agent declarations (`types` is the first word that is not an option), else undefined. Runtime
+ * options are accepted and ignored, as for a search; `help` is true for `--help`.
+ */
+export function parseTypes(tokens: string[]): { service?: string; help: boolean } | undefined {
+  const loose = parseArgs({ args: tokens, options: RUNTIME_OPTIONS, strict: false, allowPositionals: true });
+  if (loose.positionals[0] !== "types") return undefined;
+  let parsed: { values: { help?: boolean }; positionals: string[] };
+  try {
+    parsed = parseArgs({ args: tokens, options: RUNTIME_OPTIONS, strict: true, allowPositionals: true });
+  } catch (error) {
+    throw new UsageError(withHelpPointer((error as Error).message, ["types"]));
+  }
+  const [, service, extra] = parsed.positionals;
+  if (extra !== undefined) {
+    throw new UsageError(`types takes one service, but "${extra}" follows "${service}". Run \`cf-os api types --help\`.`);
+  }
+  return { service, help: parsed.values.help === true };
 }
 
 /** A `callback` or `function` argument, minted when the call is made. */

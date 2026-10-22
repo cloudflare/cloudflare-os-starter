@@ -1,7 +1,8 @@
-// An in-process Cap'n Web server for the `cf-os api` suites: the generator fixture's API
-// (generator/__fixtures__/api.ts) implemented as `RpcTarget`s that record every call and every
-// disposal, served over a MessageChannel through the session factory the runtime takes. Test
-// support only; not part of the build.
+// An in-process Cap'n Web server for the `cf-os api` suites: the generator fixture's API (the one
+// `generator/__fixtures__/generated/schema.json` describes, upstream's extractor fixture
+// `packages/api-schema/__tests__/__fixtures__/api.ts` before its format additions) implemented as
+// `RpcTarget`s that record every call and every disposal, served over a MessageChannel through the
+// session factory the runtime takes. Test support only; not part of the build.
 
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { newMessagePortRpcSession, RpcTarget } from "capnweb";

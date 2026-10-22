@@ -24,9 +24,6 @@ catalogs:
     typescript:
       specifier: 7.0.2
       version: 7.0.2
-    typescript6:
-      specifier: npm:typescript@6.0.3
-      version: 6.0.3
     vite:
       specifier: 7.3.6
       version: 7.3.6
@@ -81,6 +78,9 @@ importers:
         specifier: ^1.8.1
         version: 1.8.1
     devDependencies:
+      '@gadgets/api-schema':
+        specifier: link:../../cloudflare-os/packages/api-schema
+        version: link:../../cloudflare-os/packages/api-schema
       '@gadgets/scripts':
         specifier: link:../../cloudflare-os/scripts
         version: link:../../cloudflare-os/scripts
@@ -102,9 +102,6 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
-      typescript6:
-        specifier: 'catalog:'
-        version: typescript@6.0.3
 
   packages/custom-gatekeeper:
     dependencies:
@@ -2255,11 +2252,6 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
-  typescript@6.0.3:
-    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
-    engines: {node: '>=14.17'}
-    hasBin: true
-
   typescript@7.0.2:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
     engines: {node: '>=16.20.0'}
@@ -4038,8 +4030,6 @@ snapshots:
     optional: true
 
   typescript@5.9.3: {}
-
-  typescript@6.0.3: {}
 
   typescript@7.0.2:
     optionalDependencies:
