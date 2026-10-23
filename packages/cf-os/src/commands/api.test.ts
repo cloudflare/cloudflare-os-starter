@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
 import { table } from "../../generator/__fixtures__/generated/commands.ts";
+import { passwordHash } from "../api/session.ts";
 import { callsOf, eventually, fixtureRoot, messagePortServer, serverLog, type FixtureOptions } from "../api/test-server.ts";
 import { UsageError } from "../context.ts";
 import { scratchProject, testContext } from "../test-support.ts";
@@ -366,4 +367,67 @@ test("a token after a chain-ending result, or an unknown command, is a usage err
   await assert.rejects(h.api("open-notebook", "n", "outline", "--limit", "1"), /Unknown option --limit for outline/);
   await assert.rejects(h.api("open-notebook"), /open-notebook needs <id>/);
   assert.equal(h.server.opened, 0);
+});
+
+test("create-account makes a password account on PublicApi, which --username then signs in as", async (t) => {
+  const h = harness(t, { env: { CFOS_API_PASSWORD: "hunter2" } });
+  const dev = ["--url", "http://localhost:8787"];
+  assert.equal(await h.api("create-account", "alice", "--display-name", "Alice A", ...dev), 0);
+  assert.deepEqual(h.json, [{ username: "alice", displayName: "Alice A" }]);
+  const hash = Buffer.from(await passwordHash("alice", "hunter2", table.constants.SERVICE_SALT)).toString("hex");
+  assert.deepEqual(callsOf(h.log, "createAccount"), [["alice", "Alice A", hash]]);
+  // No sign-in, nor an Access token for a dev server; and the session is closed.
+  assert.deepEqual(callsOf(h.log, "authenticate"), []);
+  assert.deepEqual(h.spawned, []);
+  await eventually(() => h.log.disposed.includes("root"), "the session's disposal");
+  assert.match(h.stderr(), /Created alice\. Act as it with `cf-os api --username alice <command>` and --url http:\/\/localhost:8787/);
+
+  assert.equal(await h.api("--username", "alice", "set-mood", "calm", ...dev), 0);
+  assert.deepEqual(callsOf(h.log, "login"), [["alice", hash]]);
+  assert.deepEqual(callsOf(h.log, "setMood"), [["calm"]]);
+  // Neither the password, its hash nor the session token createAccount returned is printed.
+  assert.doesNotMatch(JSON.stringify(h.json) + h.stderr() + h.stdout(), new RegExp(`hunter2|${hash}|session-token`));
+
+  // --display-name defaults to the username; a second account of a name is refused, naming why.
+  assert.equal(await h.api("create-account", "carol", ...dev), 0);
+  assert.deepEqual(h.json.at(-1), { username: "carol", displayName: "carol" });
+  await assert.rejects(h.api("create-account", "alice", ...dev), (error: Error) =>
+    !(error instanceof UsageError) && error.message.startsWith("could not create the account alice: the name is taken."));
+});
+
+test("create-account surfaces a refusal, needs CFOS_API_PASSWORD, and --dry-run prints no secret", async (t) => {
+  const closed = harness(t, { env: { CFOS_API_PASSWORD: "hunter2" }, options: { signupsClosed: true } });
+  await assert.rejects(closed.api("create-account", "alice", "--url", "http://localhost:8787"),
+    /^Error: could not create the account alice: New signups are currently disabled on this deployment\.$/);
+
+  const unset = harness(t, { env: {} });
+  await assert.rejects(unset.api("create-account", "alice", "--url", "http://localhost:8787"),
+    (error: Error) => !(error instanceof UsageError) && /reads the secret from CFOS_API_PASSWORD, which is not set/.test(error.message));
+  assert.equal(unset.server.opened, 0);
+
+  const dry = harness(t, { env: { CFOS_API_PASSWORD: "hunter2" } });
+  assert.equal(await dry.api("create-account", "alice", "--dry-run"), 0);
+  assert.deepEqual(dry.json, [{
+    url: "wss://os.example.com/api",
+    auth: { mode: "access" },
+    on: "FixturePublicApi",
+    chain: [{ method: "createAccount", args: ["alice", "alice", { $passwordHash: "CFOS_API_PASSWORD" }] }],
+  }]);
+  assert.doesNotMatch(JSON.stringify(dry.json), /hunter2/);
+  assert.equal(dry.server.opened, 0);
+  assert.deepEqual(dry.spawned, []);
+
+  assert.equal(await dry.api("create-account", "--help"), 0);
+  assert.match(dry.stdout(), /^Usage: cf-os api create-account <username>/);
+  await assert.rejects(dry.api("create-account"), (error: Error) => error instanceof UsageError && /needs <username>/.test(error.message));
+});
+
+test("create-account on an https:// instance not behind Access connects with --auth token, needing no CFOS_API_TOKEN", async (t) => {
+  const h = harness(t, { env: { CFOS_API_PASSWORD: "hunter2" } });
+  const staging = ["--url", "https://staging.example.com", "--auth", "token"];
+  assert.equal(await h.api("create-account", "alice", ...staging, "--dry-run"), 0);
+  assert.deepEqual((h.json.at(-1) as { auth: unknown }).auth, { mode: "token" });
+  assert.equal(await h.api("create-account", "alice", ...staging), 0);
+  assert.deepEqual(h.json.at(-1), { username: "alice", displayName: "alice" });
+  assert.deepEqual(h.spawned, []);
 });

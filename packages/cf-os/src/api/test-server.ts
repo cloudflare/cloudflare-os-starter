@@ -69,11 +69,19 @@ export interface FixtureOptions {
   noAdmin?: boolean;
   /** `setMood` never returns. */
   hang?: boolean;
+  /**
+   * The accounts `createAccount` made, username to hash bytes (hex), which `login` accepts too. Made
+   * on first use and kept here, so every connection served with the same options shares them.
+   */
+  accounts?: Map<string, string>;
+  /** `createAccount` refuses, as upstream's does with signups closed. */
+  signupsClosed?: boolean;
 }
 
 /** The fixture API's root, `FixturePublicApi`. */
 export function fixtureRoot(log: ServerLog, options: FixtureOptions = {}): RpcTarget {
   const record = (method: string, args: unknown[]) => log.calls.push({ method, args });
+  const accounts = options.accounts ??= new Map();
 
   class Admin extends RpcTarget {
     setBanner(text: string): void {
@@ -184,9 +192,19 @@ export function fixtureRoot(log: ServerLog, options: FixtureOptions = {}): RpcTa
     login(username: string, hash: Uint8Array): string | null {
       record("login", [username, Buffer.from(hash).toString("hex")]);
       const expected = options.login;
-      return expected && expected.username === username && expected.hashHex === Buffer.from(hash).toString("hex")
+      const hashHex = Buffer.from(hash).toString("hex");
+      return (expected && expected.username === username && expected.hashHex === hashHex) || accounts.get(username) === hashHex
         ? "good-token"
         : null;
+    }
+    // Not in the fixture schema: `cf-os api create-account` calls it by name, as it calls upstream's.
+    createAccount(username: string, displayName: string, hash: Uint8Array): string | null {
+      const hashHex = Buffer.from(hash).toString("hex");
+      record("createAccount", [username, displayName, hashHex]);
+      if (options.signupsClosed) throw new Error("New signups are currently disabled on this deployment.");
+      if (accounts.has(username)) return null;
+      accounts.set(username, hashHex);
+      return `${username}:session-token`;
     }
     download(id: number): ReadableStream<Uint8Array> {
       record("download", [id]);

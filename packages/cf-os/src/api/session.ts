@@ -277,7 +277,8 @@ export async function connect(
   };
 }
 
-function requireEnv(env: NodeJS.ProcessEnv, name: string, mode: string, otherwise = ""): string {
+/** The secret in `env[name]`; unset, a failure naming `name` and what reads it (`mode`), never a value. */
+export function requireEnv(env: NodeJS.ProcessEnv, name: string, mode: string, otherwise = ""): string {
   const value = env[name];
   if (!value) throw new Error(`${mode} reads the secret from ${name}, which is not set${otherwise}.`);
   return value;

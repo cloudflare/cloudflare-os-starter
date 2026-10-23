@@ -20,6 +20,12 @@ import { nodePrefixes, PUBLIC_SEGMENT } from "./paths.ts";
 import type { Remote, Session } from "./session.ts";
 import type { ApiArg, ApiCommand, ApiNode, ApiReturn, ApiTable } from "./table.ts";
 
+/** The word that selects `create-account` (create-account.ts) in a command's place on the root. */
+export const CREATE_ACCOUNT = "create-account";
+
+/** Where `cloudflare-os`'s `pnpm dev-server` listens, as help shows it. */
+export const DEV_SERVER_URL = "http://localhost:8787";
+
 /** The flags `cf-os api` itself takes, valid in any segment. */
 export const RUNTIME_OPTIONS = {
   url: { type: "string" },
@@ -37,7 +43,8 @@ const RUNTIME_HELP = [
   "  --auth <mode>        access (default for https://): a Cloudflare Access token, from",
   "                       CF_ACCESS_TOKEN or `cloudflared access token`; token (default for http://):",
   "                       CFOS_API_TOKEN; password: --username and CFOS_API_PASSWORD",
-  "  --username <name>    sign in with a password (implies --auth password)",
+  "  --username <name>    sign in as <name>, with a password (implies --auth password); on a local",
+  "                       or test instance, `cf-os api create-account <name>` makes one",
   "  --dry-run            print the calls as JSON on stdout; connect to nothing",
   "  --timeout <seconds>  end a subscription (exit 0), or fail any other command, after this long",
   "  --out <file|->       where a returned byte stream goes (default: stdout, unless a terminal)",
@@ -496,6 +503,7 @@ export function nodeHelp(table: ApiTable, node: string, path: string[]): string 
     ...isRoot ? [
       "", `\`cf-os api public <command>\` calls ${table.public} without signing in (run \`cf-os api public --help\`).`,
       "`cf-os api types [<service>]` prints the API as TypeScript declarations, to write code against.",
+      `\`cf-os api ${CREATE_ACCOUNT} <username>\` creates a user to act as with --username, on a local or test instance.`,
     ] : [],
     "",
     `Run \`${prefix} <command> --help\` for a command's arguments.`,
@@ -605,14 +613,49 @@ function termMatch(term: string, words: Set<string>): number {
 }
 
 /**
+ * What a search finds beside the table's commands: `create-account`, and signing in as a user, which
+ * is runtime flags, in no command's doc. `words` score as a command's name does, and the summary as
+ * a doc does, so broad words (`user`, `test`) are left to the summary and outrank no command named
+ * by them. `phrase` scores as `words` too, but only for a task that says it, its words in a row (or
+ * their synonyms), but for stop words: "create a user" names create-account; "user" alone, or
+ * "create a workspace for a user", does not.
+ */
+const BUILT_INS: { command: string; words: string; phrase?: string; summary: string }[] = [
+  {
+    command: `cf-os api ${CREATE_ACCOUNT} <username>`,
+    words: `${CREATE_ACCOUNT} signup up register`,
+    phrase: "create user",
+    summary: "Creates a password user account to act as, on a local or test instance; the password comes from CFOS_API_PASSWORD.",
+  },
+  {
+    command: `cf-os api --url ${DEV_SERVER_URL} --username <username> <command>`,
+    words: "sign-in log-in login act-as user local dev server localhost",
+    summary: "Runs <command> signed in as <username>, the password from CFOS_API_PASSWORD, here on a local dev server " +
+      "(cloudflare-os's `pnpm dev-server`).",
+  },
+];
+
+/**
  * The commands that best match `query`, best first, at most `limit`. A query word scores where it
  * best matches (three quarters as well for a synonym): 3 in the command's own name, 2 in its doc's first sentence, 1 in the hops that lead to it or the
- * first sentence of the capability it is on. Ties go to the shorter command line. Local and
- * deterministic: it reads the table, nothing else.
+ * first sentence of the capability it is on; a {@link BUILT_INS} entry scores as a command whose
+ * name is its words, and wins a tie, as no doc names what it does. Other ties go to the shorter
+ * command line. Local and deterministic: it reads the table, nothing else.
  */
 export function searchCommands(table: ApiTable, query: string, limit = 5): SearchMatch[] {
   const terms = [...new Set(searchTerms(query))].filter((term) => !STOP_WORDS.has(term));
-  const matches: (SearchMatch & { score: number })[] = [];
+  const matches: (SearchMatch & { score: number; builtIn?: true })[] = [];
+  for (const builtIn of BUILT_INS) {
+    const own = new Set(searchTerms(builtIn.words));
+    const phrase = searchTerms(builtIn.phrase ?? "");
+    if (phrase.length > 0 && terms.some((_, at) => phrase.every((word, index) =>
+      at + index < terms.length && termMatch(terms[at + index], new Set([word])) > 0))) {
+      for (const word of phrase) own.add(word);
+    }
+    const said = new Set(searchTerms(builtIn.summary));
+    const score = terms.reduce((total, term) => total + Math.max(3 * termMatch(term, own), 2 * termMatch(term, said)), 0);
+    if (score > 0) matches.push({ command: builtIn.command, summary: builtIn.summary, score, builtIn: true });
+  }
   for (const [node, prefix] of nodePrefixes(table)) {
     const segments: string[] = [];
     let at = table.root;
@@ -637,7 +680,8 @@ export function searchCommands(table: ApiTable, query: string, limit = 5): Searc
       matches.push({ command: line, summary: firstSentence(command.doc), score });
     }
   }
-  return matches.toSorted((a, b) => b.score - a.score || a.command.length - b.command.length)
+  return matches.toSorted((a, b) => b.score - a.score || Number(b.builtIn ?? false) - Number(a.builtIn ?? false) ||
+    a.command.length - b.command.length)
     .slice(0, limit).map(({ command, summary: said }) => ({ command, summary: said }));
 }
 

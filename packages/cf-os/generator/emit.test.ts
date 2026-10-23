@@ -210,9 +210,9 @@ test("fails on names that collide after kebab-casing, naming both", () => {
   });
   assert.throws(() => buildTable(flags), /FixtureAuthedApi\.findNotes: parameters url and arg_url are both --arg-url/);
 
-  for (const word of ["public", "search", "types"]) {
+  for (const [method, word] of [["public", "public"], ["search", "search"], ["types", "types"], ["createAccount", "create-account"]]) {
     const reserved = edited((schema) => {
-      schema.services.FixtureAuthedApi!.methods.push({ name: word, doc: "", params: [], returns: { kind: "void" } });
+      schema.services.FixtureAuthedApi!.methods.push({ name: method, doc: "", params: [], returns: { kind: "void" } });
     });
     assert.throws(() => buildTable(reserved), new RegExp(`FixtureAuthedApi has a method named "${word}", a word the CLI reserves`));
   }
