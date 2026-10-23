@@ -126,6 +126,8 @@ test("help lists a capability's commands and a command's arguments, events and r
   assert.match(root, /A command marked `→ X` returns capability X: follow it on the same line/);
   assert.doesNotMatch(nodeHelp(table, "FixtureAdmin", ["get-admin"]), /marked `→ X`/);
   assert.match(root, /`cf-os api public <command>` calls PublicApi without signing in/);
+  assert.match(root, /\n`cf-os api create-account <username>` creates a user to act as with --username, on a local or test instance\.\n/);
+  assert.match(root, /--username <name> +sign in as <name>, with a password[^]*`cf-os api create-account <name>` makes one/);
   assert.match(root, /--auth <mode> {8}access \(default for https:\/\/\)/);
   assert.doesNotMatch(root, /API options: `cf-os api --help`/);
   // `→ call` is explained only where a listed command carries it.
@@ -205,6 +207,26 @@ test("search ranks commands by the task's words, as whole command lines, best fi
   // Words that pick out nothing match nothing; the output is plain JSON.
   assert.deepEqual(searchCommands(table, "the of a"), []);
   assert.deepEqual(JSON.parse(JSON.stringify(matches)), matches);
+});
+
+test("search finds create-account for making a user, and signing in as one, which are no generated command", () => {
+  for (const task of ["create a test user", "make an account for bob", "sign up a new user", "create a user account", "register a user",
+    "create a user", "create user bob", "add a user", "new user", "make a user"]) {
+    assert.equal(searchCommands(realTable, task)[0].command, "cf-os api create-account <username>", task);
+  }
+  for (const task of ["sign in to a local dev server", "act as another user", "log in as a user", "log in as bob", "sign in as alice"]) {
+    assert.equal(searchCommands(realTable, task)[0].command, "cf-os api --url http://localhost:8787 --username <username> <command>", task);
+  }
+  assert.match(searchCommands(realTable, "create a test user")[0].summary, /on a local or test instance; the password comes from CFOS_API_PASSWORD\.$/);
+  // A task about a workspace's members still finds the workspace's command first.
+  assert.ok(!searchCommands(realTable, "add bob to the workspace")[0].command.includes("create-account"));
+  // Nor do broad words alone find it ahead of the commands they name; the dev server's host finds signing in.
+  for (const task of ["create workspace for user", "test", "test a new model", "user", "make user admin"]) {
+    assert.ok(!searchCommands(realTable, task)[0].command.includes("create-account"), task);
+  }
+  for (const task of ["localhost", "connect to localhost"]) {
+    assert.equal(searchCommands(realTable, task)[0].command, "cf-os api --url http://localhost:8787 --username <username> <command>", task);
+  }
 });
 
 test("`search` is a search only as the first word that is not an option", () => {

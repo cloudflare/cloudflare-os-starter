@@ -66,9 +66,10 @@ const AUTHENTICATE = "authenticate";
 
 /**
  * Words the CLI takes in a command's place on the root: `public` selects the public node, `search`
- * finds commands, `types` prints the agent declarations. The root may have no command named any of them.
+ * finds commands, `types` prints the agent declarations, `create-account` creates a password account
+ * (src/api/create-account.ts). The root may have no command named any of them.
  */
-const RESERVED_COMMANDS = [PUBLIC_SEGMENT, "search", "types"];
+const RESERVED_COMMANDS = [PUBLIC_SEGMENT, "search", "types", "create-account"];
 
 /**
  * Flags the runtime itself takes. An optional parameter whose flag would be one of these is

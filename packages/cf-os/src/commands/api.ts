@@ -1,6 +1,7 @@
 // `cf-os api [public] <command> [arguments] [<command> [arguments]]... [options]`
 // `cf-os api search "<task>"`
 // `cf-os api types [<service>]`
+// `cf-os api create-account <username> [--display-name <name>]`
 //
 // Drives a running Cloudflare OS instance through its Cap'n Web API, the one the browser uses. The
 // commands are not written here: they are the generated table (src/api/generated/commands.ts),
@@ -8,7 +9,9 @@
 // (packages/api-schema/generated/workshop-api.schema.json), which `pnpm api:generate` rewrites when
 // the pin moves. This module reads the instance's address and the sign-in to use, then hands the
 // walk to src/api/run.ts, or, for `search`, ranks the table's commands against the task, or, for
-// `types`, prints upstream's agent declarations (src/api/types.ts).
+// `types`, prints upstream's agent declarations (src/api/types.ts), or, for `create-account`, makes
+// a password account, which no generated command may, since its password comes from the environment
+// (src/api/create-account.ts).
 //
 // main.ts passes every token after `api` through untouched except the global `--config`,
 // `--account` and `--profile`, so the flags of each segment are parsed here, against that segment's
@@ -20,6 +23,7 @@ import { resolve } from "node:path";
 import { Readable } from "node:stream";
 import { UsageError, type CommandArgs, type Context } from "../context.ts";
 import type { ArgSource } from "../api/codec.ts";
+import { accountHash, createAccount, createAccountHelp, DRY_RUN_HASH, parseCreateAccount } from "../api/create-account.ts";
 import { table as generatedTable } from "../api/generated/commands.ts";
 import {
   commandHelp,
@@ -106,6 +110,28 @@ export async function run(args: CommandArgs, ctx: Context, deps: ApiDeps = defau
     if (matches.length === 0) ctx.out.log("No command matches. `cf-os api --help` lists the first ones.");
     ctx.out.json(matches);
     return 0;
+  }
+  const account = parseCreateAccount(args.positionals);
+  if (account?.help) {
+    deps.stdout.write(`${createAccountHelp()}\n`);
+    return 0;
+  }
+  if (account) {
+    const target = await resolveTarget(account.url, ctx);
+    // A public call: the inferred mode only says whether Access's edge needs its token.
+    const auth = resolveAuth({ auth: account.auth }, deps.env, target.origin);
+    if (account.dryRun) {
+      ctx.out.json({
+        url: target.url,
+        auth: { mode: auth.mode },
+        on: table.public,
+        chain: [{ method: "createAccount", args: [account.username, account.displayName, DRY_RUN_HASH] }],
+      });
+      return 0;
+    }
+    const hash = await accountHash(account.username, deps.env, table.constants.SERVICE_SALT);
+    return createAccount(account, hash,
+      () => connect(target, auth, { serviceSalt: table.constants.SERVICE_SALT, needsSignIn: false }, deps), ctx.out);
   }
   const invocation = parseInvocation(table, args.positionals);
   if (invocation.help) {
