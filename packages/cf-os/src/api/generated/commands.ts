@@ -10,12 +10,22 @@ export const table: ApiTable = {
   nodes: {
     AdminApi: {
       doc:
-        "Capability for managing deployment-wide admin settings, obtained via\n" +
+        "Capability for managing and investigating the deployment, obtained via\n" +
         "`get-admin-api` (on AuthenticatedApi) (which is null for non-admins). The access check happens when the\n" +
-        "capability is minted, so these methods don't re-check. Covers branding, agent instructions,\n" +
-        "which gatekeeper connectors/resources are offered, and the models an AI Gateway deployment\n" +
-        "provides — NOT authentication config (that's env-var driven). Each setter throws on invalid\n" +
-        "input.",
+        "capability is minted, so these methods don't re-check, with one exception: `inspect-workspace`\n" +
+        "re-checks, and so does every call on the AdminWorkspaceView it mints, since a view is the one\n" +
+        "thing an admin holds that reads users' data. Covers branding, agent instructions, which\n" +
+        "gatekeeper connectors/resources are offered, the models an AI Gateway deployment provides, the\n" +
+        "user and workspace directory, and admin access to workspaces — NOT authentication config (that's\n" +
+        "env-var driven). Each setter throws on invalid input, and records the change it makes in the\n" +
+        "deployment's audit log before making it (see AdminSettingRecord).\n" +
+        "\n" +
+        "A deployment admin's own agent can call these methods as them through the instance admin\n" +
+        "Gatekeeper (packages/gatekeeper-instanceadmin), in a workspace they turned deployment admin access\n" +
+        "on in. The Workshop decides what each call may do from ADMIN_AGENT_ACCESS: a read runs at once, a\n" +
+        "method tagged `@mutates` runs only as an action the admin approves, one tagged `@confirmation` (and\n" +
+        "an inspection asking for \"full\") only once they approve that one call, and the rest are withheld.\n" +
+        "Its audit records say `via` \"gatekeeper\", with an AdminGatekeeperOrigin.",
       commands: {
         "add-gateway-model": {
           method: "addGatewayModel",
@@ -26,7 +36,8 @@ export const table: ApiTable = {
             "not serve and enable its provider (see AdminSettingsView.gatewayModels), if a suggested or\n" +
             "added model already has its ID, if the model runtime does not know its `behavesLike` under\n" +
             "its provider, or if what its context window reserves for the response (its output limit, or\n" +
-            "WORKERS_AI_OUTPUT_LIMIT for a Cloudflare model that gives none) leaves a prompt no room.",
+            "WORKERS_AI_OUTPUT_LIMIT for a Cloudflare model that gives none) leaves a prompt no room.\n" +
+            "@mutates",
           args: [
             {
               name: "model",
@@ -51,14 +62,32 @@ export const table: ApiTable = {
             type: "DeploymentUpdateStatus | null, where DeploymentUpdateStatus = { availableSince?: Date; checkIntervalMinutes: number; checkedAt?: Date; checksEnabled: boolean; currentReleaseId: string; latestReleaseId?: string; minimumAgeHours: number; modified: boolean; modifiedWorkers: string[]; noticeSnoozeHours: number; notify: boolean; unfinishedWorkers: string[]; updateAvailable: boolean; updateUrl: string }",
           },
         },
+        "get-admin-audit-stats": {
+          method: "getAdminAuditStats",
+          doc:
+            "Counts from the admin audit log over the last `days` UTC days, today included (7 by\n" +
+            "default). Throws unless `days` is a whole number from 1 to MAX_ADMIN_AUDIT_STATS_DAYS.",
+          args: [
+            {
+              name: "options",
+              index: 0,
+              flag: "options",
+              encoding: "json",
+              shape: { kind: "ref", name: "AdminAuditStatsQuery" },
+              type: "AdminAuditStatsQuery = { days?: number; kind?: \"setting\" | \"workspace\" }",
+              doc: "",
+            },
+          ],
+          returns: {
+            kind: "value",
+            type: "AdminAuditStats = { byDay: { count: number; day: string }[]; contentReads: number; days: number; topAdmins: { admin: string; count: number }[]; topAdminsByContentReads: { admin: string; count: number }[]; topWorkspaces: { count: number; title: string; workspaceId: string }[]; topWorkspacesByContentReads: { count: number; title: string; workspaceId: string }[]; totalEvents: number }",
+          },
+        },
         "get-settings": {
           method: "getSettings",
           doc: "Read all admin-managed settings for the admin UI in one call.",
           args: [],
-          returns: {
-            kind: "value",
-            type: "AdminSettingsView = { accentColor: string; announcement: string; banner: BannerConfig; formats: AdminFormat[]; gatewayModels?: { defaultReasoning: \"high\" | \"low\" | \"max\" | \"medium\" | \"minimal\" | \"off\" | \"xhigh\" | null; models: AdminModelView[]; modelsDevSuggestions: boolean; providerSettings: AdminGatewayProvider[]; providers: AiModelProvider[]; userModelsEnabled: boolean }; instanceInstructions: string; resourceVendors: AdminResourceVendor[]; signupsEnabled: boolean; siteLogo?: AvatarImage; siteName: string; userSearchEnabled: boolean }",
-          },
+          returns: { kind: "value", type: "AdminSettingsView" },
         },
         "get-update-status": {
           method: "getUpdateStatus",
@@ -72,6 +101,43 @@ export const table: ApiTable = {
             type: "DeploymentUpdateStatus | null, where DeploymentUpdateStatus = { availableSince?: Date; checkIntervalMinutes: number; checkedAt?: Date; checksEnabled: boolean; currentReleaseId: string; latestReleaseId?: string; minimumAgeHours: number; modified: boolean; modifiedWorkers: string[]; noticeSnoozeHours: number; notify: boolean; unfinishedWorkers: string[]; updateAvailable: boolean; updateUrl: string }",
           },
         },
+        "inspect-workspace": {
+          method: "inspectWorkspace",
+          doc:
+            "Open a read-only view of a workspace to investigate it (see AdminWorkspaceView). The view runs\n" +
+            "at the lower of the level `options.access` asks for (\"metadata\" when absent) and the\n" +
+            "deployment's level (AdminSettingsView.adminWorkspaceAccess.effective). Asking for \"full\" where\n" +
+            "the deployment allows only \"metadata\" opens the view at \"metadata\", and its `describe` reports\n" +
+            "that. `reason` is required: it is recorded with the open and with every call made through the\n" +
+            "view, and is rejected when blank or, once trimmed, longer than MAX_ADMIN_ACCESS_REASON_LENGTH.\n" +
+            "The open is recorded as an AdminAccessRecord (\"inspectWorkspace\") before the view is returned,\n" +
+            "so an open whose record cannot be written is refused.\n" +
+            "\n" +
+            "Refused with a code from ADMIN_ACCESS_ERROR_CODES, checked in this order: `notAdmin` once the\n" +
+            "caller is no longer a deployment admin; `workspaceNotFound` for a malformed id; `accessOff`\n" +
+            "while the access level is \"off\", recorded in the deployment-wide log without the workspace\n" +
+            "being reached; `workspaceNotFound` for an id that names no workspace (never initialised or\n" +
+            "since deleted), which this neither creates nor claims; `viewExpired` should the view's\n" +
+            "lifetime run out before the workspace answers. Only `accessOff` refusals are recorded.\n" +
+            "\n" +
+            "Admin access is a deliberate exception to observer verification (see docs/observers.md): the\n" +
+            "admin is never verified against the workspace's connections nor registered as an observer, and\n" +
+            "the audit log is the compensating control.",
+          args: [
+            { name: "workspaceId", index: 0, encoding: "string", type: "string", doc: "" },
+            { name: "reason", index: 1, encoding: "string", type: "string", doc: "" },
+            {
+              name: "options",
+              index: 2,
+              flag: "options",
+              encoding: "json",
+              shape: { kind: "ref", name: "AdminInspectOptions" },
+              type: "AdminInspectOptions = { access?: AdminViewAccess; lifetimeSeconds?: number }",
+              doc: "",
+            },
+          ],
+          returns: { kind: "stub", node: "AdminWorkspaceView", nullable: false },
+        },
         "is-blueprint-featured": {
           method: "isBlueprintFeatured",
           doc:
@@ -80,12 +146,82 @@ export const table: ApiTable = {
           args: [{ name: "blueprintId", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "value", type: "boolean | null" },
         },
+        "list-admin-audit": {
+          method: "listAdminAudit",
+          doc:
+            "One page of the deployment-wide admin audit log, newest first: access to workspaces and\n" +
+            "changes to settings, filtered as `options` says. Rejects a `limit` that is not a whole number\n" +
+            "from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000 characters, and a malformed `cursor`.",
+          args: [
+            {
+              name: "options",
+              index: 0,
+              flag: "options",
+              encoding: "json",
+              shape: { kind: "ref", name: "AdminAuditQuery" },
+              type: "AdminAuditQuery = { admin?: string; cursor?: string; exposed?: AdminAccessExposure; kind?: \"setting\" | \"workspace\"; limit?: number; since?: Date; via?: AdminVia; workspace?: string }",
+              doc: "",
+            },
+          ],
+          returns: {
+            kind: "value",
+            type: "AdminAuditPage = { nextCursor?: string; records: AdminAuditRecord[] }",
+          },
+        },
+        "list-users": {
+          method: "listUsers",
+          doc:
+            "One page of the deployment's users, in id order: every account that has started a session\n" +
+            "since the directory began recording accounts. Unaffected by `set-user-search-enabled`. A page\n" +
+            "holds at most `limit` users and stops early, with a `nextCursor`, once their ids and names\n" +
+            "would pass a million characters: an id has no length limit of its own, so a count alone cannot\n" +
+            "bound a page. Rejects a `query` over 1000 characters or with a line break, and a `limit` that\n" +
+            "is not a whole number from 1 to ADMIN_LIST_MAX_LIMIT.",
+          args: [
+            {
+              name: "options",
+              index: 0,
+              flag: "options",
+              encoding: "json",
+              shape: { kind: "ref", name: "AdminUserQuery" },
+              type: "AdminUserQuery = { cursor?: string; limit?: number; query?: string }",
+              doc: "",
+            },
+          ],
+          returns: {
+            kind: "value",
+            type: "AdminUserPage = { nextCursor?: string; users: AdminUserRecord[] }",
+          },
+        },
+        "list-workspaces": {
+          method: "listWorkspaces",
+          doc:
+            "One page of the deployment's workspaces, in id order: every workspace opened since the\n" +
+            "directory began recording workspaces, deleted ones left out. A page stops early as\n" +
+            "`list-users`'s does, counting ids, titles and owners. Rejects what `list-users` rejects.",
+          args: [
+            {
+              name: "options",
+              index: 0,
+              flag: "options",
+              encoding: "json",
+              shape: { kind: "ref", name: "AdminWorkspaceQuery" },
+              type: "AdminWorkspaceQuery = { cursor?: string; limit?: number; owner?: string; query?: string }",
+              doc: "",
+            },
+          ],
+          returns: {
+            kind: "value",
+            type: "AdminWorkspacePage = { nextCursor?: string; workspaces: AdminWorkspaceRecord[] }",
+          },
+        },
         "promote-format": {
           method: "promoteFormat",
           doc:
             "Offer a blueprint as a standard format, appended last in menu order. Throws if the blueprint\n" +
             "doesn't exist. Promoting one that already is leaves its curation and menu position alone, so\n" +
-            "that retrying a promotion whose mirror write failed repairs it rather than being refused.",
+            "that retrying a promotion whose mirror write failed repairs it rather than being refused.\n" +
+            "@mutates",
           args: [{ name: "blueprintId", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -97,7 +233,8 @@ export const table: ApiTable = {
             "\n" +
             "Refused for a bundled blueprint (see `AdminFormat.bundled`), which the deployment installed\n" +
             "and will reinstall: `enabled: false` withdraws it without discarding the admin's overrides,\n" +
-            "hint and menu position.",
+            "hint and menu position.\n" +
+            "@mutates",
           args: [{ name: "blueprintId", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -111,7 +248,8 @@ export const table: ApiTable = {
             "the model resolve again if a model is later added under the same ID. A gadget model binding\n" +
             "minted for it carries its own provider and model, so while users may add their own models\n" +
             "(see setUserModelsEnabled) it runs once the model is removed, even if the model was disabled.\n" +
-            "To shut a model off, disable it instead.",
+            "To shut a model off, disable it instead.\n" +
+            "@mutates",
           args: [{ name: "modelId", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -119,15 +257,51 @@ export const table: ApiTable = {
           method: "setAccentColor",
           doc:
             "Set the deployment accent color (hex, e.g. \"#3b82f6\"). Pass \"\" to reset to the default theme.\n" +
-            "Rejects an invalid hex color.",
+            "Rejects an invalid hex color.\n" +
+            "@mutates",
           args: [{ name: "color", index: 0, encoding: "string", type: "string", doc: "" }],
+          returns: { kind: "value", type: "void" },
+        },
+        "set-admin-audit-retention-days": {
+          method: "setAdminAuditRetentionDays",
+          doc:
+            "Set how many days the admin audit log keeps a record, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS by\n" +
+            "default. A record older than that is no longer listed or counted, and is deleted as the log is\n" +
+            "next used; the copy kept in its workspace goes when that workspace is next inspected. Throws\n" +
+            "unless `days` is a whole number from the deployment's minimum\n" +
+            "(AdminSettingsView.adminAuditRetentionDays.min, set by its ADMIN_AUDIT_RETENTION_MIN_DAYS\n" +
+            "environment variable) to MAX_ADMIN_AUDIT_RETENTION_DAYS.\n" +
+            "@mutates",
+          args: [{ name: "days", index: 0, encoding: "number", type: "number", doc: "" }],
+          returns: { kind: "value", type: "void" },
+        },
+        "set-admin-workspace-access": {
+          method: "setAdminWorkspaceAccess",
+          doc:
+            "Set how much of a workspace `inspect-workspace` may show (see ADMIN_WORKSPACE_ACCESS_LEVELS),\n" +
+            "DEFAULT_ADMIN_WORKSPACE_ACCESS by default. Throws for a level above the deployment's maximum\n" +
+            "(AdminSettingsView.adminWorkspaceAccess.max), which only its ADMIN_WORKSPACE_ACCESS_MAX\n" +
+            "environment variable can raise. A view already minted runs at the lower of its own level and\n" +
+            "the new one from its next call once the setting reaches it, within about a minute.\n" +
+            "@mutates",
+          args: [
+            {
+              name: "access",
+              index: 0,
+              encoding: "string",
+              choices: ["full", "metadata", "off"],
+              type: "\"full\" | \"metadata\" | \"off\"",
+              doc: "",
+            },
+          ],
           returns: { kind: "value", type: "void" },
         },
         "set-announcement": {
           method: "setAnnouncement",
           doc:
             "Set the top-bar notice (centered text in the top navigation bar). Pass \"\" to clear. Rejects over\n" +
-            "MAX_ANNOUNCEMENT_LENGTH.",
+            "MAX_ANNOUNCEMENT_LENGTH.\n" +
+            "@mutates",
           args: [{ name: "text", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -135,7 +309,8 @@ export const table: ApiTable = {
           method: "setBanner",
           doc:
             "Set the full-width banner. Pass an empty text to hide it. Rejects over MAX_ANNOUNCEMENT_LENGTH or\n" +
-            "an invalid color.",
+            "an invalid color.\n" +
+            "@mutates",
           args: [
             { name: "text", index: 0, encoding: "string", type: "string", doc: "" },
             {
@@ -151,7 +326,9 @@ export const table: ApiTable = {
         },
         "set-blueprint-featured": {
           method: "setBlueprintFeatured",
-          doc: "Mark or unmark a blueprint as featured on the deployment.",
+          doc:
+            "Mark or unmark a blueprint as featured on the deployment.\n" +
+            "@mutates",
           args: [
             { name: "blueprintId", index: 0, encoding: "string", type: "string", doc: "" },
             { name: "featured", index: 1, encoding: "boolean", type: "boolean", doc: "" },
@@ -162,7 +339,8 @@ export const table: ApiTable = {
           method: "setDefaultReasoning",
           doc:
             "Set the reasoning level of every gateway model that has none of its own, or null for each\n" +
-            "model's built-in behaviour. It never applies to a model a user added.",
+            "model's built-in behaviour. It never applies to a model a user added.\n" +
+            "@mutates",
           args: [
             {
               name: "level",
@@ -178,7 +356,9 @@ export const table: ApiTable = {
         },
         "set-format-order": {
           method: "setFormatOrder",
-          doc: "Reorder the menu. `blueprintIds` must be a permutation of the currently promoted ids.",
+          doc:
+            "Reorder the menu. `blueprintIds` must be a permutation of the currently promoted ids.\n" +
+            "@mutates",
           args: [
             {
               name: "blueprintIds",
@@ -198,7 +378,8 @@ export const table: ApiTable = {
             "full three-state (disabled / optional / enabled); for an ordinary gatekeeper only 'disabled' /\n" +
             "'enabled' are valid ('optional' is rejected). Soft enforcement: it doesn't revoke a capability a\n" +
             "gadget already holds, and 'disabled' leaves an ambient account's data dormant rather than deleting\n" +
-            "it.",
+            "it.\n" +
+            "@mutates",
           args: [
             { name: "vendorId", index: 0, encoding: "string", type: "string", doc: "" },
             {
@@ -220,7 +401,8 @@ export const table: ApiTable = {
             "Throws if `modelId` is not one of the deployment's gateway models.\n" +
             "\n" +
             "'disabled' revokes nothing that is stored: the chats, spawners, preferences and gadget model\n" +
-            "bindings that name the model keep naming it, and stop resolving for as long as it is disabled.",
+            "bindings that name the model keep naming it, and stop resolving for as long as it is disabled.\n" +
+            "@mutates",
           args: [
             { name: "modelId", index: 0, encoding: "string", type: "string", doc: "" },
             {
@@ -244,7 +426,8 @@ export const table: ApiTable = {
             "AdminModelView.maxCompactionInputBudget).\n" +
             "\n" +
             "The reasoning level may be one the model lacks, since it is fitted to the model when a\n" +
-            "request is made (see ReasoningLevel).",
+            "request is made (see ReasoningLevel).\n" +
+            "@mutates",
           args: [
             { name: "modelId", index: 0, encoding: "string", type: "string", doc: "" },
             {
@@ -270,7 +453,8 @@ export const table: ApiTable = {
             "Off takes the provider's models out of the deployment's and deletes nothing: their modes and\n" +
             "settings, and the models added under the provider, are kept for when it is back on. It stops\n" +
             "neither a model a user already added under the provider nor a gadget model binding already\n" +
-            "minted for one of its models, which setUserModelsEnabled(false) does.",
+            "minted for one of its models, which setUserModelsEnabled(false) does.\n" +
+            "@mutates",
           args: [
             {
               name: "provider",
@@ -286,7 +470,10 @@ export const table: ApiTable = {
         },
         "set-instance-instructions": {
           method: "setInstanceInstructions",
-          doc: "Replace the agent system-prompt instructions. Pass \"\" to clear. Rejects over MAX_INSTANCE_INSTRUCTIONS_LENGTH.",
+          doc:
+            "Replace the agent system-prompt instructions. Pass \"\" to clear. Rejects over\n" +
+            "MAX_INSTANCE_INSTRUCTIONS_LENGTH.\n" +
+            "@mutates",
           args: [{ name: "text", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -299,7 +486,8 @@ export const table: ApiTable = {
             "The admin's browser reads the setting and, with it on, downloads models.dev's public model\n" +
             "list while an admin adds a model, to fill in the add-model form. It changes nothing the server\n" +
             "does: the server never contacts models.dev, and `add-gateway-model` validates a suggested model\n" +
-            "like any other.",
+            "like any other.\n" +
+            "@mutates",
           args: [{ name: "enabled", index: 0, encoding: "boolean", type: "boolean", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -308,7 +496,8 @@ export const table: ApiTable = {
           doc:
             "Enable or disable a single gatekeeper resource type, keyed by vendor id + resource urlPattern.\n" +
             "Soft enforcement: disabling hides the resource from the connect UI, the resource picker, and the\n" +
-            "agent; it doesn't revoke a capability a gadget already holds.",
+            "agent; it doesn't revoke a capability a gadget already holds.\n" +
+            "@mutates",
           args: [
             { name: "vendorId", index: 0, encoding: "string", type: "string", doc: "" },
             { name: "urlPattern", index: 1, encoding: "string", type: "string", doc: "" },
@@ -318,7 +507,10 @@ export const table: ApiTable = {
         },
         "set-signups-enabled": {
           method: "setSignupsEnabled",
-          doc: "Enable or disable new account signups. Existing users can still log in while signups are closed.",
+          doc:
+            "Enable or disable new account signups. Existing users can still log in while signups are\n" +
+            "closed.\n" +
+            "@mutates",
           args: [{ name: "enabled", index: 0, encoding: "boolean", type: "boolean", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -327,7 +519,8 @@ export const table: ApiTable = {
           doc:
             "Set the deployment logo from browser-rasterized PNG bytes and return its canonical public\n" +
             "image, or undefined after reset. Pass null to restore the default Cloudflare OS mark. The\n" +
-            "caller must supply decodable PNG data; the server enforces its header, size, and dimensions.",
+            "caller must supply decodable PNG data; the server enforces its header, size, and dimensions.\n" +
+            "@mutates",
           args: [
             { name: "data", index: 0, encoding: "bytes", nullable: true, type: "Uint8Array | null", doc: "" },
           ],
@@ -337,7 +530,8 @@ export const table: ApiTable = {
           method: "setSiteName",
           doc:
             "Set the site name shown next to the top-bar logo. Pass \"\" to reset to DEFAULT_SITE_NAME.\n" +
-            "Rejects over MAX_SITE_NAME_LENGTH.",
+            "Rejects over MAX_SITE_NAME_LENGTH.\n" +
+            "@mutates",
           args: [{ name: "name", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -348,7 +542,8 @@ export const table: ApiTable = {
             "DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES by default. A failed check is retried after the interval\n" +
             "or 15 minutes, whichever is shorter. The deployment asks only while an admin is using it\n" +
             "(`get-update-status` makes the check when one is due), never on a schedule of its own. Throws\n" +
-            "unless `minutes` is a whole number from 1 to MAX_UPDATE_CHECK_INTERVAL_MINUTES.",
+            "unless `minutes` is a whole number from 1 to MAX_UPDATE_CHECK_INTERVAL_MINUTES.\n" +
+            "@mutates",
           args: [{ name: "minutes", index: 0, encoding: "number", type: "number", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -357,7 +552,8 @@ export const table: ApiTable = {
           doc:
             "Set whether the deployment checks for updates by itself. On by default. When off,\n" +
             "`get-update-status` makes no outbound call and admins are never notified; `check-for-updates`\n" +
-            "still asks.",
+            "still asks.\n" +
+            "@mutates",
           args: [{ name: "enabled", index: 0, encoding: "boolean", type: "boolean", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -367,7 +563,8 @@ export const table: ApiTable = {
             "Set how many hours a newer release must have been available before admins are notified of\n" +
             "it, DEFAULT_UPDATE_MINIMUM_AGE_HOURS by default. It delays the notice only: an update always\n" +
             "installs the newest release. 0 notifies as soon as a check reports an update. Throws unless\n" +
-            "`hours` is a whole number from 0 to MAX_UPDATE_HOURS.",
+            "`hours` is a whole number from 0 to MAX_UPDATE_HOURS.\n" +
+            "@mutates",
           args: [{ name: "hours", index: 0, encoding: "number", type: "number", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -376,7 +573,8 @@ export const table: ApiTable = {
           doc:
             "Set how many hours a dismissed update notice stays hidden in the browser that dismissed it,\n" +
             "DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS by default. 0 means a closed notice comes back on the next\n" +
-            "visit to Home. Throws unless `hours` is a whole number from 0 to MAX_UPDATE_HOURS.",
+            "visit to Home. Throws unless `hours` is a whole number from 0 to MAX_UPDATE_HOURS.\n" +
+            "@mutates",
           args: [{ name: "hours", index: 0, encoding: "number", type: "number", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -389,7 +587,8 @@ export const table: ApiTable = {
             "Off makes the deployment's models the only ones: a user can't add or edit a model, and the\n" +
             "models users added are neither listed nor resolved. A gadget model binding stops at its next\n" +
             "call unless a gateway model has its provider and model. Nothing stored is deleted, so the\n" +
-            "models users added work again once this is back on.",
+            "models users added work again once this is back on.\n" +
+            "@mutates",
           args: [{ name: "enabled", index: 0, encoding: "boolean", type: "boolean", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -397,7 +596,8 @@ export const table: ApiTable = {
           method: "setUserSearchEnabled",
           doc:
             "Enable or disable user directory search. The directory itself is maintained\n" +
-            "either way, and this switch just controls user access.",
+            "either way, and this switch just controls user access.\n" +
+            "@mutates",
           args: [{ name: "enabled", index: 0, encoding: "boolean", type: "boolean", doc: "" }],
           returns: { kind: "value", type: "void" },
         },
@@ -415,7 +615,8 @@ export const table: ApiTable = {
             "result (see GatewayModelTest).\n" +
             "\n" +
             "A pass says that the model answered that one request. It costs more than\n" +
-            "`test-gateway-provider`, whose quick request is capped at a few tokens.",
+            "`test-gateway-provider`, whose quick request is capped at a few tokens.\n" +
+            "@confirmation Sends a request of up to 2,048 response tokens through the deployment's AI Gateway, which its provider bills.",
           args: [{ name: "modelId", index: 0, encoding: "string", type: "string", doc: "" }],
           returns: {
             kind: "value",
@@ -434,7 +635,8 @@ export const table: ApiTable = {
             "A pass says that one model answered once. A 401 or 403 does not tell a provider key the\n" +
             "gateway lacks from a CF_AI_GATEWAY_API_TOKEN that may not run models. The request is a\n" +
             "quick one that takes none of a model's settings: `test-gateway-model` sends a model the\n" +
-            "request its chats would.",
+            "request its chats would.\n" +
+            "@confirmation Sends a request through the deployment's AI Gateway, which its provider bills.",
           args: [
             {
               name: "provider",
@@ -463,7 +665,8 @@ export const table: ApiTable = {
             "refuse, for the same reason; a request that fails is a result (see GatewayModelLevelTest).\n" +
             "\n" +
             "A pass says that the model answered that one request. A model that lists every level is sent\n" +
-            "eight requests, each of which may use the whole response cap.",
+            "eight requests, each of which may use the whole response cap.\n" +
+            "@confirmation Sends up to eight requests of up to 2,048 response tokens each through the deployment's AI Gateway, which their provider bills.",
           args: [
             {
               name: "model",
@@ -483,7 +686,8 @@ export const table: ApiTable = {
           method: "updateFormat",
           doc:
             "Update one promoted format. Only the provided fields change. `agentHint: \"\"` clears the hint;\n" +
-            "an `overrides` field set to null reverts that field to the blueprint's own declaration.",
+            "an `overrides` field set to null reverts that field to the blueprint's own declaration.\n" +
+            "@mutates",
           args: [
             { name: "blueprintId", index: 0, encoding: "string", type: "string", doc: "" },
             {
@@ -496,6 +700,154 @@ export const table: ApiTable = {
             },
           ],
           returns: { kind: "value", type: "void" },
+        },
+      },
+    },
+    AdminWorkspaceView: {
+      doc:
+        "A deployment admin's read-only view of one workspace, minted by `inspect-workspace` (on AdminApi).\n" +
+        "Nothing it does changes the workspace or is seen by its members: it joins no presence and no\n" +
+        "session count, and starts no agent or connection.\n" +
+        "\n" +
+        "Each call first passes three checks, refused unrecorded with a code from\n" +
+        "ADMIN_ACCESS_ERROR_CODES: the view has not expired (`viewExpired`), its admin is still a\n" +
+        "deployment admin (`notAdmin`), and the workspace still exists (`workspaceNotFound`). It then\n" +
+        "runs at an access level: the view's own, fixed when it was minted at the lower of the level its\n" +
+        "open asked for (AdminInspectOptions.access) and the deployment's, then lowered to the\n" +
+        "deployment's current setting. So lowering the setting reaches live views (within about a minute)\n" +
+        "and raising it does not. A call that level refuses is recorded and refused, having read nothing:\n" +
+        "`accessOff` once the setting is \"off\", `contentWithheld` for `get-chat` or `read-file` below\n" +
+        "\"full\". Any other call reads its answer, never through a connection. It is then recorded as an\n" +
+        "AdminAccessRecord, with what that answer exposed, in the workspace and then in the\n" +
+        "deployment-wide log. Only then is the call answered: nothing it read leaves the server before\n" +
+        "both records exist, and a call whose record cannot be written fails and returns nothing. The\n" +
+        "checks run again once the call has read the deployment's setting, and again once it has read its\n" +
+        "answer, just before it writes. So a call that expiry, a demotion or the workspace's deletion\n" +
+        "overtakes while it reads writes nothing. A call whose read fails is recorded as an attempt that\n" +
+        "exposed nothing, and fails with the read's error.\n" +
+        "\n" +
+        "A workspace restart (a revocation, a deletion, a redeploy) ends the view along with every other\n" +
+        "session on the workspace; inspect again.",
+      commands: {
+        describe: {
+          method: "describe",
+          doc:
+            "The workspace's metadata, owner, workpieces and collaborators, with the level this call ran\n" +
+            "at and the view's expiry.",
+          args: [],
+          returns: {
+            kind: "value",
+            type: "AdminWorkspaceDescription = { access: AdminViewAccess; collaborators: CollaboratorInfo[]; containsRestrictedData?: boolean; defaultGadgetId?: number; deploymentAdminAccess?: \"off\" | \"on\"; expiresAt: Date; id: string; owner: AiChatAuthorInfo; ownerInvitesOnly?: boolean; title: string; totalCost?: number; workpieces: WorkpieceSummary[] }",
+          },
+        },
+        "get-chat": {
+          method: "getChat",
+          doc:
+            "One page of a chat's messages, as `get-chat-history` (on Overseer) pages them. Content: refused below\n" +
+            "\"full\".",
+          args: [
+            { name: "chatId", index: 0, encoding: "number", type: "number", doc: "" },
+            {
+              name: "beforeSequence",
+              index: 1,
+              flag: "before-sequence",
+              encoding: "number",
+              type: "number",
+              doc: "",
+            },
+          ],
+          returns: {
+            kind: "value",
+            type: "AiChatHistoryPage = { compacted?: { proposedChange?: CodeChange; summary: string; to: number }; messages: AiChatMessage[] }",
+          },
+        },
+        "get-diagnostics": {
+          method: "getDiagnostics",
+          doc: "The workspace's operational state, with its most recent admin access records.",
+          args: [],
+          returns: {
+            kind: "value",
+            type: "AdminWorkspaceDiagnostics = { activeAgentChatIds: number[]; chats: number; hooks: { enabled: number; total: number }; instanceStartedAt: Date; nextAlarm?: Date; observers: number; ownerRegistrationPending: boolean; pendingActions: number; pendingAgentCalls: number; recentAdminAccess: AdminAccessRecord[]; sessions: { build: number; owner: number; use: number }; storageVersion: number }",
+          },
+        },
+        "list-actions": {
+          method: "listActions",
+          doc:
+            "One page of the workspace's action log, as `list-actions` (on Overseer) pages it. Admin access is\n" +
+            "never in it (see AdminAccessRecord). Below \"full\", every action, observation and hook entry has\n" +
+            "an empty `description.description` and no `description.fields`: titles, states, resources and\n" +
+            "times remain.",
+          args: [
+            {
+              name: "options",
+              index: 0,
+              flag: "options",
+              encoding: "json",
+              shape: {
+                kind: "object",
+                properties: {
+                  beforeId: { kind: "union", branches: [{ kind: "number" }, { kind: "undefined" }] },
+                  filter: {
+                    kind: "union",
+                    branches: [{ kind: "ref", name: "ActionHistoryFilter" }, { kind: "undefined" }],
+                  },
+                },
+              },
+              type: "{ beforeId?: number; filter?: ActionHistoryFilter }",
+              doc: "",
+            },
+          ],
+          returns: {
+            kind: "value",
+            type: "ActionHistoryPage = { entries: ActionLogEntry[]; nextBeforeId?: number }",
+          },
+        },
+        "list-chats": {
+          method: "listChats",
+          doc:
+            "The workspace's chats, newest first, as `list-chats` (on Overseer) lists them; below \"full\", without\n" +
+            "`queuedSteers`, which hold message text.",
+          args: [],
+          returns: {
+            kind: "value",
+            type: "AiChatMetadata[], where AiChatMetadata = { activeAgent?: AiChatAuthorInfo; cacheReadTokens?: number; cacheWriteTokens?: number; codeBase?: ChatCodeBase; compactedTo?: number; id: number; lastActive: Date; promptTokens?: number; proposedChangeWorkpieces?: number[]; queuedSteers?: { author: AiChatAuthorInfo; text: string }[]; spawnerName?: string; started: Date; title: string; totalCost?: number; totalTokens?: number }",
+          },
+        },
+        "list-files": {
+          method: "listFiles",
+          doc:
+            "The tree of a gadget's committed head, as `list-tree` (on Overseer) gives it, read only from the\n" +
+            "objects the workspace stores: it never pulls through a connection, and throws when an object\n" +
+            "is missing. Only a permanent gadget has a head to read: throws for a pending gadget, a\n" +
+            "worktree, or an id that names no gadget.",
+          args: [{ name: "gadgetId", index: 0, encoding: "number", type: "number", doc: "" }],
+          returns: {
+            kind: "value",
+            type: "TreeNode[], where TreeNode = { children: TreeNode[]; kind: \"dir\"; name: string } | { kind: \"executable\" | \"file\" | \"submodule\" | \"symlink\"; name: string }",
+          },
+        },
+        "list-gatekeepers": {
+          method: "listGatekeepers",
+          doc: "The workspace's connections, oldest first, with their bindings and hooks.",
+          args: [],
+          returns: {
+            kind: "value",
+            type: "AdminGatekeeperInfo[], where AdminGatekeeperInfo = { bindings: { chatId?: number; gadgetId: number; name: string }[]; creationSpec?: GatekeeperCreationSpec; hooks: BoundHookInfo[]; id: number; resourceTitle?: string; resourceUrl?: string; vendorId?: string }",
+          },
+        },
+        "read-file": {
+          method: "readFile",
+          doc:
+            "One file of a gadget's committed head, as `read-files-at-commit` (on Overseer) reports it, read as\n" +
+            "`list-files` reads and refused as it is. Content: refused below \"full\".",
+          args: [
+            { name: "gadgetId", index: 0, encoding: "number", type: "number", doc: "" },
+            { name: "path", index: 1, encoding: "string", type: "string", doc: "" },
+          ],
+          returns: {
+            kind: "value",
+            type: "FileAtCommit = { kind: \"absent\" } | { kind: \"text\"; text: string } | { kind: \"unreadable\"; message: string }",
+          },
         },
       },
     },
@@ -701,11 +1053,24 @@ export const table: ApiTable = {
         "get-admin-api": {
           method: "getAdminApi",
           doc:
-            "Returns a capability for managing deployment-wide admin settings, or null when the caller is not\n" +
-            "an admin. The access check happens once here, so the returned stub's methods need no per-call\n" +
-            "checks. (Authentication config — sign-in providers, password login — is intentionally not\n" +
-            "managed here; it stays env-var driven.)",
-          args: [],
+            "Returns a capability for managing and investigating the deployment as an admin, or null when\n" +
+            "the caller is not one. The access check happens here, once, for every AdminApi method but\n" +
+            "workspace inspection: `inspect-workspace` (on AdminApi) and each call on the view it mints check\n" +
+            "again (see AdminWorkspaceView). `options.via` labels every audit record the capability makes,\n" +
+            "\"api\" or \"cli\" as the client states it.\n" +
+            "(Authentication config — sign-in providers, password login — is intentionally not managed\n" +
+            "here; it stays env-var driven.)",
+          args: [
+            {
+              name: "options",
+              index: 0,
+              flag: "options",
+              encoding: "json",
+              shape: { kind: "ref", name: "AdminApiOptions" },
+              type: "AdminApiOptions = { via?: AdminClientVia }",
+              doc: "",
+            },
+          ],
           returns: { kind: "stub", node: "AdminApi", nullable: true },
         },
         "get-ai-config": {
@@ -868,7 +1233,7 @@ export const table: ApiTable = {
           args: [],
           returns: {
             kind: "value",
-            type: "GadgetMetadataWithTimestamps[], where GadgetMetadataWithTimestamps = { containsRestrictedData?: boolean; created: Date; defaultGadgetId?: number; id: string; lastActive: Date; notificationMute?: NotificationMute; owner?: AiChatAuthorInfo; ownerInvitesOnly?: boolean; pinned?: boolean; role?: CollaboratorRole; title: string; totalCost?: number }",
+            type: "GadgetMetadataWithTimestamps[], where GadgetMetadataWithTimestamps = { containsRestrictedData?: boolean; created: Date; defaultGadgetId?: number; deploymentAdminAccess?: \"off\" | \"on\"; id: string; lastActive: Date; notificationMute?: NotificationMute; owner?: AiChatAuthorInfo; ownerInvitesOnly?: boolean; pinned?: boolean; role?: CollaboratorRole; title: string; totalCost?: number }",
           },
         },
         "list-gatekeeper-apps": {
@@ -1931,7 +2296,7 @@ export const table: ApiTable = {
           args: [],
           returns: {
             kind: "value",
-            type: "GadgetMetadata = { containsRestrictedData?: boolean; defaultGadgetId?: number; id: string; notificationMute?: NotificationMute; owner?: AiChatAuthorInfo; ownerInvitesOnly?: boolean; pinned?: boolean; role?: CollaboratorRole; title: string; totalCost?: number }",
+            type: "GadgetMetadata = { containsRestrictedData?: boolean; defaultGadgetId?: number; deploymentAdminAccess?: \"off\" | \"on\"; id: string; notificationMute?: NotificationMute; owner?: AiChatAuthorInfo; ownerInvitesOnly?: boolean; pinned?: boolean; role?: CollaboratorRole; title: string; totalCost?: number }",
           },
         },
         "list-actions": {
@@ -2770,6 +3135,19 @@ export const table: ApiTable = {
           ],
           returns: { kind: "subscription" },
         },
+        "turn-off-deployment-admin-access": {
+          method: "turnOffDeploymentAdminAccess",
+          doc:
+            "Turn off deployment admin access in this workspace (GadgetMetadata.deploymentAdminAccess). Every\n" +
+            "pending deployment admin action is rejected, requests to turn access on included, and approved\n" +
+            "calls not yet made are dropped; a change already being made when this is called completes. From now\n" +
+            "on the agent's calls through the instance admin Gatekeeper ask to turn access on, which takes the\n" +
+            "owner's approval again. If access was on, it reads \"off\" from now on and the workspace stays its\n" +
+            "owner's alone, restricted and closed to external messages; if it never was, nothing else changes.\n" +
+            "Only the owner may call it, whether or not they are still a deployment admin.",
+          args: [],
+          returns: { kind: "value", type: "void" },
+        },
         "update-blueprint": {
           method: "updateBlueprint",
           doc:
@@ -2956,7 +3334,7 @@ export const table: ApiTable = {
             "@deprecated Fires after the subscription has caught up to the current time. However, this is\n" +
             "only a useful signal when a subscription is being used to enumerate past actions using a\n" +
             "distant-past `startAfter`. This is not the correct way to use `subscribe-to-actions` (on Overseer); use\n" +
-            "`list-actions` (on Overseer) instead.",
+            "`list-actions` instead.",
         },
       ],
     },
@@ -3103,6 +3481,57 @@ export const table: ApiTable = {
       ],
     },
     ActionKind: { kind: "object", properties: { label: { kind: "string" }, tag: { kind: "string" } } },
+    AdminAccessExposure: {
+      kind: "union",
+      branches: [{ kind: "literal", value: "content" }, { kind: "literal", value: "metadata" }],
+    },
+    AdminApiOptions: {
+      kind: "object",
+      properties: {
+        via: { kind: "union", branches: [{ kind: "ref", name: "AdminClientVia" }, { kind: "undefined" }] },
+      },
+    },
+    AdminAuditQuery: {
+      kind: "object",
+      properties: {
+        admin: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
+        cursor: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
+        exposed: {
+          kind: "union",
+          branches: [{ kind: "ref", name: "AdminAccessExposure" }, { kind: "undefined" }],
+        },
+        kind: {
+          kind: "union",
+          branches: [
+            { kind: "literal", value: "setting" },
+            { kind: "literal", value: "workspace" },
+            { kind: "undefined" },
+          ],
+        },
+        limit: { kind: "union", branches: [{ kind: "number" }, { kind: "undefined" }] },
+        since: { kind: "union", branches: [{ kind: "date" }, { kind: "undefined" }] },
+        via: { kind: "union", branches: [{ kind: "ref", name: "AdminVia" }, { kind: "undefined" }] },
+        workspace: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
+      },
+    },
+    AdminAuditStatsQuery: {
+      kind: "object",
+      properties: {
+        days: { kind: "union", branches: [{ kind: "number" }, { kind: "undefined" }] },
+        kind: {
+          kind: "union",
+          branches: [
+            { kind: "literal", value: "setting" },
+            { kind: "literal", value: "workspace" },
+            { kind: "undefined" },
+          ],
+        },
+      },
+    },
+    AdminClientVia: {
+      kind: "union",
+      branches: [{ kind: "literal", value: "api" }, { kind: "literal", value: "cli" }],
+    },
     AdminFormatPatch: {
       kind: "object",
       properties: {
@@ -3145,6 +3574,42 @@ export const table: ApiTable = {
             { kind: "undefined" },
           ],
         },
+      },
+    },
+    AdminInspectOptions: {
+      kind: "object",
+      properties: {
+        access: { kind: "union", branches: [{ kind: "ref", name: "AdminViewAccess" }, { kind: "undefined" }] },
+        lifetimeSeconds: { kind: "union", branches: [{ kind: "number" }, { kind: "undefined" }] },
+      },
+    },
+    AdminUserQuery: {
+      kind: "object",
+      properties: {
+        cursor: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
+        limit: { kind: "union", branches: [{ kind: "number" }, { kind: "undefined" }] },
+        query: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
+      },
+    },
+    AdminVia: {
+      kind: "union",
+      branches: [
+        { kind: "literal", value: "api" },
+        { kind: "literal", value: "cli" },
+        { kind: "literal", value: "gatekeeper" },
+      ],
+    },
+    AdminViewAccess: {
+      kind: "union",
+      branches: [{ kind: "literal", value: "full" }, { kind: "literal", value: "metadata" }],
+    },
+    AdminWorkspaceQuery: {
+      kind: "object",
+      properties: {
+        cursor: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
+        limit: { kind: "union", branches: [{ kind: "number" }, { kind: "undefined" }] },
+        owner: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
+        query: { kind: "union", branches: [{ kind: "string" }, { kind: "undefined" }] },
       },
     },
     AgentSpawnerConfig: {
