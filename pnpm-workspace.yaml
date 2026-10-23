@@ -30,7 +30,7 @@ catalog:
   typescript: 7.0.2
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
-  vite: 7.3.6
+  vite: 7.3.7
   vite-plus: ^1.2.0
   vitest: ^5.0.5
   # Exact: in lockstep with the miniflare entry above. Wrangler pins its own miniflare, so a
