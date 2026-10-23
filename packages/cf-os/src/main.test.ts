@@ -92,8 +92,8 @@ test("prints each command's help on stdout, anywhere", async (t) => {
 
 test("outside a project, only init and update run", async (t) => {
   const cwd = tempDir(t);
-  // `api --help` too: its help is the project's generated table, which there is none of here.
-  for (const argv of [["import"], ["access"], ["secrets"], ["check"], ["deploy"], ["install"], ["api"], ["api", "--help"]]) {
+  // The demo build runs `api` anywhere (`--url` names the instance), so it is not among them.
+  for (const argv of [["import"], ["access"], ["secrets"], ["check"], ["deploy"], ["install"]]) {
     const { code, log, stdout } = await run(t, argv, { cwd });
     assert.equal(code, 1, argv.join(" "));
     assert.match(log, /Run `cf-os init <dir>` to create one/, argv.join(" "));
@@ -352,9 +352,9 @@ test("the packed path never reaches @gadgets/scripts, or api's modules and packa
   assert.deepEqual([...files].map((file) => relative(SRC, file).replaceAll("\\", "/")).filter((file) => file.startsWith("api/")), []);
   assert.deepEqual([...packages].filter((name) => ["capnweb", "hash-wasm"].includes(name)), []);
   assert.deepEqual([...packages].filter((name) => !name.startsWith("node:")), ["@clack/prompts"]);
-  // What a global install gets is exactly that: everything else is the project copy's, from its own install.
+  // The demo build also carries what `api` runs on, so a global install can call an instance.
   const manifest = JSON.parse(readFileSync(join(SRC, "..", "package.json"), "utf8"));
-  assert.deepEqual(Object.keys(manifest.dependencies), ["@clack/prompts"]);
+  assert.deepEqual(Object.keys(manifest.dependencies), ["@clack/prompts", "capnweb", "hash-wasm", "jsonc-parser"]);
 });
 
 test("api's modules never reach @gadgets/*, and import nothing from it even for types", () => {

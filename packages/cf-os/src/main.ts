@@ -184,6 +184,8 @@ const COMMANDS: Record<string, CommandSpec> = {
     positionals: 0,
     failure: "API call failed.",
     rawArgs: true,
+    // Outside a project there is no deployment file to read the origin from, so `--url` names it.
+    anywhere: true,
     load: () => import("./commands/api.ts"),
   },
   install: {
