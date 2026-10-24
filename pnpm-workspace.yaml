@@ -24,11 +24,9 @@ catalog:
   capnweb-validate: 0.3.0
   # Exact: a prerelease, kept in step with the Wrangler/workerd stack the test pool runs on.
   miniflare: 5.20261001.0-alpha
-  # The argon2id implementation the workshop frontend hashes passwords with; `cf-os api`'s password
-  # sign-in has to produce the same bytes. Follows upstream's workshop-frontend.
-  hash-wasm: ^4.12.0
   # Exact: TypeScript 7 (tsgo). The submodule's tsconfig sets `singleThreaded`, which TS 5.9
-  # rejects outright, so every package extending it has to be on 7.x.
+  # rejects outright, so every package extending it has to be on 7.x. Nothing here uses the JS
+  # compiler API, so the submodule's `typescript6` alias is not needed.
   typescript: 7.0.2
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).

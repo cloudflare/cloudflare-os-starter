@@ -10,8 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  # The checks AGENTS.md asks for before pushing. `pnpm lint` is lint, then the type-check and build,
-  # then `api:check`, which fails when `cf-os api`'s generated files do not match the pinned upstream.
+  # The checks AGENTS.md asks for before pushing. `pnpm lint` is lint, then the type-check and build.
   check:
     name: Lint and test
     runs-on: ubuntu-latest
@@ -21,7 +20,7 @@ jobs:
       group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
-      # The build and `api:check` read the pinned `cloudflare-os` submodule.
+      # The build and the tests read the pinned `cloudflare-os` submodule.
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
         with:

@@ -1,7 +1,9 @@
 // Finding the project a command acts on, from wherever it was run, and handing a command to that
 // project's own copy of the CLI.
 
+import type { ChildProcess } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
+import { constants } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 /**
@@ -39,29 +41,44 @@ export function localEntry(root: string): string {
 /** Set on a delegated child, so it never delegates again. */
 export const DELEGATION_SENTINEL = "CFOS_DELEGATED";
 
-/** The slice of `spawnSync` delegation uses. */
+/** The slice of `spawn` delegation uses. */
 export type SpawnDelegate = (
   command: string,
   args: string[],
   options: { stdio: "inherit"; env: NodeJS.ProcessEnv; cwd: string },
-) => { status: number | null; signal?: NodeJS.Signals | null; error?: Error };
+) => Pick<ChildProcess, "once" | "kill">;
 
 /**
  * Runs `node <entry> <argv>` in `cwd` with the terminal handed over, resolving to its exit code.
  * The dispatcher uses it to reach the project's own copy; scaffolding, to start the new project's
  * `cf-os init`.
  */
-export function delegate(
+export async function delegate(
   entry: string,
   argv: string[],
   { cwd, env, spawn }: { cwd: string; env: NodeJS.ProcessEnv; spawn: SpawnDelegate },
-): number {
-  const result = spawn(process.execPath, [entry, ...argv], {
+): Promise<number> {
+  const child = spawn(process.execPath, [entry, ...argv], {
     stdio: "inherit",
     cwd,
     env: { ...env, [DELEGATION_SENTINEL]: "1" },
   });
-  if (result.error) throw result.error;
-  if (result.signal === "SIGINT") return 130;
-  return result.status ?? 1;
+  // Kept alive until the child exits, so this process reports its exit code, and the child decides
+  // how to stop (a subscription drains, then 130). Both signals are passed on, so one sent to this
+  // process alone reaches the child; Ctrl-C, sent to both, then arrives twice, which stops it once
+  // all the same.
+  const forward = (signal: NodeJS.Signals) => {
+    child.kill(signal);
+  };
+  process.on("SIGINT", forward);
+  process.on("SIGTERM", forward);
+  try {
+    return await new Promise<number>((done, failed) => {
+      child.once("error", failed);
+      child.once("exit", (code, signal) => done(code ?? (signal ? 128 + constants.signals[signal] : 1)));
+    });
+  } finally {
+    process.off("SIGINT", forward);
+    process.off("SIGTERM", forward);
+  }
 }

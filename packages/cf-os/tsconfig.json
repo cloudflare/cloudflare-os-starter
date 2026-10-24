@@ -19,5 +19,5 @@
     // job.
     "checkJs": false
   },
-  "include": ["src/**/*.ts", "generator/**/*.ts", "vite.config.ts"]
+  "include": ["src/**/*.ts", "vite.config.ts"]
 }

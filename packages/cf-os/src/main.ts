@@ -12,12 +12,11 @@
 //
 // Commands load lazily. `install` has to work before the submodule is checked out, and the
 // `@gadgets/scripts` modules other commands import only resolve once it is -- so nothing imported
-// statically here, or by `commands/scaffold.ts` or `commands/update.ts`, may reach them. Nor may
-// it reach `api`'s modules (`src/api`), whose packages (capnweb, hash-wasm) are development
-// dependencies a published copy lacks, nor the generator's (`@gadgets/api-schema`). `main.test.ts`
-// checks both.
+// statically here, or by `commands/scaffold.ts` or `commands/update.ts`, may reach them.
+// `main.test.ts` checks that. `api` runs the pinned cloudflare-os's own CLI as a child process
+// (`commands/api.ts`), importing nothing of it.
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,8 +67,8 @@ interface CommandSpec {
   anywhere?: true;
   /**
    * True when the command parses its own arguments, `--help` included: `api`, whose commands and
-   * flags are its generated table's. Only the global `--config`, `--account` and `--profile` are
-   * taken out; every other token after the command's name reaches it as a positional, verbatim.
+   * flags are the pinned cloudflare-os CLI's. Only the global `--config`, `--account` and `--profile`
+   * are taken out; every other token after the command's name reaches it as a positional, verbatim.
    * Its usage errors exit {@link USAGE_EXIT}, so a caller can tell "nothing was sent, fix the
    * command" from a failure of the call itself.
    */
@@ -175,14 +174,14 @@ const COMMANDS: Record<string, CommandSpec> = {
     load: () => import("./commands/update.ts"),
   },
   api: {
-    summary: "call a running instance's API, with the commands generated from the pinned cloudflare-os " +
-      "(`cf-os api search \"<task>\"` finds one)",
+    summary: "call a running instance's API with the pinned cloudflare-os's CLI, by default the deployment's " +
+      "public origin (`cf-os api search \"<task>\"` finds a command, `cf-os api --help` lists them)",
     synopsis: "[public] <command> [arguments] [<command> [arguments]]... [--url <origin>] [--auth <mode>] " +
       "[--username <name>] [--dry-run] [--timeout <seconds>] [--out <file|->]",
     help: [],
     options: {},
     positionals: 0,
-    failure: "API call failed.",
+    failure: "cf-os api failed.",
     rawArgs: true,
     load: () => import("./commands/api.ts"),
   },
@@ -444,7 +443,7 @@ if (process.argv[1] && samePath(process.argv[1], self)) {
       self,
       out: consoleOutput(),
       prompter: terminalPrompter(),
-      spawn: spawnSync,
+      spawn,
     }));
   }
 }

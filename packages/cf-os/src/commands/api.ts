@@ -1,202 +1,124 @@
 // `cf-os api [public] <command> [arguments] [<command> [arguments]]... [options]`
-// `cf-os api search "<task>"`
-// `cf-os api types [<service>]`
-// `cf-os api create-account <username> [--display-name <name>]`
 //
-// Drives a running Cloudflare OS instance through its Cap'n Web API, the one the browser uses. The
-// commands are not written here: they are the generated table (src/api/generated/commands.ts),
-// from the pinned upstream's schema of its API
-// (packages/api-schema/generated/workshop-api.schema.json), which `pnpm api:generate` rewrites when
-// the pin moves. This module reads the instance's address and the sign-in to use, then hands the
-// walk to src/api/run.ts, or, for `search`, ranks the table's commands against the task, or, for
-// `types`, prints upstream's agent declarations (src/api/types.ts), or, for `create-account`, makes
-// a password account, which no generated command may, since its password comes from the environment
-// (src/api/create-account.ts).
+// Drives a running Cloudflare OS instance through its API by running the pinned cloudflare-os's own
+// CLI, `packages/api-cli`, as its README's "Running it from another repository" lays out:
+// `node cloudflare-os/packages/api-cli/src/main.ts api <tokens>`, spawned and never imported, with
+// this process's stdio and the directory the command was typed in, so its commands, help, output and
+// exit codes are the pin's. What the starter adds is the default instance: the deployment's public
+// origin as `CFOS_API_URL`, or, when there is none to use, `CFOS_API_URL_UNAVAILABLE`, a message
+// saying why and naming `--url`. The other variable is deleted, so one inherited from the shell
+// cannot win.
 //
 // main.ts passes every token after `api` through untouched except the global `--config`,
-// `--account` and `--profile`, so the flags of each segment are parsed here, against that segment's
-// command in the table.
+// `--account` and `--profile`, which no command of the CLI takes.
 
-import { accessSync, constants, createReadStream } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { Readable } from "node:stream";
-import { UsageError, type CommandArgs, type Context } from "../context.ts";
-import type { ArgSource } from "../api/codec.ts";
-import { accountHash, createAccount, createAccountHelp, DRY_RUN_HASH, parseCreateAccount } from "../api/create-account.ts";
-import { table as generatedTable } from "../api/generated/commands.ts";
-import {
-  commandHelp,
-  decodeCalls,
-  dryRunChain,
-  execute,
-  incompleteChain,
-  nodeHelp,
-  parseInvocation,
-  parseSearch,
-  parseTypes,
-  searchCommands,
-  searchHelp,
-  untypedHelp,
-  type RunIo,
-} from "../api/run.ts";
-import { connect, defaultSessionDeps, resolveAuth, resolveTarget, type SessionDeps } from "../api/session.ts";
-import type { ApiTable } from "../api/table.ts";
-import { agentTypes, typesHelp } from "../api/types.ts";
+import { constants } from "node:os";
+import { join } from "node:path";
+import { configPath, displayPath, type CommandArgs, type Context } from "../context.ts";
+import type { DeploymentConfig } from "../core/deployment-config.ts";
+import { publicOrigin } from "../core/deployment.ts";
+import { parseDeployment } from "../deployment-file.ts";
+import { check as installed, NOT_CHECKED_OUT } from "./install.ts";
 
-/** Everything `cf-os api` touches besides the context, so tests can stand in for each. */
-export interface ApiDeps extends SessionDeps {
-  /** The command table: the generated one. */
-  table: ApiTable;
-  /** Raw stdout: help, NDJSON events and stream bytes. */
-  stdout: NodeJS.WritableStream & { isTTY?: boolean };
-  /** Read for `-` arguments. */
-  stdin: NodeJS.ReadableStream;
-  /** Calls `listener` on SIGINT; returns the function that stops listening. */
-  onInterrupt(listener: () => void): () => void;
+/** The CLI's entry, relative to the project root. */
+export const API_CLI_ENTRY = join("cloudflare-os", "packages", "api-cli", "src", "main.ts");
+
+/** The instance a run without `--url` calls, or why there is none: a complete message naming `--url`. */
+export type DefaultInstance = { url: string } | { unavailable: string };
+
+/**
+ * The deployment file's public origin (honouring `--config`), held to what deploy holds
+ * `publicBaseUrl` to: an `https://` origin and nothing else. `ws://` and a plain-text Access token are
+ * for an explicit `--url`, so any other origin is a reason instead.
+ */
+export async function defaultInstance(ctx: Context): Promise<DefaultInstance> {
+  const path = configPath(ctx);
+  const where = displayPath(ctx, path);
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    return {
+      unavailable: `could not read ${where} (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}): ` +
+        "pass --url <origin>, or --config <path>.",
+    };
+  }
+  let config: DeploymentConfig;
+  try {
+    config = parseDeployment(text, where) as unknown as DeploymentConfig;
+  } catch (error) {
+    return { unavailable: `${(error as Error).message.replace(/\.$/, "")}: fix it, or pass --url <origin>.` };
+  }
+  const route = config.workers?.router?.route;
+  // Unvalidated, as deploy's checks are not run here: publicOrigin needs a string or nothing.
+  if (config.publicBaseUrl && typeof config.publicBaseUrl !== "string") {
+    return { unavailable: `${where}'s publicBaseUrl is not a string: fix publicBaseUrl, or pass --url <origin>.` };
+  }
+  if (!config.publicBaseUrl && !route?.customDomain) {
+    return { unavailable: `${where} names no public origin (publicBaseUrl or workers.router.route.customDomain): pass --url <origin>.` };
+  }
+  const origin = publicOrigin(config);
+  if (origin.includes("<")) return { unavailable: `${where} is not configured yet (${origin}): pass --url <origin>.` };
+  let parsed: URL | undefined;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed?.protocol !== "https:" || parsed.origin !== origin) {
+    return { unavailable: `${where}'s public origin, ${origin}, is not an https:// origin: fix publicBaseUrl, or pass --url <origin>.` };
+  }
+  return { url: origin };
 }
 
-/** The process's own. */
-export function defaultDeps(): ApiDeps {
-  return {
-    ...defaultSessionDeps(),
-    table: generatedTable,
-    stdout: process.stdout,
-    // Read only for a `-` argument: touching process.stdin sooner would set it up for nothing.
-    get stdin() {
-      return process.stdin;
-    },
-    onInterrupt: (listener) => {
-      process.on("SIGINT", listener);
-      return () => process.off("SIGINT", listener);
-    },
+/** `env` for the CLI: exactly one of `CFOS_API_URL` and `CFOS_API_URL_UNAVAILABLE`, from `instance`. */
+export function childEnv(env: NodeJS.ProcessEnv, instance: DefaultInstance): NodeJS.ProcessEnv {
+  const { CFOS_API_URL: _url, CFOS_API_URL_UNAVAILABLE: _unavailable, ...rest } = env;
+  return "url" in instance ? { ...rest, CFOS_API_URL: instance.url } : { ...rest, CFOS_API_URL_UNAVAILABLE: instance.unavailable };
+}
+
+/** What `cf-os api` runs against besides the context. */
+export interface ApiDeps {
+  /** Inherited by the CLI, but for the two variables {@link childEnv} sets. */
+  env: NodeJS.ProcessEnv;
+}
+
+/** `cf-os api`: resolves to the CLI's exit code (0, 1, 2 and 130 among them), or 1 when it cannot run. */
+export async function run(args: CommandArgs, ctx: Context, deps: ApiDeps = { env: process.env }): Promise<number> {
+  const entry = join(ctx.root, API_CLI_ENTRY);
+  if (!existsSync(entry)) {
+    ctx.out.log(!existsSync(join(ctx.root, "cloudflare-os", "package.json")) ? NOT_CHECKED_OUT
+      : `The cloudflare-os pin predates \`cf-os api\` upstream: it has no ${API_CLI_ENTRY}. ` +
+        "Move the pin on with `cf-os update` (`npx cf-os@latest update`).");
+    return 1;
+  }
+  // Without the submodule's install the CLI cannot load capnweb, and every run, `--help` included,
+  // would die with ERR_MODULE_NOT_FOUND.
+  const install = installed({ root: ctx.root });
+  if (!install.ok) {
+    ctx.out.log(install.message);
+    return 1;
+  }
+  const env = childEnv(deps.env, await defaultInstance(ctx));
+  const child = spawn(process.execPath, [entry, "api", ...args.positionals], { stdio: "inherit", cwd: ctx.cwd, env });
+  // Kept alive until the CLI exits, which handles SIGINT itself (a subscription stops, exit 130).
+  // Both signals are passed on, so one sent to this process alone reaches the CLI; Ctrl-C, sent to
+  // both, then arrives twice, which stops a run once all the same.
+  const forward = (signal: NodeJS.Signals) => {
+    child.kill(signal);
   };
-}
-
-/** A Node byte stream as a web one of plain `Uint8Array` chunks, the type capnweb sends as bytes. */
-function webBytes(stream: NodeJS.ReadableStream): ReadableStream<Uint8Array> {
-  return (Readable.toWeb(Readable.from(stream)) as unknown as ReadableStream<Uint8Array | string>).pipeThrough(
-    new TransformStream<Uint8Array | string, Uint8Array>({
-      transform: (chunk, controller) => controller.enqueue(typeof chunk === "string"
-        ? new TextEncoder().encode(chunk)
-        : new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)),
-    }));
-}
-
-/** `cf-os api`. */
-export async function run(args: CommandArgs, ctx: Context, deps: ApiDeps = defaultDeps()): Promise<number> {
-  const { table } = deps;
-  // `types` prints declarations, the result itself, as plain text, as a byte stream's result is
-  // written raw: wrapped in JSON, TypeScript would have to be unescaped before it could be read.
-  const types = parseTypes(args.positionals);
-  if (types) {
-    // The declarations outgrow a pipe's buffer, so `| head` closes it mid-write: that EPIPE is the
-    // reader being done, not a failure. Any other error is still thrown, as with no listener.
-    deps.stdout.on("error", (error: NodeJS.ErrnoException) => {
-      if (error.code !== "EPIPE") throw error;
+  process.on("SIGINT", forward);
+  process.on("SIGTERM", forward);
+  try {
+    return await new Promise<number>((done, failed) => {
+      child.once("error", failed);
+      child.once("exit", (code, signal) => done(code ?? (signal ? 128 + constants.signals[signal] : 1)));
     });
-    deps.stdout.write(types.help ? `${typesHelp()}\n` : agentTypes(types.service));
-    return 0;
+  } finally {
+    process.off("SIGINT", forward);
+    process.off("SIGTERM", forward);
   }
-  // `search` finds commands in the table, before any walk: it connects to nothing.
-  const search = parseSearch(args.positionals);
-  if (search?.help) {
-    deps.stdout.write(`${searchHelp()}\n`);
-    return 0;
-  }
-  if (search) {
-    if (!search.query.trim()) throw new UsageError('search needs a task: `cf-os api search "<describe the task>"`.');
-    const matches = searchCommands(table, search.query);
-    if (matches.length === 0) ctx.out.log("No command matches. `cf-os api --help` lists the first ones.");
-    ctx.out.json(matches);
-    return 0;
-  }
-  const account = parseCreateAccount(args.positionals);
-  if (account?.help) {
-    deps.stdout.write(`${createAccountHelp()}\n`);
-    return 0;
-  }
-  if (account) {
-    const target = await resolveTarget(account.url, ctx);
-    // A public call: the inferred mode only says whether Access's edge needs its token.
-    const auth = resolveAuth({ auth: account.auth }, deps.env, target.origin);
-    if (account.dryRun) {
-      ctx.out.json({
-        url: target.url,
-        auth: { mode: auth.mode },
-        on: table.public,
-        chain: [{ method: "createAccount", args: [account.username, account.displayName, DRY_RUN_HASH] }],
-      });
-      return 0;
-    }
-    const hash = await accountHash(account.username, deps.env, table.constants.SERVICE_SALT);
-    return createAccount(account, hash,
-      () => connect(target, auth, { serviceSalt: table.constants.SERVICE_SALT, needsSignIn: false }, deps), ctx.out);
-  }
-  const invocation = parseInvocation(table, args.positionals);
-  if (invocation.help) {
-    const target = invocation.help;
-    const help = target.kind === "node" ? nodeHelp(table, target.node, invocation.path)
-      : target.kind === "command" ? commandHelp(table, target.node, target.name, invocation.path, target.at)
-      : untypedHelp(invocation.path);
-    deps.stdout.write(`${help}\n`);
-    return 0;
-  }
-  // Nothing to call yet: a usage error, saying that nothing was sent and how to finish the chain.
-  if (invocation.end.kind === "node" || invocation.end.kind === "untyped") {
-    throw new UsageError(incompleteChain(table, invocation));
-  }
-
-  const { flags } = invocation;
-  let stdinRead = false;
-  const readStdin = async (): Promise<Uint8Array> => {
-    stdinRead = true;
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of deps.stdin) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-    return new Uint8Array(Buffer.concat(chunks));
-  };
-  const source: ArgSource = {
-    readFile: async (path) => {
-      try {
-        return new Uint8Array(await readFile(resolve(ctx.cwd, path)));
-      } catch (error) {
-        throw new UsageError(`could not read @${path}: ${(error as NodeJS.ErrnoException).code ?? (error as Error).message}.`);
-      }
-    },
-    readStdin,
-  };
-  const target = await resolveTarget(flags.url, ctx);
-  const auth = resolveAuth(flags, deps.env, target.origin);
-  const calls = await decodeCalls(table, invocation, source);
-  if (flags.dryRun) {
-    ctx.out.json({
-      url: target.url,
-      auth: auth.username === undefined ? { mode: auth.mode } : { mode: auth.mode, username: auth.username },
-      on: invocation.public ? table.public : table.root,
-      chain: dryRunChain(calls),
-    });
-    return 0;
-  }
-
-  const io: RunIo = {
-    out: ctx.out,
-    stdout: deps.stdout,
-    openStream: (path) => {
-      if (path === "-") {
-        if (stdinRead) throw new UsageError("Only one argument can read stdin (-).");
-        return webBytes(deps.stdin);
-      }
-      const file = resolve(ctx.cwd, path);
-      try {
-        accessSync(file, constants.R_OK);
-      } catch (error) {
-        throw new UsageError(`could not read ${path}: ${(error as NodeJS.ErrnoException).code ?? (error as Error).message}.`);
-      }
-      return webBytes(createReadStream(file));
-    },
-    outputPath: (path) => resolve(ctx.cwd, path),
-    onInterrupt: deps.onInterrupt,
-  };
-  return execute(table, invocation, calls,
-    () => connect(target, auth, { serviceSalt: table.constants.SERVICE_SALT, needsSignIn: !invocation.public }, deps), io);
 }

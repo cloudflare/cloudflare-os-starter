@@ -15,7 +15,7 @@ const UPSTREAM_MAIN = "e".repeat(40);
 const OLDER = "f".repeat(40);
 
 /** One recorded reply. */
-type Reply = { status?: number; stdout?: string; stderr?: string };
+type Reply = { status?: number; stdout?: string };
 
 /**
  * What the recording tools report: by `<command> <first args>`, the longest match winning. A list
@@ -65,7 +65,7 @@ function recording(replies: Replies) {
         .toSorted((a, b) => b.length - a.length)[0];
       const found = key ? replies[key] : {};
       const reply = Array.isArray(found) ? (found.length > 1 ? found.shift()! : found[0]) : found;
-      return { status: reply.status ?? 0, stdout: reply.stdout ?? "", stderr: reply.stderr ?? "" };
+      return { status: reply.status ?? 0, stdout: reply.stdout ?? "" };
     },
     now: () => new Date("2026-10-17T12:00:00Z"),
   };
@@ -87,15 +87,13 @@ function scratchRepository(t: Parameters<typeof scratchProject>[0], path: string
 async function updating(
   t: Parameters<typeof scratchProject>[0],
   { values = {}, replies = {}, script, path, packageJson = true }: {
-    values?: Record<string, string | boolean>; replies?: Replies; script?: Step[]; path?: string;
-    /** The root `package.json`: written empty, as given, or not at all. */
-    packageJson?: boolean | object;
+    values?: Record<string, string | boolean>; replies?: Replies; script?: Step[]; path?: string; packageJson?: boolean;
   } = {},
 ) {
   const root = path ? scratchRepository(t, path) : scratchProject(t, TEMPLATE);
   path ??= "cloudflare-os";
   writeFileSync(join(root, path, ".git"), `gitdir: ../.git/modules/${path}\n`);
-  if (packageJson) writeFileSync(join(root, "package.json"), `${JSON.stringify(packageJson === true ? {} : packageJson)}\n`);
+  if (packageJson) writeFileSync(join(root, "package.json"), "{}\n");
   const tools = recording({ "git rev-parse --show-toplevel": { stdout: `${root}\n` }, ...behind(path), ...replies });
   const prompter = script ? scriptedPrompter(script) : null;
   const harness = testContext({ root, prompter });
@@ -154,6 +152,8 @@ test("merges the starter, checks out its pin, installs, and writes the brief", a
   assert.match(text, /## Gatekeeper contract changes \(1\)\n\nThese change `@gadgets\/workshop-shared\/gatekeeper`[\s\S]*- `d111111` Two/);
   assert.match(text, /That includes the operator's own Gatekeepers, which the starter cannot adapt for them\./);
   assert.match(text, /not a class passes both/);
+  // `cf-os api` runs the pin's own commands: nothing to regenerate, but the scripts calling them may break.
+  assert.match(text, /`cf-os api`'s commands are the pin's, so a command it removed or changed breaks whatever here calls it .*`git -C cloudflare-os diff --stat ccccccc ddddddd -- packages\/api-cli\/generated` shows whether they changed/);
   assert.doesNotMatch(text, /git merge --abort|upgrade-and-rollback|Catalog Alignment|set-url/);
 });
 
@@ -363,7 +363,7 @@ test("outside a starter project, --upstream moves the pin alone: no starter fetc
   assert.match(text, /## For the coding agent\n\nIf you ran `cf-os update` yourself, these steps are yours: carry them out now/);
   assert.match(text, /Then the Gatekeeper contract, which the commits under "Gatekeeper contract changes" change\. Migrate every/);
   assert.match(text, /## Gatekeeper contract changes \(1\)/);
-  assert.doesNotMatch(text, /pnpm cf-os|set-url/);
+  assert.doesNotMatch(text, /pnpm cf-os|set-url|cf-os api/);
 });
 
 test("a failed install is in the brief, with where to start: the catalog", async (t) => {
@@ -674,7 +674,6 @@ test("prints what it did as JSON on stdout, since the exit code cannot say how f
       commits: 4, leftOut: 0, starterLeftOut: 0, contractChanges: 1,
     },
     installed: true,
-    api: null,
     brief: join(root, BRIEF),
     problems: [],
   }]);
@@ -754,6 +753,7 @@ test("the summary reports the gitlink the merge left, when it is not the one exp
   assert.deepEqual([pinOf(json).to, pinOf(json).moved], [OLD_PIN, false]);
   assert.doesNotMatch(stderr(), /is at the starter's/);
   assert.match(brief()!, /## cloudflare-os commits \(0\)|None: the pin did not move/);
+  assert.doesNotMatch(brief()!, /packages\/api-cli/);
 });
 
 test("a conflicted pin gets commands that set a gitlink, and nothing claims it is checked out", async (t) => {
@@ -897,152 +897,4 @@ test("--to a pin without some of the starter's pin's commits lists them: the mer
   const text = brief()!;
   assert.match(text, /## Left out of the starter's pin \(1\)\n\nThe merge committed the starter's pin `d+`, and the staged pin replaces it without these:\n\n- `ddddddd` Three/);
   assert.match(text, /The merged starter code was adapted to the commits under "Left out of the starter's pin"/);
-});
-
-/** A root `package.json` with the starter's `api:generate` script. */
-const GENERATING = { scripts: { "api:generate": "node packages/cf-os/generator/generate.ts" } };
-
-/** The generated files, as `api:generate` reports them. */
-const GENERATED = ["packages/cf-os/src/api/generated/commands.ts", "packages/cf-os/src/api/generated/schema.json"];
-
-/** `api:generate`'s stdout: one JSON line, as generate.ts prints it. */
-const generatedJson = (commands: { added?: string[]; removed?: string[]; changed?: string[] }, files = GENERATED) =>
-  `${JSON.stringify({ files, commands: { added: [], removed: [], changed: [], ...commands } })}\n`;
-
-/** The JSON summary's `api`, as far as these tests read it. */
-type Api = { status: string; files?: string[]; added?: string[]; removed?: string[]; changed?: string[] } | null;
-const apiOf = (json: unknown[]) => (json[0] as { api: Api }).api;
-
-test("runs api:generate after the install only when the root package.json has the script", async (t) => {
-  const without = await updating(t, { path: "public", values: { upstream: true } });
-  assert.ok(!without.commands().some((command) => command.includes("api:generate")));
-  assert.equal(apiOf(without.json), null);
-  assert.doesNotMatch(without.brief()!, /API commands|api:generate/);
-
-  const { code, commands, ran, root } = await updating(t, {
-    path: "public", values: { upstream: true }, packageJson: GENERATING,
-    replies: { "pnpm run api:generate": { stdout: generatedJson({}, []) } },
-  });
-  assert.equal(code, 0);
-  // Its commands compared with where the update started, not with the working tree a merge changed.
-  assert.deepEqual(commands().slice(-2), ["pnpm install", `pnpm run api:generate --since ${OLD_HEAD}`]);
-  // Captured, as its stdout is the JSON read back, and run in the root.
-  const generate = ran.at(-1)!;
-  assert.deepEqual([generate.cwd, generate.capture], [root, true]);
-});
-
-test("api:generate's commands are in the brief, capped, and in full in the JSON; its files are left unstaged", async (t) => {
-  const added = Array.from({ length: 22 }, (_, index) => `open-gadget new-${String(index).padStart(2, "0")}`);
-  const { code, commands, json, stderr, brief } = await updating(t, {
-    path: "public", values: { upstream: true }, packageJson: GENERATING,
-    replies: {
-      "pnpm run api:generate": {
-        stdout: generatedJson({ added, removed: ["public old-thing"], changed: ["open-gadget get-chat-history"] }),
-      },
-    },
-  });
-  assert.equal(code, 0);
-  assert.deepEqual(apiOf(json), {
-    status: "generated", files: GENERATED, added, removed: ["public old-thing"], changed: ["open-gadget get-chat-history"],
-  });
-  // Staged is the pin alone: nothing adds what generation wrote.
-  assert.deepEqual(commands().filter((command) => command.startsWith("git add")), ["git add public"]);
-  assert.match(stderr(), /API commands: 22 added, 1 removed, 1 changed; 2 regenerated files left unstaged, for review\.\n {2}Added:\n {4}open-gadget new-00\n/);
-  assert.match(stderr(), / {4}open-gadget new-19\n {4}… 2 more\n {2}Removed:\n {4}public old-thing\n {2}Changed \(arguments or result\):\n {4}open-gadget get-chat-history/);
-  assert.doesNotMatch(stderr(), /new-20/);
-
-  const text = brief()!;
-  assert.match(text, /## API commands\n\n`pnpm run api:generate` regenerated `cf-os api` from the pin: 22 added, 1 removed, 1 changed\. These files are left unstaged, for review:\n\n- `packages\/cf-os\/src\/api\/generated\/commands\.ts`\n- `packages\/cf-os\/src\/api\/generated\/schema\.json`\n\nAdded \(22\):\n\n- `open-gadget new-00`/);
-  assert.match(text, /- `open-gadget new-19`\n- … and 2 more\n\nRemoved \(1\):\n\n- `public old-thing`\n\nChanged \(arguments or result\) \(1\):\n\n- `open-gadget get-chat-history`/);
-  assert.doesNotMatch(text, /new-20/);
-  assert.match(text, /generated files were regenerated from the pin and left unstaged .*Review them with the staged pin: .*Then commit them with the pin \(`git add packages\/cf-os\/src\/api\/generated\/commands\.ts packages\/cf-os\/src\/api\/generated\/schema\.json`\)\./);
-  assert.match(text, /## Undo\n\n- To drop the regenerated API files, first: `git restore -- packages\/cf-os\/src\/api\/generated\/commands\.ts /);
-});
-
-test("after a clean starter merge, regenerated API files mean the update is not done: they go in a commit after the merge", async (t) => {
-  const { code, stderr, brief } = await updating(t, {
-    packageJson: GENERATING, script: [["Merge 2 starter commits", true]],
-    replies: { "pnpm run api:generate": { stdout: generatedJson({ changed: ["whoami"] }, GENERATED.slice(1)) } },
-  });
-  assert.equal(code, 0);
-  assert.doesNotMatch(stderr(), /Next: `pnpm cf-os check`/);
-  assert.match(stderr(), /Next: ask your coding agent to follow \.cf-os\/update\.md\./);
-  assert.match(brief()!, /Then commit them in a commit of their own, right after the merge \(`git add packages\/cf-os\/src\/api\/generated\/schema\.json`\)\./);
-});
-
-test("after a merge that brought the regenerated files, the commands it changed are still the brief's", async (t) => {
-  const { code, json, stderr, brief } = await updating(t, {
-    packageJson: GENERATING, script: [["Merge 2 starter commits", true]],
-    replies: { "pnpm run api:generate": { stdout: generatedJson({ removed: ["public old-thing"] }, []) } },
-  });
-  assert.equal(code, 0);
-  assert.deepEqual(apiOf(json), { status: "generated", files: [], added: [], removed: ["public old-thing"], changed: [] });
-  assert.match(stderr(), /API commands: 0 added, 1 removed, 0 changed; the generated files already match the pin\.\n {2}Removed:\n {4}public old-thing/);
-  // A removed command is work for the agent, not a clean update.
-  assert.match(stderr(), /Next: ask your coding agent to follow \.cf-os\/update\.md\./);
-  const text = brief()!;
-  assert.match(text, new RegExp("## API commands\\n\\n`pnpm run api:generate` ran, and the generated files already matched the pin, " +
-    `as the merge brought them\\. Since \`${OLD_HEAD}\`, where the update started, the API commands changed: 0 added, 1 removed, 0 changed\\.\\n\\nRemoved \\(1\\):\\n\\n- \`public old-thing\``));
-  assert.match(text, /Some `cf-os api` commands were removed or changed \(listed under "API commands"\): that breaks the scripts/);
-  assert.doesNotMatch(text, /left unstaged|git restore -- packages/);
-});
-
-test("api:generate with nothing to change says so, and adds no step", async (t) => {
-  const { code, json, stderr, brief } = await updating(t, {
-    path: "public", values: { upstream: true }, packageJson: GENERATING,
-    replies: { "pnpm run api:generate": { stdout: generatedJson({}, []) } },
-  });
-  assert.equal(code, 0);
-  assert.deepEqual(apiOf(json), { status: "generated", files: [], added: [], removed: [], changed: [] });
-  assert.match(stderr(), /API commands: the generated files already match the pin\./);
-  const text = brief()!;
-  assert.match(text, /## API commands\n\n`pnpm run api:generate` ran, and the generated files already matched the pin/);
-  assert.doesNotMatch(text, /left unstaged|git restore -- packages|api:check/);
-});
-
-test("a failing api:generate is reported, and leaves the pin staged: not fatal to the move", async (t) => {
-  const { code, commands, json, stderr, brief } = await updating(t, {
-    path: "public", values: { upstream: true }, packageJson: GENERATING,
-    replies: { "pnpm run api:generate": { status: 1, stdout: "", stderr: "API generation failed: unsupported type" } },
-  });
-  assert.equal(code, 1);
-  assert.ok(commands().includes("git add public"));
-  assert.equal(pinOf(json).moved, true);
-  assert.equal((json[0] as { pin: { staged: boolean } }).pin.staged, true);
-  assert.deepEqual(apiOf(json), { status: "failed" });
-  const { problems } = json[0] as { problems: string[] };
-  assert.match(problems.join("\n"), /`pnpm run api:generate` failed, so `cf-os api`'s generated files may not match the pin\./);
-  // Its output is captured, so its end is shown for the failure.
-  assert.match(stderr(), /Running pnpm run api:generate\.\nAPI generation failed: unsupported type/);
-  const text = brief()!;
-  assert.match(text, /Still to do:\n\n- `pnpm run api:generate` failed/);
-  assert.match(text, /## API commands\n\n`pnpm run api:generate` failed: see "Still to do"\./);
-  assert.match(text, /fix what it reports .* `pnpm lint` runs `api:check`, which fails until they match the pin\./);
-});
-
-test("api:generate that prints no result is a problem too", async (t) => {
-  const { code, json } = await updating(t, {
-    path: "public", values: { upstream: true }, packageJson: GENERATING,
-    replies: { "pnpm run api:generate": { stdout: "not json\n" } },
-  });
-  assert.equal(code, 1);
-  assert.deepEqual(apiOf(json), { status: "failed" });
-  assert.match((json[0] as { problems: string[] }).problems.join("\n"), /printed no result/);
-});
-
-test("api:generate waits for the install: not run when it failed, and the brief says to run it after", async (t) => {
-  const { commands, json, brief } = await updating(t, {
-    path: "public", values: { upstream: true }, packageJson: GENERATING, replies: { "pnpm install": { status: 1 } },
-  });
-  assert.ok(!commands().includes("pnpm run api:generate"));
-  assert.deepEqual(apiOf(json), { status: "not-run" });
-  const text = brief()!;
-  assert.match(text, /## API commands\n\n`pnpm run api:generate` did not run, as the install did not complete\./);
-  assert.match(text, /Once `pnpm install` has run, run `pnpm api:generate` too/);
-});
-
-test("--dry-run runs no api:generate", async (t) => {
-  const { commands, json } = await updating(t, { values: { "dry-run": true }, packageJson: GENERATING });
-  assert.ok(!commands().some((command) => command.startsWith("pnpm")));
-  assert.equal(apiOf(json), null);
 });

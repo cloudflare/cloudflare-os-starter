@@ -2,10 +2,13 @@
 // scratch project directories. Test support only; not part of the build.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parse, type ParseError } from "jsonc-parser";
+import { API_CLI_ENTRY } from "./commands/api.ts";
+import { INSTALL_MARKER } from "./commands/install.ts";
 import type { Context, GlobalFlags, Output } from "./context.ts";
 import type { CloudflareClient } from "./core/client.ts";
 import type { ProdWranglerConfig } from "./core/deployment-config.ts";
@@ -165,6 +168,42 @@ export function scratchProject(t: { after: (fn: () => void) => void }, text: str
   mkdirSync(join(dir, "cloudflare-os"));
   writeFileSync(join(dir, "deployment.jsonc"), text);
   return dir;
+}
+
+/**
+ * A scratch project as `cf-os api` needs it: the submodule installed for its lockfile, and at the
+ * pinned CLI's entry a stand-in that writes its arguments, cwd and the two variables `cf-os api`
+ * sets to `report`, then exits `STUB_EXIT`; with `STUB_WAIT`, it writes `<root>/ready` instead and
+ * waits for a SIGTERM, exiting 7.
+ */
+export function apiCliProject(t: { after: (fn: () => void) => void }, text = TEMPLATE): { root: string; report: string } {
+  const root = scratchProject(t, text);
+  const submodule = join(root, "cloudflare-os");
+  writeFileSync(join(submodule, "package.json"), `${JSON.stringify({ type: "module" })}\n`);
+  writeFileSync(join(submodule, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  mkdirSync(dirname(join(submodule, INSTALL_MARKER)), { recursive: true });
+  writeFileSync(join(submodule, INSTALL_MARKER), JSON.stringify({
+    lockfileSha256: createHash("sha256").update(readFileSync(join(submodule, "pnpm-lock.yaml"))).digest("hex"),
+  }));
+  const entry = join(root, API_CLI_ENTRY);
+  mkdirSync(dirname(entry), { recursive: true });
+  writeFileSync(entry, `
+    import { writeFileSync } from "node:fs";
+    const root = new URL("../../../../", import.meta.url);
+    const pick = (name) => Object.hasOwn(process.env, name) ? process.env[name] : "(unset)";
+    writeFileSync(new URL("report.json", root), JSON.stringify({
+      argv: process.argv.slice(2), cwd: process.cwd(),
+      CFOS_API_URL: pick("CFOS_API_URL"), CFOS_API_URL_UNAVAILABLE: pick("CFOS_API_URL_UNAVAILABLE"),
+    }));
+    if (process.env.STUB_WAIT) {
+      process.on("SIGTERM", () => process.exit(7));
+      writeFileSync(new URL("ready", root), "");
+      setInterval(() => {}, 1000);
+    } else {
+      process.exitCode = Number(process.env.STUB_EXIT ?? 0);
+    }
+  `);
+  return { root, report: join(root, "report.json") };
 }
 
 /**

@@ -112,7 +112,7 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 ### 4. Verify the deployment
 
 - Open the router's hostname and confirm Access signs in with the expected identity, and that it is the only public route into the deployment.
-- From a terminal, `pnpm cf-os api whoami` calls the deployment's API as your Access identity (after `cloudflared access login <origin>`), the same way a coding agent can drive it: see [`cf-os api`](packages/cf-os/README.md#driving-an-instance-cf-os-api).
+- From a terminal, `pnpm cf-os api whoami` calls the deployment's API as your Access identity (after `cloudflared access login <origin>`), the same way a coding agent can drive it; on a deployment it is for administrators only: see [`cf-os api`](packages/cf-os/README.md#driving-an-instance-cf-os-api).
 - Open `/admin`, confirm the email is an administrator, and set Context, Scheduler, Web Search and Custom Gatekeepers to disabled, optional, or enabled.
 - If Context Artifacts is enabled, create a Git-backed collection and confirm its repository can be populated and refreshed.
 - Enable the Custom Gatekeeper, ask for deployment information, and confirm its read appears as an observation.
@@ -138,7 +138,7 @@ The complete control reference and recipes live in [Customization](docs/customiz
 - Stream production events with [`wrangler tail`](https://developers.cloudflare.com/workers/observability/logs/real-time-logs/).
 - Triage explicit failures and choose export destinations with the [observability guide](docs/observability.md).
 - Roll a Worker back from its dashboard deployment history or with [`wrangler rollback`](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
-- Update with `npx cf-os@latest update`, which merges the starter's `main` and its reviewed pin, regenerates the `cf-os api` commands from that pin, and writes `.cf-os/update.md` for your coding agent. Follow the [upgrade checklist](docs/customization.md#upgrade) before moving the pinned submodule past the starter's.
+- Update with `npx cf-os@latest update`, which merges the starter's `main` and its reviewed pin and writes `.cf-os/update.md` for your coding agent. Follow the [upgrade checklist](docs/customization.md#upgrade) before moving the pinned submodule past the starter's.
 - Review the upstream Cloudflare OS documentation and release history before adopting behavior changes.
 
 ### Moving here from the hosted deploy (os.cloudflare.app/deploy)
