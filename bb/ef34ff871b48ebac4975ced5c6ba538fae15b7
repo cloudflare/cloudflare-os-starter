@@ -1,0 +1,75 @@
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_c5f8d284ae2719::t_72330d4843e619 60-61,322,385
+.agents/skills/cloudflare-os-operator/references/updating.md
+  s_c5f8d284ae2719::t_3001276515a810 3,8,22,24
+.agents/skills/cloudflare-os-operator/references/upgrade-and-rollback.md
+  s_c5f8d284ae2719::t_7c502c31cdba0c 40
+.github/workflows/ci.yml
+  s_c5f8d284ae2719::t_26b72aeeea9f9e 13,23
+AGENTS.md
+  s_c5f8d284ae2719::t_d7b585e036e697 5,17
+README.md
+  s_c5f8d284ae2719::t_a0cfa50d15acf1 115,141
+docs/customization.md
+  s_c5f8d284ae2719::t_16e5ddeab42ba9 241,249-250
+docs/migrate-from-hosted.md
+  s_c5f8d284ae2719::t_74c18f9a933baf 293-294
+package.json
+  s_c5f8d284ae2719::t_3ebb27244dc25b 17
+packages/cf-os/README.md
+  s_c5f8d284ae2719::t_542279a5c2fad8 28-29,32,38,44,47-49,51,54,56-58
+packages/cf-os/package.json
+  s_c5f8d284ae2719::t_b781f6e17b921e 35
+packages/cf-os/src/commands/api.test.ts
+  s_c5f8d284ae2719::t_1033f3e977ff7d 2-4,6-50,52-91,95-137,139-167
+packages/cf-os/src/commands/scaffold.test.ts
+  s_c5f8d284ae2719::t_0f74f7efaf05be 47
+packages/cf-os/src/commands/scaffold.ts
+  s_c5f8d284ae2719::t_69f697fd861930 16,20,47,55
+packages/cf-os/src/commands/update.test.ts
+  s_c5f8d284ae2719::t_dda698478de6b4 18,68,90,96,155-156,366,756
+packages/cf-os/src/commands/update.ts
+  s_c5f8d284ae2719::t_90225888afcda1 6,26,47-51,593-603,634,758-767,978,1012-1018,1036-1037
+packages/cf-os/src/main.test.ts
+  s_c5f8d284ae2719::t_21cfe156227922 3,11,27-30,99,145-148,153-156,159-160,166,168-172,294-337,364-365,379-390
+packages/cf-os/src/main.ts
+  s_c5f8d284ae2719::t_3ced361216999a 15-17,19,70-71,177-178,184,446
+packages/cf-os/src/project.ts
+  s_c5f8d284ae2719::t_26af7fee711fcd 4,6,44,49,56,60-61,66-83
+packages/cf-os/src/test-support.ts
+  s_c5f8d284ae2719::t_e75739f0e25325 5,8,10-11,173-208
+packages/cf-os/tsconfig.build.json
+  s_c5f8d284ae2719::t_e44c187cb2fd8d 18
+packages/cf-os/tsconfig.json
+  s_c5f8d284ae2719::t_0cbee63ade6c37 22
+packages/cf-os/vite.config.ts
+  s_c5f8d284ae2719::t_a094a4f7eb2272 33
+pnpm-workspace.yaml
+  s_c5f8d284ae2719::t_e9e20a7248f2db 28-29
+packages/cf-os/src/commands/api.ts
+  s_3b92572913e9f6::t_6c9a7a4845faeb 3-10,13,15-16,18-24,26-27,29-30,32-47,49-53,55-58,60-61,63-69,71-72,74-75,77-111,113-118,120-122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bbef34ff871b48ebac4975ced5c6ba538fae15b7",
+  "prompts": {},
+  "sessions": {
+    "s_3b92572913e9f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a6999e2d61f378c91",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
