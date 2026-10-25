@@ -291,7 +291,7 @@ Beyond the [standard checks](../README.md#4-verify-the-deployment):
 
 1. Sign in as an existing user and confirm the identity is recognised, not re-created.
    From a terminal, as an administrator, `pnpm cf-os api whoami` signs in through Access as you, and
-   `pnpm cf-os api list-gadgets` should list the gadgets you had before the migration.
+   `pnpm cf-os api list-workspaces` should list the workspaces you had before the migration.
 2. Open the model picker. It must list models — an empty picker means section 6 was skipped.
 3. Open a gadget that existed before the migration, and confirm its history is intact.
 4. Open the Context library and confirm its collections are still listed.

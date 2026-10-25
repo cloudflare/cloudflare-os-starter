@@ -65,10 +65,10 @@ test("runs the pinned CLI with its tokens after `api`, in the directory the comm
   mkdirSync(cwd);
   const { ctx } = testContext({ root, cwd });
   const env = { ...process.env, CFOS_API_URL_UNAVAILABLE: "inherited" };
-  const code = await run({ command: "api", values: {}, positionals: ["open-gadget", "g1", "--", "--config"] }, ctx, { env });
+  const code = await run({ command: "api", values: {}, positionals: ["open-workspace", "g1", "--", "--config"] }, ctx, { env });
   assert.equal(code, 0);
   assert.deepEqual(JSON.parse(readFileSync(report, "utf8")), {
-    argv: ["api", "open-gadget", "g1", "--", "--config"],
+    argv: ["api", "open-workspace", "g1", "--", "--config"],
     cwd: realpathSync(cwd),
     CFOS_API_URL: "https://os.example.com",
     CFOS_API_URL_UNAVAILABLE: "(unset)",

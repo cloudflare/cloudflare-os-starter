@@ -133,7 +133,7 @@ test("hands off to a copy at packages/cfos, where projects from before the renam
 test("hands off what only the project's copy may know: other commands, options and help", async (t) => {
   const { root, local } = projectWithLocalCopy(t);
   for (const argv of [["frobnicate"], ["check", "--newer-option"], ["deploy", "--help"],
-    ["api", "open-gadget", "g1", "--profile", "p", "get-chat-history", "7", "--help"]]) {
+    ["api", "open-workspace", "g1", "--profile", "p", "get-chat-history", "7", "--help"]]) {
     const { code, spawned, log } = await run(t, argv, { cwd: root });
     assert.equal(code, 0, argv.join(" "));
     assert.deepEqual(spawned.map((entry) => entry.args), [[local, ...argv]]);
@@ -146,13 +146,13 @@ test("api takes its tokens verbatim, with the global options read and taken out 
   writeFileSync(join(root, "other.jsonc"),
     `{ "publicBaseUrl": null, "workers": { "router": { "name": "acme-os", "route": { "customDomain": "other.example.com" } } } }`);
   const { code, log } = await run(t, [
-    "--profile", "p", "api", "--config", "other.jsonc", "open-gadget", "g1", "get-chat-history", "7",
+    "--profile", "p", "api", "--config", "other.jsonc", "open-workspace", "g1", "get-chat-history", "7",
     "--before-sequence=3", "--account=acc", "--auth", "access", "--dry-run",
   ], { cwd: root, env: { [DELEGATION_SENTINEL]: "1" } });
   assert.equal(code, 0, log);
   // The origin is other.jsonc's: --config reached the command, and none of the three reached the CLI.
   const seen = JSON.parse(readFileSync(report, "utf8"));
-  assert.deepEqual(seen.argv, ["api", "open-gadget", "g1", "get-chat-history", "7", "--before-sequence=3", "--auth", "access", "--dry-run"]);
+  assert.deepEqual(seen.argv, ["api", "open-workspace", "g1", "get-chat-history", "7", "--before-sequence=3", "--auth", "access", "--dry-run"]);
   assert.equal(seen.CFOS_API_URL, "https://other.example.com");
 });
 
