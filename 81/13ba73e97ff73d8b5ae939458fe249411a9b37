@@ -1,0 +1,31 @@
+.agents/skills/cloudflare-os-operator/SKILL.md
+  s_f1ff5bfe7029b1::t_1a80960cfa79cd 322
+AGENTS.md
+  s_f1ff5bfe7029b1::t_469128e78d26bf 5
+docs/customization.md
+  s_f1ff5bfe7029b1::t_f9a5fe49e35b56 250
+docs/migrate-from-hosted.md
+  s_f1ff5bfe7029b1::t_a19f63664e362e 294
+packages/cf-os/README.md
+  s_f1ff5bfe7029b1::t_74fe0e0919373d 13,29,50
+packages/cf-os/src/commands/api.test.ts
+  s_f1ff5bfe7029b1::t_2b3022e412b239 68,71
+packages/cf-os/src/main.test.ts
+  s_f1ff5bfe7029b1::t_ae99eaf8eb2d12 136,149,155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8113ba73e97ff73d8b5ae939458fe249411a9b37",
+  "prompts": {},
+  "sessions": {
+    "s_f1ff5bfe7029b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "130fe962-09b4-48de-83f9-ce4dbcd68c6b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
