@@ -31,7 +31,7 @@ catalog:
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
   vite: 7.3.6
-  vite-plus: ^1.2.0
+  vite-plus: ^1.3.0
   vitest: ^5.0.5
   # Exact: in lockstep with the miniflare entry above. Wrangler pins its own miniflare, so a
   # newer one would bring a second miniflare/workerd stack alongside the test pool's.
