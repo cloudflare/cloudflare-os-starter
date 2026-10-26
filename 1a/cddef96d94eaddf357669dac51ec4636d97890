@@ -1,0 +1,19 @@
+cloudflare-os
+  s_7dfe693742371f::t_4f75e3e03528ba 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1acddef96d94eaddf357669dac51ec4636d97890",
+  "prompts": {},
+  "sessions": {
+    "s_7dfe693742371f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "284f7677-ca13-40a4-af48-4e4872d6f382",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
