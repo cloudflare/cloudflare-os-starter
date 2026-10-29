@@ -1,0 +1,21 @@
+.agents/skills/cloudflare-os-operator/references/updating.md
+  s_75b06140ada4bd::t_7618460e2a9949 21
+docs/customization.md
+  s_75b06140ada4bd::t_532be3fce0cdcf 252
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dd1256690e58c0d881c28ed10390816669b620e1",
+  "prompts": {},
+  "sessions": {
+    "s_75b06140ada4bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "81172542-d580-4575-97a1-f005f5a5912b",
+        "model": "unknown"
+      },
+      "human_author": "Phillip Jones <pjones@cloudflare.com>"
+    }
+  }
+}
