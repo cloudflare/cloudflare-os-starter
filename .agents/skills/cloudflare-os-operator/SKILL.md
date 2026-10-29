@@ -245,6 +245,8 @@ After first production provisioning, inventory the actual resource identities. C
 
 Disabling it is a deliberate choice with a consequence: every user must then supply their own model API keys, and a deployment migrated from the hosted flow shows an empty model picker because `wrangler deploy` replaces `vars` wholesale and drops the hosted `CF_AI_GATEWAY*` values. Confirm the operator wants that before setting it false.
 
+The AI Gateway Auto Router provider, whose one model is **Auto**, is turned on under Providers in `/admin`, not listed in `aiGateway.providers`.
+
 Decisions to confirm:
 
 1. Which gateway. `default` is created on first use; a migration from the hosted deploy must reuse `<instance>-ai` (see `docs/migrate-from-hosted.md`).
