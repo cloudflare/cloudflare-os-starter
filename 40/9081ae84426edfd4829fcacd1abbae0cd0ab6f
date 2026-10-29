@@ -1,0 +1,19 @@
+cloudflare-os
+  s_75b06140ada4bd::t_525a6c161c60b7 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "409081ae84426edfd4829fcacd1abbae0cd0ab6f",
+  "prompts": {},
+  "sessions": {
+    "s_75b06140ada4bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "81172542-d580-4575-97a1-f005f5a5912b",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Phillip Jones <pjones@cloudflare.com>"
+    }
+  }
+}
