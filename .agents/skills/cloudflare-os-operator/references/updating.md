@@ -18,6 +18,7 @@ Check the upstream range for each of the following. When none of them touches th
 - A new preinstalled Gatekeeper or Worker.
 - Build tooling changes.
 - Renamed paths, packages or variables.
+- A new Workshop storage-schema version (a `version.put(` in `packages/workshop-backend/src/storage-schema/overseer-migrations.ts`). It needs nothing here, but once deployed the Workshop cannot roll back to the old pin, and the summary has to say so.
 
 ## Gatekeeper Contract Changes
 
