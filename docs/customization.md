@@ -195,6 +195,7 @@ The binding stays bound whatever you configure here: as well as carrying gateway
 | --- | --- |
 | `enabled: true`, `providers: ["cloudflare"]` | Workers AI models over the binding. No token, no keys of your own. The default. |
 | Add `anthropic` or `openai` | Their models appear too. Keys live on the gateway ([Unified Billing or BYOK](https://developers.cloudflare.com/ai-gateway/get-started/#provider-authentication)), not in this repository. Still no token. |
+| Turn on **AI Gateway Auto Router** under Providers in `/admin` | One more model, **Auto**, which lets the Gateway's [Auto Router](https://developers.cloudflare.com/ai-gateway/features/auto-router/) choose among the other providers that are on. It is not one of `providers`. |
 | Add `google` | Needs `CF_AI_GATEWAY_API_TOKEN`. pi's Google adapter refuses a custom fetch, so Google inference cannot ride the binding. |
 | `accountId` set to another account | Needs `CF_AI_GATEWAY_API_TOKEN`. The binding only reaches gateways in the Worker's own account, so the generated config sets `CF_AI_GATEWAY_USE_BINDING: "false"` and the HTTPS transport takes over. |
 | `enabled: false` | No deployment-managed catalog. Each user supplies their own model API keys — and a Workshop [migrated from the hosted deploy](migrate-from-hosted.md) will show an empty model picker. |
