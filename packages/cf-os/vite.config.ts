@@ -36,12 +36,17 @@ export default {
           env: TESTS_WITH_TIMEOUT_ENV,
           // Workspace-wide, matching `cwd`: a guard that stopped seeing a file it asserts about would
           // cache-hit its way to a stale pass. Every fixture the suites write goes under the OS temp
-          // directory, so none of them writes its own input.
+          // directory, so none of them writes its own input, with one exception: `cf-os api`'s
+          // end-to-end suite has the pin generate its command table, which lands in the submodule
+          // when stale and is read back in the same run. It is derived from the pin's sources, which
+          // stay inputs, so the two directories are left out.
           input: [
             { auto: true },
             { pattern: '!**/node_modules/.vite/**', base: 'workspace' },
             { pattern: '!**/node_modules/.vite-temp/**', base: 'workspace' },
             { pattern: '!**/.wrangler/**', base: 'workspace' },
+            { pattern: '!cloudflare-os/packages/api-schema/generated/**', base: 'workspace' },
+            { pattern: '!cloudflare-os/packages/api-cli/generated/**', base: 'workspace' },
           ],
           output: [],
         },

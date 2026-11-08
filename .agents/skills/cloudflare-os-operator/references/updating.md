@@ -20,6 +20,10 @@ Check the upstream range for each of the following. When none of them touches th
 - Renamed paths, packages or variables.
 - A new Workshop storage-schema version (a `version.put(` in `packages/workshop-backend/src/storage-schema/overseer-migrations.ts`). It needs nothing here, but once deployed the Workshop cannot roll back to the old pin, and the summary has to say so.
 
+## The `cf-os api` Commands *(starter)*
+
+`cf-os api` runs the pin's own CLI, `cloudflare-os/packages/api-cli`, so its commands move with the pin and nothing in this repository is regenerated: the pin generates its command table itself, in the submodule and uncommitted, the first time `cf-os api` runs after the move. A method removed or renamed upstream breaks whatever calls its command: when the pin moves, the brief names `git -C cloudflare-os diff --stat <old> <new> -- packages/workshop-shared/src/api.ts`, the API the commands come from; if that lists changes, grep the docs, the operator skill and any scripts for the commands of the methods that changed. On a pin from before the CLI moved upstream (a rollback, say), `cf-os api` fails naming `cf-os update`.
+
 ## Gatekeeper Contract Changes
 
 The most common real work. The operator's Gatekeepers implement upstream's Gatekeeper RPC contract (`@gadgets/workshop-shared/gatekeeper`) and use its helpers. Upstream changes to it take several forms: a newly required method, a new parameter, a renamed field, or a new rule, such as what a Gatekeeper's types file may import.
