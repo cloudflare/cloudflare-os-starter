@@ -112,6 +112,7 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 ### 4. Verify the deployment
 
 - Open the router's hostname and confirm Access signs in with the expected identity, and that it is the only public route into the deployment.
+- From a terminal, `pnpm cf-os api whoami` calls the deployment's API as your Access identity (after `cloudflared access login <origin>`), the same way a coding agent can drive it; on a deployment it is for administrators only: see [`cf-os api`](packages/cf-os/README.md#driving-an-instance-cf-os-api).
 - Open `/admin`, confirm the email is an administrator, and set Context, Scheduler, Web Search and Custom Gatekeepers to disabled, optional, or enabled.
 - If Context Artifacts is enabled, create a Git-backed collection and confirm its repository can be populated and refreshed.
 - Enable the Custom Gatekeeper, ask for deployment information, and confirm its read appears as an observation.

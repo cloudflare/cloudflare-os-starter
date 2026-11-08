@@ -44,6 +44,9 @@ const REFERENCES = `${DEFAULT_TEMPLATE}/blob/main/.agents/skills/cloudflare-os-o
 /** Upstream's Gatekeeper contract, `@gadgets/workshop-shared/gatekeeper` and `/cloudflare-gatekeeper`. */
 const CONTRACT = ["packages/workshop-shared/src/gatekeeper.ts", "packages/workshop-shared/src/cloudflare-gatekeeper.ts"];
 
+/** Upstream's Workshop API, which the pin generates a starter project's `cf-os api` commands from. */
+const API_SOURCE = "packages/workshop-shared/src/api.ts";
+
 /** Lines of a failed install's output shown; it can run to hundreds. */
 const INSTALL_TAIL = 40;
 
@@ -587,6 +590,18 @@ function urlStep(state: Update): string[] {
     "or push the pin to that repository."];
 }
 
+/**
+ * The step for `cf-os api`, whose commands are the pin's: it generates them from its API, in the
+ * submodule and uncommitted, the first time `cf-os api` runs after the move. A starter project's
+ * scripts, docs and skills may call them.
+ */
+function apiStep(state: Update): string[] {
+  if (state.newPin === state.oldPin) return [];
+  return [`\`cf-os api\`'s commands are the pin's, generated from its API, so a method it removed or renamed breaks ` +
+    `whatever here calls its command (scripts, docs, the operator skill). ${diffCommand(state, [API_SOURCE])} shows ` +
+    "whether the API changed; if so, grep for the commands of the methods that did."];
+}
+
 /** The coding agent's steps after a starter merge. */
 function starterSteps(state: Update): string[] {
   return [
@@ -616,6 +631,7 @@ function starterSteps(state: Update): string[] {
     // The starter adapts its own code to its pin, but not the operator's Gatekeepers.
     ...contractStep(state).map((step) => `${step} That includes the operator's own Gatekeepers, which the starter ` +
       "cannot adapt for them."),
+    ...apiStep(state),
     ...state.newPin !== state.oldPin ? [EXPORT_STEP] : [],
     ...urlStep(state),
     "Keep any follow-up fixes in commits of their own, after the merge, so the update itself stays reviewable.",

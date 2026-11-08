@@ -44,7 +44,7 @@ function recording(replies: Replies = {}, nodeVersion = "24.19.0") {
       return { status, stdout: reply.stdout ?? (command === "pnpm" && args[0] === "--version" ? "11.17.0\n" : "") };
     },
     capture: async (command, args, { cwd, env }) => deps.spawn(command, args, { cwd, env, capture: true }),
-    configure: (entry, argv, cwd) => {
+    configure: async (entry, argv, cwd) => {
       configured.push({ entry, argv, cwd });
       return 0;
     },

@@ -13,11 +13,11 @@
 // reach `@gadgets/scripts`, which a published copy does not have; `pnpm` is spawned directly
 // rather than through its `pnpmCommand()` for that reason.
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { UsageError, type CommandArgs, type Context } from "../context.ts";
-import { delegate, localEntry, type SpawnDelegate } from "../project.ts";
+import { delegate, localEntry } from "../project.ts";
 import { waitOn } from "../prompt.ts";
 import { defaultCapture, defaultSpawn, succeeded, type CaptureTool, type SpawnTool, type ToolResult } from "../tools.ts";
 
@@ -44,7 +44,7 @@ export interface ScaffoldDeps {
   /** `process.versions.node`. */
   nodeVersion: string;
   /** Hands the new project's `cf-os init` the terminal. Resolves to its exit code. */
-  configure(entry: string, argv: string[], cwd: string): number;
+  configure(entry: string, argv: string[], cwd: string): Promise<number>;
 }
 
 function defaultDeps(): ScaffoldDeps {
@@ -52,7 +52,7 @@ function defaultDeps(): ScaffoldDeps {
     spawn: defaultSpawn(),
     capture: defaultCapture(),
     nodeVersion: process.versions.node,
-    configure: (entry, argv, cwd) => delegate(entry, argv, { cwd, env: process.env, spawn: spawnSync as SpawnDelegate }),
+    configure: (entry, argv, cwd) => delegate(entry, argv, { cwd, env: process.env, spawn }),
   };
 }
 

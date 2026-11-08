@@ -152,6 +152,8 @@ test("merges the starter, checks out its pin, installs, and writes the brief", a
   assert.match(text, /## Gatekeeper contract changes \(1\)\n\nThese change `@gadgets\/workshop-shared\/gatekeeper`[\s\S]*- `d111111` Two/);
   assert.match(text, /That includes the operator's own Gatekeepers, which the starter cannot adapt for them\./);
   assert.match(text, /not a class passes both/);
+  // `cf-os api` runs the pin's own commands, which the pin generates: the scripts calling them may break.
+  assert.match(text, /`cf-os api`'s commands are the pin's, generated from its API, so a method it removed or renamed breaks whatever here calls its command .*`git -C cloudflare-os diff --stat ccccccc ddddddd -- packages\/workshop-shared\/src\/api\.ts` shows whether the API changed/);
   assert.doesNotMatch(text, /git merge --abort|upgrade-and-rollback|Catalog Alignment|set-url/);
 });
 
@@ -361,7 +363,7 @@ test("outside a starter project, --upstream moves the pin alone: no starter fetc
   assert.match(text, /## For the coding agent\n\nIf you ran `cf-os update` yourself, these steps are yours: carry them out now/);
   assert.match(text, /Then the Gatekeeper contract, which the commits under "Gatekeeper contract changes" change\. Migrate every/);
   assert.match(text, /## Gatekeeper contract changes \(1\)/);
-  assert.doesNotMatch(text, /pnpm cf-os|set-url/);
+  assert.doesNotMatch(text, /pnpm cf-os|set-url|cf-os api/);
 });
 
 test("a failed install is in the brief, with where to start: the catalog", async (t) => {
@@ -751,6 +753,7 @@ test("the summary reports the gitlink the merge left, when it is not the one exp
   assert.deepEqual([pinOf(json).to, pinOf(json).moved], [OLD_PIN, false]);
   assert.doesNotMatch(stderr(), /is at the starter's/);
   assert.match(brief()!, /## cloudflare-os commits \(0\)|None: the pin did not move/);
+  assert.doesNotMatch(brief()!, /cf-os api/);
 });
 
 test("a conflicted pin gets commands that set a gitlink, and nothing claims it is checked out", async (t) => {
