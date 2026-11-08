@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -7,7 +8,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { cli, finish, invocationDir, type CliDeps } from "./main.ts";
 import { DELEGATION_SENTINEL, type SpawnDelegate } from "./project.ts";
-import { scratchProject, TEMPLATE } from "./test-support.ts";
+import { apiCliProject, scratchProject, TEMPLATE } from "./test-support.ts";
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const MAIN = join(SRC, "main.ts");
@@ -23,9 +24,16 @@ async function run(
   const spawned: { args: string[]; env: NodeJS.ProcessEnv; cwd: string }[] = [];
   const spawn: SpawnDelegate = (_command, args, options) => {
     spawned.push({ args, env: options.env, cwd: options.cwd });
-    return { status };
+    const child = Object.assign(new EventEmitter(), { kill: () => true });
+    setImmediate(() => child.emit("exit", status, null));
+    // `once` on a ChildProcess returns the ChildProcess, which a stand-in is not.
+    return child as unknown as ReturnType<SpawnDelegate>;
   };
-  const write = t.mock.method(process.stdout, "write", (chunk: string) => {
+  // Only text is the command's: the test runner reports on stdout in bytes, and may while a command
+  // awaits, so those pass through.
+  const original = process.stdout.write.bind(process.stdout) as (chunk: Uint8Array) => boolean;
+  const write = t.mock.method(process.stdout, "write", (chunk: string | Uint8Array) => {
+    if (typeof chunk !== "string") return original(chunk);
     stdout.push(chunk);
     return true;
   });
@@ -83,14 +91,17 @@ test("prints each command's help on stdout, anywhere", async (t) => {
   const { code, stdout } = await run(t, ["--help"], { cwd });
   assert.equal(code, 0);
   assert.match(stdout, /Commands:\n {2}init/);
+  assert.match(stdout, /^ {2}api {2,}call a running instance's API/m);
 });
 
 test("outside a project, only init and update run", async (t) => {
   const cwd = tempDir(t);
-  for (const name of ["import", "access", "secrets", "check", "deploy", "install"]) {
-    const { code, log } = await run(t, [name], { cwd });
-    assert.equal(code, 1, name);
-    assert.match(log, /Run `cf-os init <dir>` to create one/, name);
+  // `api --help` too: its help is the pinned cloudflare-os CLI's, which there is none of here.
+  for (const argv of [["import"], ["access"], ["secrets"], ["check"], ["deploy"], ["install"], ["api"], ["api", "--help"]]) {
+    const { code, log, stdout } = await run(t, argv, { cwd });
+    assert.equal(code, 1, argv.join(" "));
+    assert.match(log, /Run `cf-os init <dir>` to create one/, argv.join(" "));
+    assert.equal(stdout, "", argv.join(" "));
   }
   // update moves the pin of any repository that has one, so it is the command that refuses here.
   const updated = await run(t, ["update", "--upstream"], { cwd });
@@ -121,12 +132,59 @@ test("hands off to a copy at packages/cfos, where projects from before the renam
 
 test("hands off what only the project's copy may know: other commands, options and help", async (t) => {
   const { root, local } = projectWithLocalCopy(t);
-  for (const argv of [["frobnicate"], ["check", "--newer-option"], ["deploy", "--help"]]) {
+  for (const argv of [["frobnicate"], ["check", "--newer-option"], ["deploy", "--help"],
+    ["api", "open-workspace", "g1", "--profile", "p", "get-chat-history", "7", "--help"]]) {
     const { code, spawned, log } = await run(t, argv, { cwd: root });
     assert.equal(code, 0, argv.join(" "));
     assert.deepEqual(spawned.map((entry) => entry.args), [[local, ...argv]]);
     assert.equal(log, "");
   }
+});
+
+test("api takes its tokens verbatim, with the global options read and taken out wherever they are", async (t) => {
+  const { root, report } = apiCliProject(t);
+  writeFileSync(join(root, "other.jsonc"),
+    `{ "publicBaseUrl": null, "workers": { "router": { "name": "acme-os", "route": { "customDomain": "other.example.com" } } } }`);
+  const { code, log } = await run(t, [
+    "--profile", "p", "api", "--config", "other.jsonc", "open-workspace", "g1", "get-chat-history", "7",
+    "--before-sequence=3", "--account=acc", "--auth", "access", "--dry-run",
+  ], { cwd: root, env: { [DELEGATION_SENTINEL]: "1" } });
+  assert.equal(code, 0, log);
+  // The origin is other.jsonc's: --config reached the command, and none of the three reached the CLI.
+  const seen = JSON.parse(readFileSync(report, "utf8"));
+  assert.deepEqual(seen.argv, ["api", "open-workspace", "g1", "get-chat-history", "7", "--before-sequence=3", "--auth", "access", "--dry-run"]);
+  assert.equal(seen.CFOS_API_URL, "https://other.example.com");
+});
+
+test("api: a global option missing its value is a usage error; after `--`, one is the CLI's", async (t) => {
+  const { root, report } = apiCliProject(t);
+  const env = { [DELEGATION_SENTINEL]: "1" };
+  // Exit 2, not 1: nothing was sent, so the command needs fixing rather than retrying.
+  const missing = await run(t, ["api", "whoami", "--config"], { cwd: root, env });
+  assert.equal(missing.code, 2);
+  assert.equal(missing.log, "Option '--config <value>' argument missing. Run `cf-os api --help` for its commands and options.");
+  assert.ok(!existsSync(report), "the CLI ran");
+
+  // One left without its value does not take the CLI's next option for it: the call that
+  // --dry-run or --help guarded would run.
+  for (const guard of ["--dry-run", "--help", "--"]) {
+    const swallowed = await run(t, ["api", "open-workspace", "g1", "delete-chat", "7", "--profile", guard], { cwd: root, env });
+    assert.equal(swallowed.code, 2, guard);
+    assert.equal(swallowed.log, `Option '--profile <value>' argument is ambiguous: ${guard} reads as an option. ` +
+      "For a value that starts with a dash, write --profile=<value>. Run `cf-os api --help` for its commands and options.");
+    assert.ok(!existsSync(report), `the CLI ran without ${guard}`);
+  }
+  // Written with `=`, a value may start with a dash, and a lone `-` is no option.
+  const dashed = await run(t, ["api", "whoami", "--profile=-p", "--account", "-", "--dry-run"], { cwd: root, env });
+  assert.equal(dashed.code, 0, dashed.log);
+  assert.deepEqual(JSON.parse(readFileSync(report, "utf8")).argv, ["api", "whoami", "--dry-run"]);
+  rmSync(report);
+
+  const escaped = await run(t, ["api", "--dry-run", "--", "--config", "x"], { cwd: root, env });
+  assert.equal(escaped.code, 0, escaped.log);
+  const seen = JSON.parse(readFileSync(report, "utf8"));
+  assert.deepEqual(seen.argv, ["api", "--dry-run", "--", "--config", "x"]);
+  assert.equal(seen.CFOS_API_URL, "https://os.example.com");
 });
 
 test("says to install a project whose dependencies are not, rather than crash in its copy", async (t) => {
@@ -248,6 +306,50 @@ test("a failed run exits without waiting on the cf reads still running beside it
   assert.ok(existsSync(marker), "the read was ended with the process");
 });
 
+/** Starts `delegate` on a child that drains for 300 ms on SIGINT or SIGTERM, then exits 130. */
+async function handOff(t: { after: (fn: () => void) => void }) {
+  const child = `
+    const drain = () => setTimeout(() => { process.stdout.write("drained\\n"); process.exit(130); }, 300);
+    process.on("SIGINT", drain);
+    process.on("SIGTERM", drain);
+    process.stdout.write("ready\\n");
+    setInterval(() => {}, 1000);
+  `;
+  const entry = join(tempDir(t), "child.cjs");
+  writeFileSync(entry, child);
+  const script = `
+    import { spawn } from "node:child_process";
+    import { delegate } from ${JSON.stringify(join(SRC, "project.ts"))};
+    const code = await delegate(process.argv[1], [], { cwd: process.cwd(), env: process.env, spawn });
+    process.stdout.write("exit " + code + "\\n");
+    process.exitCode = code;
+  `;
+  const { spawn } = await import("node:child_process");
+  const parent = spawn(process.execPath, ["--input-type=module", "-e", script, entry], { detached: true, stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => { try { process.kill(-parent.pid!, "SIGKILL"); } catch {} });
+  let output = "";
+  const exited = new Promise<number | null>((done) => parent.once("exit", (code) => done(code)));
+  await new Promise<void>((ready) => parent.stdout.on("data", (chunk: Buffer) => {
+    output += chunk;
+    if (output.includes("ready")) ready();
+  }));
+  return { parent, exited, output: () => output };
+}
+
+test("a hand-off outlives a Ctrl-C to its process group, and exits with the child's code once it stops", async (t) => {
+  const { parent, exited, output } = await handOff(t);
+  process.kill(-parent.pid!, "SIGINT");
+  assert.equal(await exited, 130);
+  assert.equal(output(), "ready\ndrained\nexit 130\n", "the hand-off exited before its child had stopped");
+});
+
+test("a hand-off passes a SIGTERM sent to it alone on to its child", async (t) => {
+  const { parent, exited, output } = await handOff(t);
+  process.kill(parent.pid!, "SIGTERM");
+  assert.equal(await exited, 130);
+  assert.equal(output(), "ready\ndrained\nexit 130\n");
+});
+
 /** A module's imports: static ones (`import type` excluded: erased) and literal dynamic ones. */
 function importsOf(file: string): { static: string[]; dynamic: string[] } {
   const source = readFileSync(file, "utf8");
@@ -275,8 +377,7 @@ function staticClosure(entries: string[]): { files: Set<string>; packages: Set<s
 }
 
 test("the packed path never reaches @gadgets/scripts", () => {
-  // A published copy runs dispatch, delegation, scaffolding and update only, and lacks the `link:`
-  // package.
+  // A published copy runs dispatch, delegation, scaffolding and update only, and lacks the `link:` package.
   const { files, packages } = staticClosure([MAIN, join(SRC, "commands", "scaffold.ts"), join(SRC, "commands", "update.ts")]);
   const reached = [...packages].filter((name) => name.startsWith("@gadgets/"));
   assert.deepEqual(reached, [], `reachable from ${[...files].map((file) => relative(SRC, file)).join(", ")}`);
@@ -288,6 +389,22 @@ test("the packed path never reaches @gadgets/scripts", () => {
   // What a global install gets is exactly that: everything else is the project copy's, from its own install.
   const manifest = JSON.parse(readFileSync(join(SRC, "..", "package.json"), "utf8"));
   assert.deepEqual(Object.keys(manifest.dependencies), ["@clack/prompts"]);
+});
+
+test("api spawns the pinned cloudflare-os CLI and imports nothing of it, even for types", () => {
+  // Its runtime is upstream's (cloudflare-os/packages/api-cli), run as a child process: no module
+  // here reaches into the submodule or an @gadgets/* package, and none needs capnweb or hash-wasm.
+  const api = join(SRC, "commands", "api.ts");
+  const { files, packages } = staticClosure([api]);
+  const reachable = `reachable from ${[...files].map((file) => relative(SRC, file)).join(", ")}`;
+  assert.deepEqual([...packages].filter((name) => name.startsWith("@gadgets/") || ["capnweb", "hash-wasm"].includes(name)), [], reachable);
+  for (const file of files) {
+    const source = readFileSync(file, "utf8");
+    const typeOnly = [...source.matchAll(/^(?:import|export)\s+type\b[^;]*?from\s+"([^"]+)"/gm)].map((match) => match[1]);
+    const specifiers = [...importsOf(file).static, ...typeOnly, ...importsOf(file).dynamic];
+    assert.deepEqual(specifiers.filter((name) => name.startsWith("@gadgets/api") || name.includes("cloudflare-os/")), [],
+      relative(SRC, file));
+  }
 });
 
 test("init and secrets load without the submodule, to refuse or fail as they would", () => {
