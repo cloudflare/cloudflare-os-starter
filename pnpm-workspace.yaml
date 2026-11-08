@@ -17,13 +17,13 @@ packages:
 # when bumping the gitlink. The rest follow upstream for convenience.
 catalog:
   # Exact, matching upstream's lock. The overrides below set its miniflare and wrangler anyway.
-  '@cloudflare/vitest-plugin': 1.4.3
-  '@cloudflare/workers-types': ^5.20261001.1
+  '@cloudflare/vitest-plugin': 1.4.9
+  '@cloudflare/workers-types': ^5.20261027.1
   capnweb: ^0.12.0
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
   capnweb-validate: 0.3.0
   # Exact: a prerelease, kept in step with the Wrangler/workerd stack the test pool runs on.
-  miniflare: 5.20261001.0-alpha
+  miniflare: 5.20261023.1-beta
   # Exact: TypeScript 7 (tsgo). The submodule's tsconfig sets `singleThreaded`, which TS 5.9
   # rejects outright, so every package extending it has to be on 7.x. Nothing here uses the JS
   # compiler API, so the submodule's `typescript6` alias is not needed.
@@ -31,11 +31,11 @@ catalog:
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
   vite: 7.3.6
-  vite-plus: ^1.2.0
+  vite-plus: ^1.4.0
   vitest: ^5.0.5
   # Exact: in lockstep with the miniflare entry above. Wrangler pins its own miniflare, so a
   # newer one would bring a second miniflare/workerd stack alongside the test pool's.
-  wrangler: 4.147.0
+  wrangler: 4.154.0
 
 overrides:
   # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.
