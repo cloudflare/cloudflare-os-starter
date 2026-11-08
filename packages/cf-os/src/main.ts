@@ -239,7 +239,9 @@ function commandIndex(argv: string[]): number {
 /**
  * `argv` without the command's name and the global options with a value, which are returned
  * apart, for a {@link CommandSpec.rawArgs} command. Tokens after a `--` are the command's, whatever
- * they look like.
+ * they look like. As `parseArgs` has it for the other commands, a value that reads as an option is
+ * refused unless written `--flag=<value>`: a global option left without its value would otherwise
+ * take the command's own `--dry-run` or `--help`, and the call it guarded would run.
  */
 function splitGlobals(argv: string[], at: number): { values: CommandArgs["values"]; rest: string[] } {
   const values: CommandArgs["values"] = {};
@@ -261,8 +263,14 @@ function splitGlobals(argv: string[], at: number): { values: CommandArgs["values
     if (token.length > flag.length) {
       values[name] = token.slice(flag.length + 1);
     } else {
-      if (i + 1 >= tokens.length) throw new Error(`Option '${flag} <value>' argument missing`);
-      values[name] = tokens[++i];
+      const value = tokens[i + 1];
+      if (value === undefined) throw new Error(`Option '${flag} <value>' argument missing`);
+      if (value.length > 1 && value.startsWith("-")) {
+        throw new Error(`Option '${flag} <value>' argument is ambiguous: ${value} reads as an option. ` +
+          `For a value that starts with a dash, write ${flag}=<value>`);
+      }
+      values[name] = value;
+      i++;
     }
   }
   return { values, rest };

@@ -165,6 +165,21 @@ test("api: a global option missing its value is a usage error; after `--`, one i
   assert.equal(missing.log, "Option '--config <value>' argument missing. Run `cf-os api --help` for its commands and options.");
   assert.ok(!existsSync(report), "the CLI ran");
 
+  // One left without its value does not take the CLI's next option for it: the call that
+  // --dry-run or --help guarded would run.
+  for (const guard of ["--dry-run", "--help", "--"]) {
+    const swallowed = await run(t, ["api", "open-workspace", "g1", "delete-chat", "7", "--profile", guard], { cwd: root, env });
+    assert.equal(swallowed.code, 2, guard);
+    assert.equal(swallowed.log, `Option '--profile <value>' argument is ambiguous: ${guard} reads as an option. ` +
+      "For a value that starts with a dash, write --profile=<value>. Run `cf-os api --help` for its commands and options.");
+    assert.ok(!existsSync(report), `the CLI ran without ${guard}`);
+  }
+  // Written with `=`, a value may start with a dash, and a lone `-` is no option.
+  const dashed = await run(t, ["api", "whoami", "--profile=-p", "--account", "-", "--dry-run"], { cwd: root, env });
+  assert.equal(dashed.code, 0, dashed.log);
+  assert.deepEqual(JSON.parse(readFileSync(report, "utf8")).argv, ["api", "whoami", "--dry-run"]);
+  rmSync(report);
+
   const escaped = await run(t, ["api", "--dry-run", "--", "--config", "x"], { cwd: root, env });
   assert.equal(escaped.code, 0, escaped.log);
   const seen = JSON.parse(readFileSync(report, "utf8"));
