@@ -29,6 +29,7 @@ import {
   type Context,
   type GlobalFlags,
   type Output,
+  type TAKEOVER_FLAGS,
 } from "./context.ts";
 import { delegate, DELEGATION_SENTINEL, findProjectRoot, localEntry, type SpawnDelegate } from "./project.ts";
 import { Cancelled, terminalPrompter, type Prompter } from "./prompt.ts";
@@ -80,17 +81,49 @@ interface CommandSpec {
 /** The exit code of a {@link CommandSpec.rawArgs} command's usage error; others' are 1. */
 const USAGE_EXIT = 2;
 
+/**
+ * The options of a take-over of a hosted instance, which `init` and `import` both take: the flags of
+ * the command the hosted deploy flow prints (`TAKEOVER_FLAGS`, context.ts, which checks their values).
+ */
+const TAKEOVER_OPTIONS = {
+  router: { type: "string" },
+  backend: { type: "string" },
+  release: { type: "string" },
+  commit: { type: "string" },
+} as const satisfies Record<(typeof TAKEOVER_FLAGS)[number], { type: "string" }>;
+
+const TAKEOVER_SYNOPSIS = "[--router <name>] [--backend <name>] [--release <id>] [--commit <sha>]";
+
+const TAKEOVER_HELP = [
+  "  --router <name>        the instance's router Worker, when it is not named after the instance",
+  "  --backend <name>       the instance's backend Worker, when it is not <instance>-backend",
+  "  --release <id>         the release the instance runs, as the hosted deploy flow names it",
+  "                         (r004945-6c8d301). Alone, a newer release its Workers report counts instead",
+  "  --commit <sha>         the cloudflare-os commit that release was built from, all 40 hex digits.",
+  "                         With it, stops if the account shows the instance past --release. Without",
+  "                         it, the commit is the one the newest release id ends in. The project's",
+  "                         pin is moved forward to it before anything is written, never back",
+];
+
 const COMMANDS: Record<string, CommandSpec> = {
   init: {
     summary: "create a project in <dir>, or configure and deploy the one you are in",
-    synopsis: "[<dir>] [--out <path>] [--template <git-url|path>] [--ref <branch|tag>]",
+    synopsis: `[<dir>] [--take-over <instance> ${TAKEOVER_SYNOPSIS}] [--out <path>] [--template <git-url|path>] ` +
+      "[--ref <branch|tag>]",
     help: [
       "  <dir>                  outside a project: where to create one (asked for when omitted)",
       "  --template <url|path>  starter to clone (default: https://github.com/cloudflare/cloudflare-os-starter)",
       "  --ref <branch|tag>     branch or tag of the starter to clone",
       "  --out <path>           inside a project: write the configuration here instead of in place",
+      "  --take-over <instance> take over this instance of the hosted deploy, with --account for its",
+      "                         account: the command the hosted deploy flow prints. Outside a project,",
+      "                         creates one in <dir> first",
+      ...TAKEOVER_HELP,
     ],
-    options: { out: { type: "string" }, template: { type: "string" }, ref: { type: "string" } },
+    options: {
+      out: { type: "string" }, template: { type: "string" }, ref: { type: "string" },
+      "take-over": { type: "string" }, ...TAKEOVER_OPTIONS,
+    },
     positionals: 1,
     failure: "Init failed.",
     anywhere: true,
@@ -98,13 +131,16 @@ const COMMANDS: Record<string, CommandSpec> = {
   },
   import: {
     summary: "take over an instance created by the hosted deploy (read-only against the account)",
-    synopsis: "[<instance>] [--out <path>]",
+    synopsis: `[<instance>] ${TAKEOVER_SYNOPSIS} [--out <path>]`,
     help: [
-      "  <instance>     the hosted instance's name: its router Worker's (asked for when omitted)",
-      "  --out <path>   write what was found into this copy of the config (pass --config's path to",
-      "                 update it in place). Without it, nothing is written.",
+      "  <instance>             the hosted instance's name (asked for when omitted)",
+      "  --out <path>           move the project's Cloudflare OS pin forward to the release the instance",
+      "                         runs, then write what was found into this copy of the config (pass",
+      "                         --config's path to update it in place). Without it, nothing is moved or",
+      "                         written: the release, its commit and whether the pin is behind are reported",
+      ...TAKEOVER_HELP,
     ],
-    options: { out: { type: "string" } },
+    options: { out: { type: "string" }, ...TAKEOVER_OPTIONS },
     positionals: 1,
     failure: "Import failed.",
     load: () => import("./commands/import.ts"),
@@ -276,6 +312,43 @@ function splitGlobals(argv: string[], at: number): { values: CommandArgs["values
   return { values, rest };
 }
 
+/** A command line taken apart: the command's name, and its options and arguments as it declares them. */
+export interface ParsedCommandLine {
+  command: string;
+  values: CommandArgs["values"];
+  positionals: string[];
+}
+
+/** `argv`, whose command `spec` is at index `at`, parsed by `spec`'s own options. Throws on one it does not take. */
+function parseCommand(spec: CommandSpec, argv: string[], at: number): Pick<ParsedCommandLine, "values" | "positionals"> {
+  if (spec.rawArgs) {
+    const { values, rest } = splitGlobals(argv, at);
+    return { values, positionals: rest };
+  }
+  const parsed = parseArgs({
+    args: argv.toSpliced(at, 1),
+    options: { ...GLOBAL_OPTIONS, ...spec.options },
+    allowPositionals: true,
+    strict: true,
+  });
+  if (parsed.positionals.length > spec.positionals) {
+    throw new Error(`Unexpected argument ${parsed.positionals[spec.positionals]}.`);
+  }
+  return { values: { ...parsed.values }, positionals: parsed.positionals };
+}
+
+/**
+ * `cf-os <argv>` taken apart as {@link cli} takes it apart, running nothing: which command, and
+ * the values and arguments it is handed. Throws on no command, an unknown one, or an option or
+ * argument the command does not take.
+ */
+export function parseCommandLine(argv: string[]): ParsedCommandLine {
+  const at = commandIndex(argv);
+  const command = at < 0 ? undefined : argv[at];
+  if (command === undefined || !Object.hasOwn(COMMANDS, command)) throw new Error(`Unknown command ${JSON.stringify(command ?? "")}.`);
+  return { command, ...parseCommand(COMMANDS[command], argv, at) };
+}
+
 /** What {@link cli} runs against, so tests can stand in for the process. */
 export interface CliDeps {
   cwd: string;
@@ -353,22 +426,9 @@ export async function cli(argv: string[], deps: CliDeps): Promise<number> {
    */
   const usageError = (message: string, own: boolean) => !spec.rawArgs ? `${message}\n\n${commandUsage(name)}`
     : own ? message : `${message.replace(/[^.!?]$/, "$&.")} Run \`cf-os ${name} --help\` for its commands and options.`;
-  let parsed: { values: CommandArgs["values"]; positionals: string[] };
+  let parsed: Pick<ParsedCommandLine, "values" | "positionals">;
   try {
-    if (spec.rawArgs) {
-      const { values, rest } = splitGlobals(argv, at);
-      parsed = { values, positionals: rest };
-    } else {
-      parsed = parseArgs({
-        args: argv.toSpliced(at, 1),
-        options: { ...GLOBAL_OPTIONS, ...spec.options },
-        allowPositionals: true,
-        strict: true,
-      }) as typeof parsed;
-      if (parsed.positionals.length > spec.positionals) {
-        throw new Error(`Unexpected argument ${parsed.positionals[spec.positionals]}.`);
-      }
-    }
+    parsed = parseCommand(spec, argv, at);
   } catch (error) {
     deps.out.log(usageError((error as Error).message, false));
     return spec.rawArgs ? USAGE_EXIT : 1;

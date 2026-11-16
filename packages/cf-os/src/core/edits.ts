@@ -1,10 +1,42 @@
 // Values to set in `deployment.jsonc`, as data. The core produces these; `deployment-file.ts`
 // applies them to the file text, comments intact.
 
+import type { PushIdentity } from "./hosted-release.ts";
+
 /** One value to set, by its path through the file's object tree. */
 export interface DeploymentEdit {
   path: (string | number)[];
   value: unknown;
+}
+
+/**
+ * Where `deployment.jsonc` holds the push identity a take-over carries over from a hosted instance:
+ * the top-level `pushIdentity` block. Absent, or `null`, on a deployment that never had one.
+ *
+ * Its value is a {@link PushIdentity} (core/hosted-release.ts), field for field:
+ *
+ *   "pushIdentity": {
+ *     "serviceUrl": "https://...",      // the notification service's origin
+ *     "installId": "...",               // this installation's identity with the service
+ *     "keyId": "...",                   // the active generation of its signing key
+ *     "webPushPublicKey": "..." | null  // null offers no browser push
+ *   }
+ *
+ * Each field is the backend's plain variable `PUSH_IDENTITY_VARS` (core/hosted-release.ts) names
+ * for it, so a deploy that honours the block sends the same four variables the hosted flow set. The
+ * signing key itself is not in the block and never in the file: it is the secret
+ * `PUSH_IDENTITY_SECRET` on the backend Worker, which a deploy leaves in place.
+ * `core/deployment-config.ts` is where the block is typed and validated.
+ */
+export const PUSH_IDENTITY_PATH: readonly string[] = ["pushIdentity"];
+
+/**
+ * The edit writing `push` at {@link PUSH_IDENTITY_PATH}: the block whole, so no field of an older
+ * identity outlives it.
+ */
+export function pushIdentityEdit(push: PushIdentity): DeploymentEdit {
+  const { serviceUrl, installId, keyId, webPushPublicKey } = push;
+  return { path: [...PUSH_IDENTITY_PATH], value: { serviceUrl, installId, keyId, webPushPublicKey } };
 }
 
 /** The value at `path` in a parsed file, or undefined. */

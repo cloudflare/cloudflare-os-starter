@@ -17,7 +17,15 @@ import {
   issuerOf,
   workersDevSubdomainOf,
 } from "./core/client.ts";
-import { FAKE_ACCOUNT, fakeCf, flag, workerSecretsReply, type FakeReply } from "./fake-cf.ts";
+import {
+  FAKE_ACCOUNT,
+  durableObjectNamespacesReply,
+  fakeCf,
+  flag,
+  workerLiveReplies,
+  workerSecretsReply,
+  type FakeReply,
+} from "./fake-cf.ts";
 
 test("pins the account and quiets the CLI on every call", async () => {
   const { spawn, calls } = fakeCf({ "zero-trust organization get": { auth_domain: "acme.cloudflareaccess.com" } });
@@ -106,6 +114,221 @@ test("lists a Worker's secret names, and reads a Worker the account does not hav
     cfClient({ spawn: fakeCf({ "workers secrets list": { name: "CLIENT_ID" } }).spawn })
       .listWorkerSecrets(FAKE_ACCOUNT, "acme-gk-github"),
     /expected a JSON array/);
+});
+
+/** A client whose `cf workers deployments list` answers with `reply`. */
+function deploymentsListAnswering(reply: FakeReply) {
+  return cfClient({ spawn: fakeCf({ "workers deployments list": reply }).spawn });
+}
+
+/** Version `v1` of Worker `acme`, read from a `cf workers versions get` that answers with `reply`. */
+function versionAnswering(reply: FakeReply) {
+  return cfClient({ spawn: fakeCf({ "workers versions get v1": reply }).spawn }).getWorkerVersion(FAKE_ACCOUNT, "acme", "v1");
+}
+
+test("lists a Worker's deployments, live first, and reads a Worker the account does not have as null", async () => {
+  // As the API prints one: wrapped in `{ deployments }`, with an author the client has no use for.
+  const deployments = [
+    {
+      id: "d2", source: "api", strategy: "percentage", created_on: "2026-10-01T09:00:00.000Z", author_email: "someone@example.com",
+      annotations: { "workers/triggered_by": "deployment", "workers/message": 7 },
+      versions: [{ version_id: "v2", percentage: 90, extra: true }, { version_id: "v1", percentage: 10 }],
+    },
+    { id: "d1", versions: [{ version_id: "v1", percentage: 100 }] },
+  ];
+  const { spawn, calls } = fakeCf(workerLiveReplies({ "acme-backend": { deployments, versions: [] } }));
+  const client = cfClient({ spawn });
+  assert.deepEqual(await client.listWorkerDeployments(FAKE_ACCOUNT, "acme-backend"), [
+    {
+      id: "d2", created_on: "2026-10-01T09:00:00.000Z", source: "api",
+      annotations: { "workers/triggered_by": "deployment" },
+      versions: [{ version_id: "v2", percentage: 90 }, { version_id: "v1", percentage: 10 }],
+    },
+    { id: "d1", versions: [{ version_id: "v1", percentage: 100 }] },
+  ]);
+  // One unpaged call: the live deployment is the first of the first page.
+  assert.deepEqual(calls.map((call) => call.args), [["workers", "deployments", "list", "--script-name", "acme-backend"]]);
+  assert.equal(calls[0].env.CLOUDFLARE_ACCOUNT_ID, FAKE_ACCOUNT);
+  assert.equal(await client.listWorkerDeployments(FAKE_ACCOUNT, "acme-gk-slack"), null);
+  // A bare list, and a Worker with no deployment yet.
+  const bare = deploymentsListAnswering;
+  assert.deepEqual(await bare([{ id: "d1", versions: [] }]).listWorkerDeployments(FAKE_ACCOUNT, "acme"), [{ id: "d1", versions: [] }]);
+  assert.deepEqual(await bare({ deployments: [] }).listWorkerDeployments(FAKE_ACCOUNT, "acme"), []);
+  // Any other failure is still one, and so is a reply that is not a list of deployments.
+  await assert.rejects(bare({ fail: "[10000] Authentication error" }).listWorkerDeployments(FAKE_ACCOUNT, "acme"),
+    (error: unknown) => error instanceof CfAuthError);
+  await assert.rejects(bare({ fail: "[10013] internal error" }).listWorkerDeployments(FAKE_ACCOUNT, "acme"),
+    (error: unknown) => error instanceof CfError && /\[10013\]/.test(error.message));
+  await assert.rejects(bare({ id: "d1" }).listWorkerDeployments(FAKE_ACCOUNT, "acme"),
+    /cf workers deployments list --script-name acme: expected a list of deployments, got an object/);
+  await assert.rejects(bare({ deployments: [{ versions: [] }] }).listWorkerDeployments(FAKE_ACCOUNT, "acme"),
+    /expected deployments with an id/);
+});
+
+/** Worker `acme`'s deployments, read from a `cf` whose one deployment `d1` lists `versions`. */
+function deploymentsWithVersions(versions: unknown) {
+  return deploymentsListAnswering({ deployments: [{ id: "d1", versions }] }).listWorkerDeployments(FAKE_ACCOUNT, "acme");
+}
+
+/** The account's Durable Object namespaces, read from a `cf durable-objects namespaces list` that answers with `reply`. */
+function namespacesAnswering(reply: FakeReply) {
+  return cfClient({ spawn: fakeCf({ "durable-objects namespaces list": reply }).spawn }).listDurableObjectNamespaces(FAKE_ACCOUNT);
+}
+
+test("fails a deployment whose versions it cannot read, instead of reading a live Worker as running nothing", async () => {
+  const list = deploymentsWithVersions;
+  for (const versions of [
+    // The share as text, the ID under another name, an entry that is no object, and one unreadable among readable ones.
+    [{ version_id: "v1", percentage: "100" }],
+    [{ id: "v1", percentage: 100 }],
+    ["v1"],
+    [{ version_id: "v1", percentage: 100 }, { version_id: "v2" }],
+    [{ version_id: 7, percentage: 100 }],
+  ]) {
+    await assert.rejects(list(versions),
+      /cf workers deployments list --script-name acme: expected each version of deployment d1 to have a version_id and a percentage/,
+      JSON.stringify(versions));
+  }
+  for (const versions of [undefined, null, "v1", { version_id: "v1", percentage: 100 }]) {
+    await assert.rejects(list(versions), /expected deployment d1 to list its versions/, JSON.stringify(versions));
+  }
+  // A share of none is read as given: which versions serve traffic is for the reader to say.
+  assert.deepEqual(await list([{ version_id: "v1", percentage: 0 }]), [{ id: "d1", versions: [{ version_id: "v1", percentage: 0 }] }]);
+});
+
+test("lists every Durable Object namespace that names its Worker and class, until a page adds none", async () => {
+  const namespaces = durableObjectNamespacesReply({
+    "acme-backend": Array.from({ length: 130 }, (_, i) => `Class${i}`),
+    "acme-gk-scheduler": ["ScheduleDriver"],
+  });
+  assert.equal(Array.isArray(namespaces) && namespaces.length, 131);
+  const { spawn, calls } = fakeCf({ "durable-objects namespaces list": namespaces });
+  const listed = await cfClient({ spawn }).listDurableObjectNamespaces(FAKE_ACCOUNT);
+  assert.equal(listed.length, 131);
+  // Cut down to what the core reads.
+  assert.deepEqual(listed[0], { id: "namespace-acme-backend-Class0", script: "acme-backend", class: "Class0" });
+  assert.deepEqual(listed.at(-1), { id: "namespace-acme-gk-scheduler-ScheduleDriver", script: "acme-gk-scheduler", class: "ScheduleDriver" });
+  // Two pages hold them all; the third, which adds nothing, is what ends the read.
+  assert.deepEqual(calls.map((call) => call.args.join(" ")), [1, 2, 3].map((page) =>
+    `durable-objects namespaces list --page ${page} --per-page 100`));
+  assert.ok(calls.every((call) => call.env.CLOUDFLARE_ACCOUNT_ID === FAKE_ACCOUNT));
+  const list = namespacesAnswering;
+  assert.deepEqual(await list([]), []);
+  // A page capped below the size asked for is not the last: the read goes on while pages add namespaces.
+  const all = Array.isArray(namespaces) ? namespaces : [];
+  let pages = 0;
+  const capped: SpawnCf = async (_command, argv) => {
+    pages++;
+    const start = (Number(flag(argv, "--page")) - 1) * 20;
+    return { status: 0, stdout: JSON.stringify(all.slice(start, start + 20)), stderr: "" };
+  };
+  assert.equal((await cfClient({ spawn: capped }).listDurableObjectNamespaces(FAKE_ACCOUNT)).length, 131);
+  assert.equal(pages, 8);
+  // An endpoint that ignores the page and repeats itself ends the read too.
+  let repeats = 0;
+  const repeat: SpawnCf = async () => {
+    repeats++;
+    return { status: 0, stdout: JSON.stringify(all.slice(0, 3)), stderr: "" };
+  };
+  assert.equal((await cfClient({ spawn: repeat }).listDurableObjectNamespaces(FAKE_ACCOUNT)).length, 3);
+  assert.equal(repeats, 2);
+  // A namespace whose Worker is gone names none, and belongs to no Worker.
+  assert.deepEqual(await list([{ id: "n1", name: "orphan" }, { id: "n2", script: "acme", class: "" }, { id: "n3", script: "acme", class: "Room" }]),
+    [{ id: "n3", script: "acme", class: "Room" }]);
+  // Anything else is a failure, never an account without Durable Objects.
+  await assert.rejects(list({ namespaces: [] }), /cf durable-objects namespaces list: expected a JSON array, got an object/);
+  await assert.rejects(list([{ script: "acme", class: "Room" }]), /expected namespaces with an id, got an object/);
+  await assert.rejects(list(["n1"]), /expected namespaces with an id, got a string/);
+  await assert.rejects(list({ fail: "[10000] Authentication error" }), (error: unknown) => error instanceof CfAuthError);
+  await assert.rejects(list({ fail: "[10013] internal error" }), (error: unknown) => error instanceof CfError && /\[10013\]/.test(error.message));
+});
+
+test("reads a version's annotations, variables and bindings, and never a secret's text", async () => {
+  const version = {
+    id: "0b6f1f0a-7d2c-4a55-9c3e-5a1d2f3e4b5c",
+    number: 12,
+    created_on: "2026-10-01T09:00:00.000Z",
+    source: "api",
+    annotations: { "workers/tag": "gd:4945:1a2b3c4d", "workers/message": "Cloudflare OS core from release r004945-6c8d301", "workers/triggered_by": "upload" },
+    bindings: [
+      { name: "CLOUDFLARE_OS_RELEASE_ID", type: "plain_text", text: "r004945-6c8d301" },
+      { name: "ADMINS", type: "json", json: ["admin@example.com"] },
+      { name: "GATEKEEPER_GITHUB", type: "service", service: "acme-gk-github", environment: "production" },
+      { name: "BLUEPRINTS", type: "kv_namespace", namespace_id: "kv-blueprints" },
+      // The API lists a secret by name and type. Whatever else a reply carried for one is dropped.
+      { name: "CFOS_INSTALL_PRIVATE_KEY", type: "secret_text", text: "a-secret-the-api-never-returns" },
+      { name: "SIGNING_KEY", type: "secret_key", key_base64: "a2V5", algorithm: { name: "HMAC" } },
+      // Fields that belong to another kind of binding are not a value of this one.
+      { name: "MISFILED", type: "service", text: "not-a-service" },
+      // Nor is a JSON value or a Worker's name kept for a binding of any other type, a secret's least of all.
+      { name: "WRAPPED_SECRET", type: "secret_text", json: { key: "json-of-a-secret" }, service: "service-of-a-secret" },
+      { name: "QUEUE", type: "queue", json: ["json-of-a-queue"], service: "service-of-a-queue" },
+      { type: "plain_text", text: "nameless" },
+      "not a binding",
+    ],
+    migration_tag: "v7",
+    modules: [{ name: "index.js", content_base64: "ZXhwb3J0IGRlZmF1bHQge30=" }],
+    compatibility_date: "2026-09-01",
+  };
+  const { spawn, calls } = fakeCf(workerLiveReplies({ "acme-backend": { deployments: [], versions: [version] } }));
+  const client = cfClient({ spawn });
+  const read = await client.getWorkerVersion(FAKE_ACCOUNT, "acme-backend", version.id);
+  assert.deepEqual(read, {
+    id: version.id,
+    number: 12,
+    created_on: "2026-10-01T09:00:00.000Z",
+    source: "api",
+    annotations: version.annotations,
+    bindings: [
+      { name: "CLOUDFLARE_OS_RELEASE_ID", type: "plain_text", text: "r004945-6c8d301" },
+      { name: "ADMINS", type: "json", json: ["admin@example.com"] },
+      { name: "GATEKEEPER_GITHUB", type: "service", service: "acme-gk-github" },
+      { name: "BLUEPRINTS", type: "kv_namespace" },
+      { name: "CFOS_INSTALL_PRIVATE_KEY", type: "secret_text" },
+      { name: "SIGNING_KEY", type: "secret_key" },
+      { name: "MISFILED", type: "service" },
+      { name: "WRAPPED_SECRET", type: "secret_text" },
+      { name: "QUEUE", type: "queue" },
+    ],
+    migration_tag: "v7",
+  });
+  assert.ok(!JSON.stringify(read).includes("a-secret-the-api-never-returns") && !JSON.stringify(read).includes("a2V5"));
+  assert.doesNotMatch(JSON.stringify(read), /-of-a-(secret|queue)/);
+  // The version alone, without its code: no `--include modules`.
+  assert.deepEqual(calls.map((call) => call.args), [["workers", "versions", "get", version.id, "--worker-id", "acme-backend"]]);
+  assert.equal(calls[0].env.CLOUDFLARE_ACCOUNT_ID, FAKE_ACCOUNT);
+  // A version of another Worker, and a failure, stay failures.
+  await assert.rejects(client.getWorkerVersion(FAKE_ACCOUNT, "acme", version.id),
+    (error: unknown) => error instanceof CfError && /has no version/.test(error.message));
+});
+
+test("reads a version in either shape the Workers API describes one in", async () => {
+  const get = versionAnswering;
+  // The scripts API's: creation and source under `metadata`, bindings under `resources`.
+  assert.deepEqual(await get({
+    id: "v1",
+    number: 3,
+    metadata: { created_on: "2026-10-20T14:30:00.000Z", source: "dash", author_email: "someone@example.com", author_id: "a1" },
+    annotations: { "workers/triggered_by": "upload" },
+    resources: {
+      bindings: [{ name: "PUBLIC_BASE_URL", type: "plain_text", text: "https://os.example.com" }, { name: "TOKEN", type: "secret_text" }],
+      script_runtime: { migration_tag: "v3", usage_model: "standard" },
+    },
+  }), {
+    id: "v1",
+    number: 3,
+    created_on: "2026-10-20T14:30:00.000Z",
+    source: "dash",
+    annotations: { "workers/triggered_by": "upload" },
+    bindings: [{ name: "PUBLIC_BASE_URL", type: "plain_text", text: "https://os.example.com" }, { name: "TOKEN", type: "secret_text" }],
+    migration_tag: "v3",
+  });
+  // The least a version can be: no annotations, no bindings, and no migration tag reported.
+  assert.deepEqual(await get({ id: "v1" }), { id: "v1", bindings: [], migration_tag: null });
+  assert.deepEqual(await get({ id: "v1", annotations: {}, bindings: "none", migration_tag: 7 }), { id: "v1", bindings: [], migration_tag: null });
+  for (const reply of [{ number: 1 }, [], "v1", null]) {
+    await assert.rejects(get(reply), /cf workers versions get v1 --worker-id acme: expected a version with an id/);
+  }
 });
 
 test("lists every page, not just the first", async () => {

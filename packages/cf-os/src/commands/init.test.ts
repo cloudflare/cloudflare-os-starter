@@ -1,29 +1,46 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { cfClient } from "../cf-client.ts";
 import { parseDeployment, valueAtPath } from "../deployment-file.ts";
-import { FAKE_ACCOUNT, fakeCf, flag, workerSecretsReply, type FakeCall, type FakeCfOptions, type FakeReply } from "../fake-cf.ts";
+import {
+  FAKE_ACCOUNT,
+  fakeCf,
+  flag,
+  workerLiveReplies,
+  workerSecretsReply,
+  type FakeCall,
+  type FakeCfOptions,
+  type FakeReply,
+} from "../fake-cf.ts";
 import { BACK_HINT } from "../back.ts";
 import {
   BACK,
   CANCEL,
   DEFAULT,
+  HOSTED_COMMIT,
+  HOSTED_RELEASE,
   hostedAccount,
+  hostedAccountLive,
+  hostedWorkerLive,
+  recordingPinMove,
   scratchProject,
   scriptedPrompter,
   TEMPLATE,
   testCatalog,
   testContext,
+  type PinMoveCall,
   type Step,
 } from "../test-support.ts";
-import type { Context } from "../context.ts";
+import { UsageError, type Context } from "../context.ts";
 import { Cancelled, type Prompter } from "../prompt.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import type { PendingSecrets } from "../gatekeeper-secrets.ts";
+import { parseCommandLine } from "../main.ts";
 import { run as importInstance } from "./import.ts";
-import { configure, NO_TERMINAL, run, type InitDeps } from "./init.ts";
+import { configure, NO_TERMINAL, noTerminalTakeOver, run, type InitDeps } from "./init.ts";
+import { BRIEF, type PinMove } from "./update.ts";
 
 const ZONE = { id: "zone-1", name: "example.com", status: "active" };
 
@@ -59,15 +76,53 @@ function account(overrides: Record<string, FakeReply> = {}): Record<string, Fake
 /** What the recording tools report, by `<command> <args>` prefix: an exit status and output. */
 type ToolReplies = Record<string, { status?: number; stdout?: string }>;
 
+/** The pin of a project behind the hosted fixtures' release. */
+const OLD_PIN = "1111111111111111111111111111111111111111";
+
+/**
+ * What stands in for `movePin` (commands/update.ts) in a run: given the call, and the context it was
+ * handed, which carries a prompter when the move may be asked about, what the move came to.
+ */
+type PinStandIn = (call: PinMoveCall, ctx: Context) => PinMove | Promise<PinMove>;
+
+/** A pin that is the commit asked for: nothing to move, and nothing asked. */
+const atRelease: PinStandIn = ({ to }) => ({ status: "current", path: "cloudflare-os", from: to, to, past: false });
+
+/** The question `movePin` asks before it moves {@link OLD_PIN} forward to the hosted fixtures' commit. */
+const MOVE_QUESTION = `Move cloudflare-os ${OLD_PIN.slice(0, 7)} → ${HOSTED_COMMIT.slice(0, 7)} (12 commits)?`;
+
+/**
+ * A pin behind the commit asked for, moved as `movePin` moves it: confirmed first, with
+ * {@link MOVE_QUESTION}, when it is handed a prompter, and left where it is when the answer is no.
+ */
+const behindRelease: PinStandIn = async ({ to, root }, ctx) => {
+  const target = HOSTED_COMMIT.startsWith(to) ? HOSTED_COMMIT : to;
+  if (ctx.prompter && !await ctx.prompter.confirm(MOVE_QUESTION, true)) {
+    return { status: "declined", path: "cloudflare-os", from: OLD_PIN, to: target, command: `pnpm cf-os update --to ${target}` };
+  }
+  return {
+    status: "moved", path: "cloudflare-os", from: OLD_PIN, to: target, commits: 12, brief: join(root, BRIEF), installed: true,
+    problems: [],
+  };
+};
+
 /**
  * Deps recording every tool run and deploy instead of running them, whose `wrangler secret bulk` adds
- * to `secrets`.
+ * to `secrets`. `pin` stands in for the pin move, each call of which is recorded in `moves`; `events`
+ * lists, in order, each pin move asked for and each read of the catalog.
  */
-function recording(tools: ToolReplies = {}, catalog: GatekeeperCatalog = testCatalog(), secrets: Record<string, string[]> = {}) {
+function recording(
+  tools: ToolReplies = {},
+  catalog: GatekeeperCatalog = testCatalog(),
+  secrets: Record<string, string[]> = {},
+  pin: PinStandIn = atRelease,
+) {
   const ran: string[] = [];
   const inputs: { line: string; input: string; accountId?: string }[] = [];
   const deployed: Context[] = [];
   const deployOptions: ({ secrets?: PendingSecrets[] } | undefined)[] = [];
+  const moves: PinMoveCall[] = [];
+  const events: string[] = [];
   const deps: InitDeps = {
     spawn: (command, args, { env, input }) => {
       const line = [command, ...args].join(" ");
@@ -89,9 +144,18 @@ function recording(tools: ToolReplies = {}, catalog: GatekeeperCatalog = testCat
       deployOptions.push(options);
       return 0;
     },
-    catalog: async () => catalog,
+    catalog: async () => {
+      events.push("catalog");
+      return catalog;
+    },
+    pin: async (to, ctx, { dryRun = false } = {}) => {
+      const call: PinMoveCall = { to, dryRun, root: ctx.root, asks: ctx.prompter !== null };
+      moves.push(call);
+      events.push(dryRun ? "compare" : "move");
+      return pin(call, ctx);
+    },
   };
-  return { deps, ran, inputs, deployed, deployOptions };
+  return { deps, ran, inputs, deployed, deployOptions, moves, events };
 }
 
 /**
@@ -102,12 +166,14 @@ async function init(
   t: Parameters<typeof scratchProject>[0],
   script: Step[],
   replies = account(),
-  { flags = {}, tools, values = { out: "init.jsonc" }, offerDeploy, catalog, template = TEMPLATE, secrets, delay }: {
+  { flags = {}, tools, values = { out: "init.jsonc" }, offerDeploy, catalog, template = TEMPLATE, secrets, delay, pin }: {
     flags?: object; tools?: ToolReplies; values?: Record<string, string>; offerDeploy?: boolean;
     catalog?: GatekeeperCatalog; template?: string;
     /** The account's Worker secrets, which `wrangler secret bulk` adds to: replies' must read the same object. */
     secrets?: Record<string, string[]>;
     delay?: FakeCfOptions["delay"];
+    /** What the pin move comes to. By default the pin is the commit asked for. */
+    pin?: PinStandIn;
   } = {},
 ) {
   const root = scratchProject(t, template);
@@ -120,7 +186,7 @@ async function init(
     logged.push({ text, at: [...prompter.answered] });
     log(text);
   };
-  const recorded = recording(tools, catalog, secrets);
+  const recorded = recording(tools, catalog, secrets, pin);
   const code = await configure({ command: "init", values, positionals: [] }, harness.ctx, recorded.deps,
     { offerDeploy });
   assert.deepEqual(prompter.remaining(), [], "the script was not used up");
@@ -206,6 +272,81 @@ test("configures a new deployment on a custom domain, steering around a taken ho
   assert.equal(JSON.parse(flag(create.args, "--body")!).domain, "cf-os.example.com");
 });
 
+test("a new deployment does not send the push identity a takeover left in the file", async (t) => {
+  // The file a takeover of a hosted instance wrote, in a copy of the project that sets up a deployment of its own.
+  const taken = TEMPLATE.replace('"<WORKSHOP_WORKER_NAME>"', '"acme-backend"').replace('"gatekeepers": {},',
+    '"gatekeepers": {},\n  "pushIdentity": { "serviceUrl": "https://push.example.com", "installId": "install-acme", "keyId": "key-1", "webPushPublicKey": null },');
+  assert.notEqual(taken, TEMPLATE);
+  const { code, written, stderr } = await init(t, [
+    ["What are you setting up?", "new"],
+    ["Base name", "acme-os"],
+    ["Where will people reach it?", "custom"],
+    ["Which zone?", "zone-1"],
+    ["Hostname", "cf-os.example.com"],
+    ...REST,
+    ["No Access application covers cf-os.example.com", "create"],
+    ["Deploy now?", false],
+  ], undefined, { template: taken });
+  assert.equal(code, 0);
+  const file = written();
+  assert.equal(valueAtPath(file, ["workers", "workshop", "name"]), "acme-os-backend");
+  assert.equal(valueAtPath(file, ["pushIdentity"]), null);
+  assert.match(stderr(), /The file's pushIdentity block is the push identity of the deployment it described \(Workshop Worker acme-backend\)/);
+  assert.match(stderr(), /"pushIdentity": null/);
+});
+
+test("a new deployment under the taken-over instance's own name keeps its push identity only while its Workshop Worker may be there", async (t) => {
+  // The file a takeover of instance acme wrote, in this account; the instance's Workers have since been deleted.
+  const taken = TEMPLATE.replace('"<CLOUDFLARE_ACCOUNT_ID>"', `"${FAKE_ACCOUNT}"`).replace('"<WORKSHOP_WORKER_NAME>"', '"acme-backend"')
+    .replace('"gatekeepers": {},',
+      '"gatekeepers": {},\n  "pushIdentity": { "serviceUrl": "https://push.example.com", "installId": "install-acme", "keyId": "key-1", "webPushPublicKey": null },');
+  assert.ok(taken.includes(FAKE_ACCOUNT) && taken.includes('"acme-backend"') && taken.includes("install-acme"));
+  const script: Step[] = [
+    ["What are you setting up?", "new"],
+    ["Base name", "acme"],
+    ["Where will people reach it?", "custom"],
+    ["Which zone?", "zone-1"],
+    ["Hostname", "cf-os.example.com"],
+    ...REST,
+    ["No Access application covers cf-os.example.com", "create"],
+    ["Deploy now?", false],
+  ];
+  // The account's Workers were listed, and acme-backend is not among them: the deploy creates it, with no key to sign with.
+  const gone = await init(t, script, undefined, { template: taken });
+  assert.equal(gone.code, 0);
+  assert.equal(valueAtPath(gone.written(), ["workers", "workshop", "name"]), "acme-backend");
+  assert.equal(valueAtPath(gone.written(), ["pushIdentity"]), null);
+  assert.match(gone.stderr(), /whose signing key is a secret on its Workshop Worker, acme-backend\. The account has no Worker of that name, so the one this deployment creates has no such key, and the block is set to null/);
+
+  // The list could not be read, so nothing shows the Worker is gone: the identity is left as the file has it.
+  const unlisted = await init(t, script, account({ "workers list": { fail: "Workers could not be listed." } }), { template: taken });
+  assert.equal(unlisted.code, 0);
+  assert.equal(valueAtPath(unlisted.written(), ["workers", "workshop", "name"]), "acme-backend");
+  assert.deepEqual(valueAtPath(unlisted.written(), ["pushIdentity"]),
+    { serviceUrl: "https://push.example.com", installId: "install-acme", keyId: "key-1", webPushPublicKey: null });
+  assert.doesNotMatch(unlisted.stderr(), /pushIdentity block/);
+});
+
+test("given a directory inside a project, names the take-over to run without it, with every flag", async (t) => {
+  // The deploy flow's command names a directory to create; pasted inside the project, it is the take-over without one.
+  const root = scratchProject(t, TEMPLATE);
+  const { ctx } = testContext({ root, flags: { account: FAKE_ACCOUNT }, prompter: scriptedPrompter([]) });
+  const values = { "take-over": "moss", router: "moss-os", backend: "moss-api", release: HOSTED_RELEASE, commit: HOSTED_COMMIT };
+  await assert.rejects(configure({ command: "init", values, positionals: ["moss"] }, ctx, recording().deps), (error: Error) => {
+    assert.ok(error instanceof UsageError);
+    assert.equal(error.message, `You are inside a project already (${root}), so init configures it. To take moss over from this ` +
+      `project, leave the directory out: \`pnpm cf-os init --take-over moss --account ${FAKE_ACCOUNT} --router moss-os --backend moss-api ` +
+      `--release ${HOSTED_RELEASE} --commit ${HOSTED_COMMIT}\`. To create another, run \`cf-os init <dir>\` from outside this one.`);
+    return true;
+  });
+  // With no take-over asked for, there is only the other project to point at.
+  await assert.rejects(configure({ command: "init", values: {}, positionals: ["moss"] }, ctx, recording().deps), (error: Error) => {
+    assert.equal(error.message, `You are inside a project already (${root}), so init configures it. To create another, run ` +
+      "`cf-os init <dir>` from outside this one.");
+    return true;
+  });
+});
+
 test("lists the accounts beside the sign-in check, and the Workers while asking what is being set up", async (t) => {
   const root = scratchProject(t, TEMPLATE);
   const cf = fakeCf(account());
@@ -284,7 +425,7 @@ test("adds a One-time PIN provider, validating it first", async (t) => {
 });
 
 test("on a takeover, asks again for a Worker it would add that another application has", async (t) => {
-  const hosted = hostedAccount();
+  const hosted = hostedAccountLive();
   const replies = {
     ...account(), ...hosted, "auth whoami": { authenticated: true, email: "me@example.com" },
     "workers list": [...hosted["workers list"] as object[], { name: "acme-errors" }, { name: "acme-gk-custom" }],
@@ -326,7 +467,7 @@ test("switches to a takeover when the name is a hosted instance", async (t) => {
     ["Organization name", DEFAULT],
     ["What it tells agents", DEFAULT],
     ["Deploy now?", false],
-  ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
+  ], { ...account(), ...hostedAccountLive(), "auth whoami": { authenticated: true, email: "me@example.com" } });
   assert.equal(code, 0);
   assert.equal(prompter.asked.find((asked) => asked.message.startsWith("What are you setting up?"))!.hints!.takeover,
     "one the hosted deploy created");
@@ -335,7 +476,8 @@ test("switches to a takeover when the name is a hosted instance", async (t) => {
   assert.equal(valueAtPath(file, ["workers", "websearch", "name"]), "acme-gk-websearch");
   assert.equal(valueAtPath(file, ["workers", "customGatekeeper", "name"]), "acme-gk-custom");
   assert.equal(valueAtPath(file, ["workers", "errorReporter", "name"]), "acme-errors");
-  assert.deepEqual(valueAtPath(file, ["access", "admins"]), ["me@example.com"]);
+  // The default offered is the instance's own admin, which its backend carries, not whoever is signed in.
+  assert.deepEqual(valueAtPath(file, ["access", "admins"]), ["admin@example.com"]);
   assert.equal(valueAtPath(file, ["access", "audience"]), "aud-acme");
   assert.equal(valueAtPath(file, ["resources", "blueprintsKvNamespaceId"]), "kv-blueprints");
   assert.equal(valueAtPath(file, ["accountId"]), FAKE_ACCOUNT);
@@ -373,7 +515,7 @@ test("takes over a hosted instance chosen from the menu", async (t) => {
     ["Organization name", "Acme Corp"],
     ["What it tells agents", DEFAULT],
     ["Deploy now?", false],
-  ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
+  ], { ...account(), ...hostedAccountLive(), "auth whoami": { authenticated: true, email: "me@example.com" } });
   assert.equal(code, 0);
   const file = written();
   assert.equal(valueAtPath(file, ["workers", "websearch", "name"]), "acme-search");
@@ -663,7 +805,7 @@ test("on a takeover, asks for the endpoint of an MCP portal it adds", async (t) 
     ["What it tells agents", DEFAULT],
     [PORTAL_URL, "https://portal.example.com/mcp"],
     ["Deploy now?", false],
-  ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
+  ], { ...account(), ...hostedAccountLive(), "auth whoami": { authenticated: true, email: "me@example.com" } });
   assert.deepEqual(valueAtPath(written(), ["gatekeepers", "mcpportal"]),
     { name: "acme-gk-mcpportal", vars: { MCP_PORTAL_URL: "https://portal.example.com/mcp" } });
 });
@@ -823,7 +965,7 @@ test("on a takeover, preselects the instance's Gatekeepers, which keep their sec
     ["Organization name", DEFAULT],
     ["What it tells agents", DEFAULT],
     ["Deploy now?", false],
-  ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
+  ], { ...account(), ...hostedAccountLive(), "auth whoami": { authenticated: true, email: "me@example.com" } });
   assert.deepEqual(prompter.asked.find((question) => question.message.startsWith("Which Gatekeepers?"))!.initial,
     ["custom", "github"]);
   assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), { github: { name: "acme-gk-github" } });
@@ -851,7 +993,7 @@ test("on a takeover, asks for a live Gatekeeper's missing secret before the depl
     ["Deploy now?", false],
   ], {
     ...account(),
-    ...hostedAccount(),
+    ...hostedAccountLive(),
     "auth whoami": { authenticated: true, email: "me@example.com" },
     "workers secrets list": workerSecretsReply(secrets),
   }, { secrets });
@@ -893,7 +1035,7 @@ for (const deploy of [true, false]) {
       ["Deploy now?", deploy],
     ], {
       ...account(),
-      ...hostedAccount(),
+      ...hostedAccountLive(),
       "auth whoami": { authenticated: true, email: "me@example.com" },
       "workers secrets list": workerSecretsReply(secrets),
     }, { secrets, tools: { "pnpm exec wrangler secret bulk": { status: 1 } } });
@@ -910,7 +1052,11 @@ for (const deploy of [true, false]) {
 }
 
 test("on a takeover that finds no public origin, prints no redirect URI on the template's domain", async (t) => {
-  const hosted = hostedAccount();
+  // The backend names no public origin and binds no GitHub Gatekeeper.
+  const hosted = hostedAccountLive({
+    "acme-backend": { vars: { PUBLIC_BASE_URL: undefined }, services: { GATEKEEPER_GITHUB: undefined } },
+    "acme-gk-github": null,
+  });
   const { written, stderr } = await init(t, [
     ["What are you setting up?", "takeover"],
     ["Which hosted instance?", "acme"],
@@ -950,7 +1096,7 @@ test("on a takeover, warns that leaving out a live Gatekeeper unbinds it, and ca
     ["Error Reporter Worker name", DEFAULT],
     ["Which model providers?", ["cloudflare"]],
     ["Deploy now?", false],
-  ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
+  ], { ...account(), ...hostedAccountLive(), "auth whoami": { authenticated: true, email: "me@example.com" } });
   assert.match(stderr(), /Warning: leaving out acme-gk-github removes its binding, so it disappears from the app along with every user's connection to it\. The Worker keeps running/);
   assert.ok(!prompter.asked.some((question) => /Custom Gatekeeper Worker name|Organization name/.test(question.message)));
   const file = written();
@@ -960,7 +1106,7 @@ test("on a takeover, warns that leaving out a live Gatekeeper unbinds it, and ca
 
 /** The hosted account, with `extra` Workers beside the instance's. */
 function hostedWith(...extra: string[]): Record<string, FakeReply> {
-  const hosted = hostedAccount();
+  const hosted = hostedAccountLive();
   return {
     ...account(),
     ...hosted,
@@ -1042,9 +1188,12 @@ test("on a takeover, leaving out the custom Gatekeeper warns of nothing when not
   assert.doesNotMatch(stderr(), /Warning: leaving out/);
 });
 
-/** The hosted account, its GitHub Gatekeeper's Worker named `acme-github`, as a file's own name can have it. */
+/**
+ * The hosted account, with a GitHub Gatekeeper Worker named `acme-github`, as a file's own name can
+ * have it, which the instance's backend does not bind: only the file says it is the instance's.
+ */
 function renamedGithubAccount(): Record<string, FakeReply> {
-  const hosted = hostedAccount();
+  const hosted = hostedAccountLive({ "acme-backend": { services: { GATEKEEPER_GITHUB: undefined } }, "acme-gk-github": null });
   return {
     ...account(),
     ...hosted,
@@ -1109,7 +1258,7 @@ test("on a takeover, warns that leaving out the file's own live Gatekeeper unbin
 
 /** The hosted account, plus another deployment's GitHub Gatekeeper Worker, `other-gk-github`. */
 function otherGithubAccount(): Record<string, FakeReply> {
-  const hosted = hostedAccount();
+  const hosted = hostedAccountLive();
   return {
     ...account(),
     ...hosted,
@@ -1162,7 +1311,7 @@ test("on a takeover that keeps the file's GitHub Worker over the instance's, war
 });
 
 test("on a takeover with another deployment's file, leaves the GitHub Worker it names alone", async (t) => {
-  const hosted = hostedAccount();
+  const hosted = hostedAccountLive({ "acme-backend": { services: { GATEKEEPER_GITHUB: undefined } }, "acme-gk-github": null });
   const { written, prompter, stderr } = await init(t, [
     ["What are you setting up?", "takeover"],
     ["Which hosted instance?", "acme"],
@@ -1216,7 +1365,7 @@ test("a takeover after importing over another account's file asks for the Worker
     .replace('"<CUSTOM_GATEKEEPER_WORKER_NAME>"', '"shared-custom"')
     .replace('"<ERROR_REPORTER_WORKER_NAME>"', '"shared-errors"'));
   const hosted: Record<string, FakeReply> = {
-    ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" },
+    ...account(), ...hostedAccountLive(), "auth whoami": { authenticated: true, email: "me@example.com" },
   };
   const replies = {
     ...hosted,
@@ -1224,7 +1373,7 @@ test("a takeover after importing over another account's file asks for the Worker
   };
   const imported = testContext({ root, client: cfClient({ spawn: fakeCf(replies).spawn }), flags: { account: FAKE_ACCOUNT } });
   assert.equal(await importInstance({ command: "import", values: { out: "acme.jsonc" }, positionals: ["acme"] }, imported.ctx,
-    async () => testCatalog()), 0);
+    async () => testCatalog(), recordingPinMove().move), 0);
 
   // The written file reads as acme's in this account, so it is now trusted: its names must not be the other's.
   const { prompter, written } = await init(t, withCustom(DEFAULT), replies,
@@ -1288,7 +1437,7 @@ test("Esc at the Gatekeeper question goes back to the model providers, offering 
 });
 
 test("on a takeover, Esc goes back through the questions after the discovery report without printing it again", async (t) => {
-  const replies = { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } };
+  const replies = { ...account(), ...hostedAccountLive(), "auth whoami": { authenticated: true, email: "me@example.com" } };
   const rest: Step[] = [
     ["Custom Gatekeeper Worker name", DEFAULT],
     ["Error Reporter Worker name", DEFAULT],
@@ -1438,7 +1587,7 @@ test("on a takeover, takes stock of the account while the instance question is o
     ["Organization name", DEFAULT],
     ["What it tells agents", DEFAULT],
     ["Deploy now?", false],
-  ], { ...account(), ...hostedAccount(), "auth whoami": { authenticated: true, email: "me@example.com" } });
+  ], { ...account(), ...hostedAccountLive(), "auth whoami": { authenticated: true, email: "me@example.com" } });
   assert.deepEqual(startedAt(calls, "kv namespaces list"), ["What are you setting up?"]);
   assert.deepEqual(startedAt(calls, "r2 buckets list"), ["What are you setting up?"]);
   assert.ok(prompter.waited.includes("Listing the account's Workers"), "no spinner while the instances were listed");
@@ -1464,7 +1613,7 @@ test("on a takeover, clears the spinner once the inventory fails, though reads a
   const prompter: Prompter = { ...scripted, busy, backable: () => ({ ...scripted.backable!(), busy }) };
   // The collision reads no storage ahead: the KV list fails while R2 and the AI Gateways still run.
   const cf = fakeCf({
-    ...account(), ...hostedAccount(),
+    ...account(), ...hostedAccountLive(),
     "auth whoami": { authenticated: true, email: "me@example.com" },
     "kv namespaces list": { fail: "[10000] Authentication error" },
   }, { delay: (args) => args[0] === "r2" || args[0] === "ai-gateway" ? 300 : 0 });
@@ -1590,4 +1739,558 @@ test("runs the project's own Wrangler with node rather than through pnpm exec", 
   assert.equal(await configure({ command: "init", values: { out: "init.jsonc" }, positionals: [] }, harness.ctx,
     recorded.deps, { offerDeploy: false }), 0);
   assert.deepEqual(recorded.ran, [`${process.execPath} ${realpathSync(join(installed, "bin", "wrangler.js"))} whoami --json`]);
+});
+
+/** A signed-in account holding the hosted instance "acme", each of whose Workers runs what `overrides` gives it. */
+function liveAccount(...overrides: Parameters<typeof hostedAccountLive>): Record<string, FakeReply> {
+  return { ...account(), ...hostedAccountLive(...overrides), "auth whoami": { authenticated: true, email: "me@example.com" } };
+}
+
+/** The questions of acme's takeover once it is let through, every default taken, the deploy declined. */
+const TAKEOVER: Step[] = [
+  ["Admin emails", DEFAULT],
+  ["Web Search Gatekeeper Worker name", DEFAULT],
+  ["Which Gatekeepers?", DEFAULT],
+  ["Custom Gatekeeper Worker name", DEFAULT],
+  ["Error Reporter Worker name", DEFAULT],
+  ["Which model providers?", DEFAULT],
+  ["Organization name", DEFAULT],
+  ["What it tells agents", DEFAULT],
+  ["Deploy now?", false],
+];
+
+/** `cf-os init --take-over acme --account <id> --out init.jsonc`, with more flags from `values`. */
+const takingOver = (values: Record<string, string> = {}) =>
+  ({ flags: { account: FAKE_ACCOUNT }, values: { out: "init.jsonc", "take-over": "acme", ...values } });
+
+/** Why the pin moves, as the confirmation says it after `movePin`'s own question. */
+const MOVE_REASON = `acme runs release ${HOSTED_RELEASE}, which this project's pin is behind: deployed as it is, it would put ` +
+  "older code over storage the instance has already migrated, which cannot be undone. The move is staged, not committed, and " +
+  "merges nothing of the starter.";
+
+test("--take-over is the takeover of that instance, without asking what is being set up or which instance", async (t) => {
+  const { code, root, prompter, written, stderr, moves, events } = await init(t, TAKEOVER, liveAccount(), takingOver());
+  assert.equal(code, 0);
+  assert.deepEqual(prompter.asked.map(({ message }) => message).filter((message) => /setting up|Which hosted instance/.test(message)), []);
+  assert.equal(prompter.asked[0].message, "Admin emails, comma-separated (they can open /admin)");
+  // The pin is held against the commit the instance's release ends in, before the catalog is read.
+  assert.deepEqual(moves, [{ to: "6c8d301", dryRun: false, root, asks: true }]);
+  assert.deepEqual(events, ["move", "catalog"]);
+  const log = stderr();
+  assert.match(log, /Hosted instance "acme" in account [0-9a-f]{32}:\n\nWhat its Workers run:\n {2}acme +r004945-6c8d301/);
+  assert.match(log, /This project pins cloudflare-os at that commit: deploying is the release the instance already runs\./);
+  assert.doesNotMatch(log, /The cloudflare-os pin moved/);
+  // What the backend carries is the default of each question it answers, and is written like the rest.
+  assert.equal(prompter.asked.find(({ message }) => message.startsWith("Admin emails"))!.initial, "admin@example.com");
+  assert.deepEqual(prompter.asked.find(({ message }) => message === "Which model providers?")!.initial, ["anthropic", "cloudflare"]);
+  const file = written();
+  assert.equal(valueAtPath(file, ["accountId"]), FAKE_ACCOUNT);
+  assert.deepEqual(valueAtPath(file, ["workers", "router"]), { name: "acme", route: { workersDev: true } });
+  assert.equal(valueAtPath(file, ["workers", "workshop", "name"]), "acme-backend");
+  assert.equal(valueAtPath(file, ["publicBaseUrl"]), "https://acme.acme-sub.workers.dev");
+  assert.deepEqual(valueAtPath(file, ["access", "admins"]), ["admin@example.com"]);
+  assert.deepEqual(valueAtPath(file, ["aiGateway", "providers"]), ["anthropic", "cloudflare"]);
+  assert.deepEqual(valueAtPath(file, ["gatekeepers"]), { github: { name: "acme-gk-github" } });
+  // The push identity's four variables, and never the key that signs with them.
+  assert.deepEqual(valueAtPath(file, ["pushIdentity"]), {
+    serviceUrl: "https://push.example.com", installId: "install-acme", keyId: "key-1", webPushPublicKey: "BFixtureWebPushPublicKey",
+  });
+  assert.doesNotMatch(readFileSync(join(root, "init.jsonc"), "utf8"), /CFOS_INSTALL_PRIVATE_KEY|CLOUDFLARE_OS_DEPLOYMENT/);
+  assert.match(log, /The push identity's signing key is the secret CFOS_INSTALL_PRIVATE_KEY on acme-backend\. It is not read and not written/);
+  assert.match(log, /CLOUDFLARE_OS_DEPLOYMENT variable[^\n]*is not carried over/);
+  // An answer is written once: the admins and the providers, which the backend carries too, are not counted twice.
+  assert.match(log, /\nWrote 26 values to init\.jsonc, comments intact\./);
+});
+
+test("--take-over confirms the pin move, saying from which commit to which and why, before anything is read from the submodule or written", async (t) => {
+  const seen: { config: string; out: boolean }[] = [];
+  const { code, root, prompter, written, stderr, moves, events } = await init(t, [[MOVE_QUESTION, true], ...TAKEOVER], liveAccount(), {
+    ...takingOver({ release: HOSTED_RELEASE, commit: HOSTED_COMMIT }),
+    pin: (call, ctx) => {
+      seen.push({ config: readFileSync(join(call.root, "deployment.jsonc"), "utf8"), out: existsSync(join(call.root, "init.jsonc")) });
+      return behindRelease(call, ctx);
+    },
+  });
+  assert.equal(code, 0);
+  const [confirmation] = prompter.asked;
+  assert.deepEqual([confirmation.kind, confirmation.message, confirmation.initial, confirmation.backable],
+    ["confirm", `${MOVE_QUESTION} ${MOVE_REASON}`, true, undefined]);
+  // --commit is what is pinned, and the move is the mover's own: confirmed, of the pin alone.
+  assert.deepEqual(moves, [{ to: HOSTED_COMMIT, dryRun: false, root, asks: true }]);
+  assert.deepEqual(events, ["move", "catalog"]);
+  assert.deepEqual(seen, [{ config: TEMPLATE, out: false }]);
+  const log = stderr();
+  assert.match(log, new RegExp(`Moved the cloudflare-os pin from ${OLD_PIN} forward to it by 12 commits, staged and not committed, ` +
+    "as `pnpm cf-os update --to` leaves it\\. \\.cf-os/update\\.md says what the move brings"));
+  assert.ok(log.indexOf("Moved the cloudflare-os pin") < log.indexOf("found    Workshop Worker"));
+  assert.match(log, new RegExp(`\\nThe cloudflare-os pin moved to ${HOSTED_COMMIT} for this takeover, staged and not committed: review what ` +
+    "it brings \\(\\.cf-os/update\\.md\\) and commit it with the file\\."));
+  assert.equal(valueAtPath(written(), ["workers", "workshop", "name"]), "acme-backend");
+});
+
+test("a pin move declined, or one that cannot be made, stops the takeover with nothing asked or written", async (t) => {
+  const declined = await init(t, [[MOVE_QUESTION, false]], liveAccount(), { ...takingOver(), pin: behindRelease });
+  assert.equal(declined.code, 1);
+  assert.match(declined.stderr(), new RegExp(`The pin was not moved: it is still ${OLD_PIN}, behind release ${HOSTED_RELEASE}, and ` +
+    "[^\\n]*cannot be undone\\. The project is not safe to deploy over the instance yet\\. Nothing was written\\.\\n" +
+    `Run this again and accept the move, or make it with \`pnpm cf-os update --to ${HOSTED_COMMIT}\``));
+  assert.match(declined.stderr(), /which merges the starter's main as well as moving the pin: at a terminal it asks first, and without one it merges unasked\./);
+
+  // A checkout with uncommitted changes: the exact command that moves the pin once they are dealt with.
+  const dirty = "The checkout has uncommitted changes, and updating needs a clean one. Commit or stash them (`git stash`), " +
+    "then run this again:\n   M deployment.jsonc";
+  const blocked = await init(t, [], liveAccount(), {
+    ...takingOver(),
+    pin: () => ({
+      status: "blocked", cause: "checkout", reason: dirty, behind: true, command: `pnpm cf-os update --to ${HOSTED_COMMIT}`,
+      from: OLD_PIN, to: HOSTED_COMMIT,
+    }),
+  });
+  assert.equal(blocked.code, 1);
+  assert.match(blocked.stderr(), new RegExp(`This project pins cloudflare-os at ${OLD_PIN}, which is behind release ${HOSTED_RELEASE}, ` +
+    "and the pin could not be moved forward:\\nThe checkout has uncommitted changes"));
+  assert.match(blocked.stderr(), /The project is not safe to deploy over the instance yet\. Nothing was written\./);
+  assert.match(blocked.stderr(), new RegExp(`move the pin with \`pnpm cf-os update --to ${HOSTED_COMMIT}\``));
+
+  // A submodule that is not checked out was never compared, so no command that might roll the pin back is offered.
+  const uncompared = await init(t, [], liveAccount(), {
+    ...takingOver(),
+    pin: () => ({
+      status: "blocked", cause: "checkout", behind: false, command: undefined, from: undefined, to: undefined,
+      reason: "cloudflare-os/ is not checked out, so its pin can be neither compared nor moved. Run `git submodule update --init cloudflare-os`, then run this again.",
+    }),
+  });
+  assert.equal(uncompared.code, 1);
+  assert.match(uncompared.stderr(), /could not be moved there:\ncloudflare-os\/ is not checked out[\s\S]*Nothing was written\.\nDeal with the above, then run this again\.$/);
+
+  // A move that left the install undone stops too: the project does not build.
+  const undone = await init(t, [], liveAccount(), {
+    ...takingOver(),
+    pin: ({ root }) => ({
+      status: "moved", path: "cloudflare-os", from: OLD_PIN, to: HOSTED_COMMIT, commits: 12, brief: join(root, BRIEF), installed: false,
+      problems: ["`pnpm install` failed. Run it again to see why, and fix that first."],
+    }),
+  });
+  assert.equal(undone.code, 1);
+  assert.match(undone.stderr(), /but the move left work undone:\n {2}`pnpm install` failed\./);
+
+  for (const { root, events, deployed, prompter } of [declined, blocked, uncompared, undone]) {
+    // Stopped before the catalog was read, with no question about the instance asked.
+    assert.deepEqual(events, ["move"]);
+    assert.ok(!prompter.asked.some(({ message }) => message.startsWith("Admin emails")));
+    assert.deepEqual(deployed, []);
+    assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE);
+    assert.deepEqual(readdirSync(root).toSorted(), ["cloudflare-os", "deployment.jsonc"]);
+  }
+});
+
+/** A release newer than {@link HOSTED_RELEASE}. */
+const NEWER_RELEASE = "r005012-9f8e7d6";
+
+test("--take-over stops on a command made before the instance moved on, and on a commit that is not its release's", async (t) => {
+  const moved = liveAccount({ "acme-gk-github": { release: NEWER_RELEASE, operation: "gk-github" } });
+  const stale = await init(t, [], moved, takingOver({ release: HOSTED_RELEASE, commit: HOSTED_COMMIT }));
+  assert.equal(stale.code, 1);
+  assert.match(stale.stderr(), new RegExp(`The command is for release ${HOSTED_RELEASE}, which is not what the account shows: the instance ` +
+    `moved to ${NEWER_RELEASE} since this command was made; get a fresh one from the deploy flow\\.\\nNothing was moved or written\\.$`));
+
+  const wrong = await init(t, [], liveAccount(), takingOver({ release: HOSTED_RELEASE, commit: "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432" }));
+  assert.equal(wrong.code, 1);
+  assert.match(wrong.stderr(), /--commit 9f8e7d6c5b4a39281706f5e4d3c2b1a098765432 is not the commit of --release r004945-6c8d301/);
+
+  for (const { root, moves, events } of [stale, wrong]) {
+    // The pin was never touched, nor compared.
+    assert.deepEqual(moves, []);
+    assert.deepEqual(events, []);
+    assert.deepEqual(readdirSync(root).toSorted(), ["cloudflare-os", "deployment.jsonc"]);
+  }
+
+  // Mixed releases with no command to judge them by: the highest run number is what the pin is held against.
+  const mixed = await init(t, TAKEOVER, moved, takingOver());
+  assert.equal(mixed.code, 0);
+  assert.deepEqual(mixed.moves.map(({ to }) => to), ["9f8e7d6"]);
+});
+
+test("--take-over without a terminal fails naming the import command, with every flag it was given", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const values = {
+    "take-over": "moss", router: "moss-os", backend: "moss-api", release: HOSTED_RELEASE, commit: HOSTED_COMMIT,
+  };
+  // No client: nothing is read from an account before it stops.
+  const harness = testContext({ root, prompter: null, flags: { account: FAKE_ACCOUNT } });
+  assert.equal(await run({ command: "init", values, positionals: [] }, harness.ctx), 1);
+  const command = `pnpm cf-os import moss --account ${FAKE_ACCOUNT} --router moss-os --backend moss-api --release ${HOSTED_RELEASE} ` +
+    `--commit ${HOSTED_COMMIT} --out deployment.jsonc`;
+  assert.equal(harness.stderr(), noTerminalTakeOver(command));
+  assert.ok(harness.stderr().includes(`there is no terminal to ask them at. Without one, run:\n  ${command}\n`));
+  assert.match(harness.stderr(), /moves the project's cloudflare-os pin forward to the release the instance runs/);
+  assert.deepEqual(harness.json, []);
+
+  // The sign-in, the file read and the file written are part of the command too; flags never given are not.
+  const elsewhere = testContext({ root, prompter: null, flags: { profile: "work", config: "staging.jsonc" } });
+  assert.equal(await run({ command: "init", values: { "take-over": "acme", out: "filled.jsonc" }, positionals: [] }, elsewhere.ctx), 1);
+  assert.ok(elsewhere.stderr().includes("\n  pnpm cf-os import acme --profile work --config staging.jsonc --out filled.jsonc\n"));
+  const inPlace = testContext({ root, prompter: null, flags: { config: "staging.jsonc" } });
+  assert.equal(await run({ command: "init", values: { "take-over": "acme" }, positionals: [] }, inPlace.ctx), 1);
+  assert.ok(inPlace.stderr().includes("\n  pnpm cf-os import acme --config staging.jsonc --out staging.jsonc\n"));
+
+  assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE);
+  assert.deepEqual(readdirSync(root).toSorted(), ["cloudflare-os", "deployment.jsonc"]);
+});
+
+test("refuses a take-over flag of the wrong form, or one given without --take-over, before anything is read", async (t) => {
+  const cases: [Record<string, string>, RegExp][] = [
+    [{ router: "moss-os" }, /--router, --backend, --release and --commit describe the hosted instance to take over: pass --take-over <instance> with them\./],
+    [{ release: HOSTED_RELEASE, commit: HOSTED_COMMIT }, /pass --take-over <instance> with them/],
+    [{ "take-over": "Moss OS" }, /--take-over "Moss OS" is not an instance name/],
+    [{ "take-over": "moss", commit: "6c8d301" }, /--commit "6c8d301" is not a full commit SHA: all 40 hex digits/],
+    [{ "take-over": "moss", router: "moss", backend: "moss" }, /--router and --backend both name Worker moss/],
+  ];
+  for (const prompter of [null, scriptedPrompter([])]) {
+    for (const [values, message] of cases) {
+      const root = scratchProject(t, TEMPLATE);
+      // No client: a usage error comes before the sign-in is even checked.
+      const { ctx, log } = testContext({ root, prompter, flags: { account: FAKE_ACCOUNT } });
+      await assert.rejects(configure({ command: "init", values, positionals: [] }, ctx, recording().deps),
+        (error) => error instanceof UsageError && message.test(error.message), JSON.stringify(values));
+      assert.deepEqual(log, []);
+    }
+  }
+});
+
+test("--take-over needs the cf sign-in, as a takeover reads the account", async (t) => {
+  const { code, root, stderr, events, moves } = await init(t, [["Sign in to cf?", false]],
+    { "auth whoami": { authenticated: false, error: "Not logged in" } }, takingOver());
+  assert.equal(code, 1);
+  assert.match(stderr(), /cf is not signed in, and taking over acme reads it from your account\. Sign in \(`pnpm exec cf auth login`\), then run this again\. Nothing was moved or written\./);
+  assert.deepEqual([events, moves], [[], []]);
+  assert.deepEqual(readdirSync(root).toSorted(), ["cloudflare-os", "deployment.jsonc"]);
+});
+
+/**
+ * An instance "moss" deployed under Worker names of its own: its router is `moss-os`, its backend
+ * `moss-api`, and its GitHub Gatekeeper `moss-hub`. A Worker `moss-gk-github`, which the backend does
+ * not bind, is in the account too, as is another deployment's router `moss`.
+ */
+function mossAccount(): Record<string, FakeReply> {
+  const live = {
+    "moss-os": hostedWorkerLive("moss-os", { services: { WORKSHOP_BACKEND: "moss-api" } }),
+    "moss-api": hostedWorkerLive("moss-api", {
+      vars: { PUBLIC_BASE_URL: "https://os.moss.example", CF_AI_GATEWAY_PROVIDERS: "cloudflare", CF_ACCESS_AUD: "aud-moss" },
+      json: { ADMINS: ["root@moss.example"] },
+      services: {
+        GATEKEEPER_CONTEXT: "moss-gk-context", GATEKEEPER_SCHEDULER: "moss-gk-scheduler", GATEKEEPER_WEBSEARCH: "moss-gk-websearch",
+        GATEKEEPER_GITHUB: "moss-hub",
+      },
+    }),
+    "moss-gk-context": hostedWorkerLive("moss-gk-context"),
+    "moss-gk-scheduler": hostedWorkerLive("moss-gk-scheduler"),
+    "moss-gk-websearch": hostedWorkerLive("moss-gk-websearch"),
+    "moss-hub": hostedWorkerLive("moss-hub", { operation: "gk-github" }),
+    moss: hostedWorkerLive("moss", { services: { WORKSHOP_BACKEND: "other-api" } }),
+  };
+  return {
+    ...account(),
+    "auth whoami": { authenticated: true, email: "me@example.com" },
+    "zero-trust organization get": { auth_domain: "moss-team.cloudflareaccess.com" },
+    "workers list": [...Object.keys(live), "moss-gk-github"].map((name) => ({ name })),
+    "kv namespaces list": [
+      { id: "kv-moss-blueprints", title: "moss-blueprints" },
+      { id: "kv-moss-avatars", title: "moss-avatars" },
+      { id: "kv-moss-context", title: "moss-context-collections" },
+    ],
+    "r2 buckets list": { buckets: [{ name: "moss-blueprint-content" }] },
+    "ai-gateway gateways list": [{ id: "moss-ai" }],
+    "zero-trust access applications list": [{ name: "Cloudflare OS moss 1a2b3c4d", aud: "aud-moss", domain: "os.moss.example" }],
+    "workers secrets list": workerSecretsReply({ "moss-hub": GITHUB_SECRETS }),
+    ...workerLiveReplies(live),
+  };
+}
+
+/** The questions of moss's takeover: it has a Web Search Gatekeeper, so that Worker is not asked for. */
+const MOSS_TAKEOVER = TAKEOVER.filter(([expected]) => expected !== "Web Search Gatekeeper Worker name");
+
+test("--take-over with --router and --backend takes over an instance deployed under Worker names of its own", async (t) => {
+  const values = { out: "init.jsonc", "take-over": "moss", router: "moss-os", backend: "moss-api", release: HOSTED_RELEASE, commit: HOSTED_COMMIT };
+  const { code, written, prompter, stderr, moves } = await init(t, MOSS_TAKEOVER, mossAccount(), { flags: { account: FAKE_ACCOUNT }, values });
+  assert.equal(code, 0);
+  assert.deepEqual(moves.map(({ to }) => to), [HOSTED_COMMIT]);
+  const file = written();
+  assert.deepEqual(valueAtPath(file, ["workers", "router"]), { name: "moss-os", route: { customDomain: "os.moss.example" } });
+  assert.equal(valueAtPath(file, ["workers", "workshop", "name"]), "moss-api");
+  // Everything else is named after the instance, and the Gatekeepers are the Workers the backend binds.
+  assert.equal(valueAtPath(file, ["workers", "websearch", "name"]), "moss-gk-websearch");
+  assert.equal(valueAtPath(file, ["workers", "customGatekeeper", "name"]), "moss-gk-custom");
+  assert.equal(valueAtPath(file, ["workers", "errorReporter", "name"]), "moss-errors");
+  assert.equal(valueAtPath(file, ["resources", "blueprintsKvNamespaceId"]), "kv-moss-blueprints");
+  assert.equal(valueAtPath(file, ["access", "audience"]), "aud-moss");
+  assert.deepEqual(valueAtPath(file, ["access", "admins"]), ["root@moss.example"]);
+  assert.deepEqual(prompter.asked.find(({ message }) => message.startsWith("Which Gatekeepers?"))!.initial, ["custom", "github"]);
+  assert.deepEqual(valueAtPath(file, ["gatekeepers"]), { github: { name: "moss-hub" } });
+  assert.match(stderr(), /moss-hub already runs in the account and keeps its secrets/);
+  assert.match(stderr(), /Named like this instance's Gatekeepers, but not bound by its backend, so no part of it, and left alone: moss-gk-github\./);
+
+  // Without the two names the instance is not found, and nothing is half-matched under the hosted flow's own.
+  const unnamed = await init(t, [], mossAccount(), { flags: { account: FAKE_ACCOUNT }, values: { out: "init.jsonc", "take-over": "moss" } });
+  assert.equal(unnamed.code, 1);
+  assert.match(unnamed.stderr(), /No hosted instance "moss" here: the account lacks its router Worker, its backend Worker, or both\./);
+  assert.match(unnamed.stderr(), /pass its name with --router <name> and --backend <name>[\s\S]*Nothing was moved or written\.$/);
+  assert.deepEqual([unnamed.moves, unnamed.events], [[], []]);
+  assert.deepEqual(readdirSync(unnamed.root).toSorted(), ["cloudflare-os", "deployment.jsonc"]);
+
+  // On a rerun, the file is the instance's own by its router's name, so the custom Gatekeeper stays on the Worker it names.
+  const own = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"moss-os"').replace('"<CLOUDFLARE_ACCOUNT_ID>"', `"${FAKE_ACCOUNT}"`)
+    .replace('"<CUSTOM_GATEKEEPER_WORKER_NAME>"', '"moss-example"');
+  const hosted = mossAccount();
+  const rerun = await init(t, MOSS_TAKEOVER, {
+    ...hosted, "workers list": [...hosted["workers list"] as { name: string }[], { name: "moss-example" }],
+  }, { flags: { account: FAKE_ACCOUNT }, values, template: own });
+  assert.equal(rerun.code, 0);
+  assert.equal(rerun.prompter.asked.find(({ message }) => message === "Custom Gatekeeper Worker name")!.initial, "moss-example");
+  assert.ok(!rerun.prompter.asked.some(({ message }) => /Is moss-example this deployment's own/.test(message)));
+  assert.equal(valueAtPath(rerun.written(), ["workers", "customGatekeeper", "name"]), "moss-example");
+});
+
+test("a Gatekeeper Worker the backend binds is the instance's, whatever it is called", async (t) => {
+  const hosted = liveAccount({
+    "acme-backend": { services: { GATEKEEPER_GITHUB: "acme-hub" } },
+    "acme-gk-github": null,
+    "acme-hub": { operation: "gk-github", secrets: GITHUB_SECRETS },
+  });
+  const { code, written, prompter, stderr } = await init(t, TAKEOVER, {
+    ...hosted,
+    "workers list": (hosted["workers list"] as { name: string }[])
+      .map((worker) => worker.name === "acme-gk-github" ? { ...worker, name: "acme-hub" } : worker),
+    "workers secrets list": workerSecretsReply({ "acme-hub": GITHUB_SECRETS }),
+  }, takingOver());
+  assert.equal(code, 0);
+  assert.deepEqual(prompter.asked.find(({ message }) => message.startsWith("Which Gatekeepers?"))!.initial, ["custom", "github"]);
+  assert.deepEqual(valueAtPath(written(), ["gatekeepers"]), { github: { name: "acme-hub" } });
+  assert.match(stderr(), /found {4}github Gatekeeper Worker +acme-hub/);
+  assert.match(stderr(), /acme-hub already runs in the account and keeps its secrets/);
+});
+
+test("a takeover lists the Workers changed by hand, with what a deploy does to them", async (t) => {
+  const { code, stderr } = await init(t, TAKEOVER, liveAccount({ "acme-backend": { handEdited: true } }), takingOver());
+  assert.equal(code, 0);
+  assert.match(stderr(), /Workers changed by hand since the hosted flow deployed them:\n {2}acme-backend {2}[^\n]*source dash[^\n]*created 2026-10-20T14:30:00\.000Z\)\n/);
+  assert.match(stderr(), /A deploy replaces each of these Workers' code, vars and bindings with the project's, so a change made by hand must go into deployment\.jsonc or the source first, or it is lost\./);
+});
+
+test("a takeover chosen from the menu goes through the same pin move, made once however often Esc replays the questions", async (t) => {
+  const { code, root, prompter, stderr, moves, events, written } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    [MOVE_QUESTION, true],
+    ["Admin emails", "ops@example.com"],
+    ["Web Search Gatekeeper Worker name", BACK],
+    ["Admin emails", BACK],
+    ["Which hosted instance?", DEFAULT],
+    ...TAKEOVER,
+  ], liveAccount(), { pin: behindRelease });
+  assert.equal(code, 0);
+  assert.deepEqual(moves, [{ to: "6c8d301", dryRun: false, root, asks: true }]);
+  assert.deepEqual(events, ["move", "catalog"]);
+  // The move's question is the terminal's own: asked once, with why, and no part of what Esc goes back through.
+  assert.deepEqual(prompter.asked.filter(({ message }) => message.startsWith("Move cloudflare-os")).map(({ message, backable }) => [message, backable]),
+    [[`${MOVE_QUESTION} ${MOVE_REASON}`, undefined]]);
+  const log = stderr();
+  assert.equal(log.split('Hosted instance "acme"').length, 2, "what the instance runs, once");
+  assert.equal(log.split("Moved the cloudflare-os pin from").length, 2, "the move, once");
+  // Going back one question offers the answer it had; past the instance, its questions start over from what it carries.
+  assert.deepEqual(prompter.asked.filter(({ message }) => message.startsWith("Admin emails")).map(({ initial }) => initial),
+    ["admin@example.com", "ops@example.com", "admin@example.com"]);
+  assert.deepEqual(valueAtPath(written(), ["access", "admins"]), ["admin@example.com"]);
+});
+
+test("a takeover left for a new deployment after its pin move still ends by saying the pin moved", async (t) => {
+  const { code, root, stderr, moves, written } = await init(t, [
+    ["What are you setting up?", "takeover"],
+    ["Which hosted instance?", "acme"],
+    [MOVE_QUESTION, true],
+    ["Admin emails", BACK],
+    ["Which hosted instance?", BACK],
+    ["What are you setting up?", "new"],
+    ["Base name", "acme-os"],
+    ["Where will people reach it?", "custom"],
+    ["Which zone?", "zone-1"],
+    ["Hostname", "cf-os.example.com"],
+    ...REST,
+    ["No Access application covers cf-os.example.com", "create"],
+    ["Deploy now?", false],
+  ], liveAccount(), { pin: behindRelease });
+  assert.equal(code, 0);
+  assert.deepEqual(moves, [{ to: "6c8d301", dryRun: false, root, asks: true }]);
+  assert.equal(valueAtPath(written(), ["workers", "router", "name"]), "acme-os");
+  // The move was made for a takeover that was then abandoned: the summary of the new deployment says it all the same.
+  assert.match(stderr(), new RegExp(`The cloudflare-os pin moved to ${HOSTED_COMMIT} for the takeover this run began, staged and not ` +
+    "committed: review what it brings \\(\\.cf-os/update\\.md\\) and commit it with the file\\."));
+});
+
+/** A new deployment's questions up to the Gatekeeper one, then Esc back to the base name, which turns out to be acme's. */
+const NEW_THEN_TAKEOVER: Step[] = [
+  ["What are you setting up?", "new"],
+  ["Base name", "acme-os"],
+  ["Where will people reach it?", "workersDev"],
+  ["Admin emails", DEFAULT],
+  ["Which AI Gateway", "default"],
+  ["Which model providers?", ["cloudflare"]],
+  // The catalog is read for this question, at the pin as it was.
+  ["Which Gatekeepers?", BACK],
+  ["Which model providers?", BACK],
+  ["Which AI Gateway", BACK],
+  ["Admin emails", BACK],
+  ["Where will people reach it?", BACK],
+  ["Base name", "acme"],
+  ['"acme" looks like a hosted instance', "takeover"],
+];
+
+test("a takeover that moves the pin after this run read the catalog stops, naming the command that reads it at the new pin", async (t) => {
+  const { code, root, events, stderr, deployed } = await init(t, [...NEW_THEN_TAKEOVER, [MOVE_QUESTION, true]], liveAccount(),
+    { pin: behindRelease });
+  assert.equal(code, 1);
+  // The catalog was read at the old pin, and is not read again by code loaded from it.
+  assert.deepEqual(events, ["catalog", "move"]);
+  const log = stderr();
+  assert.match(log, new RegExp(`Moved the cloudflare-os pin from ${OLD_PIN} forward to it by 12 commits`));
+  assert.ok(log.endsWith(`The cloudflare-os pin is at ${HOSTED_COMMIT} from here on, staged and not committed, but this run read the ` +
+    "Gatekeeper catalog before the move, and what reads it stays loaded as the old pin had it. So it stops here, with nothing " +
+    "written. Run the takeover again, which reads it at the new pin:\n" +
+    `  pnpm cf-os init --take-over acme --account ${FAKE_ACCOUNT} --out init.jsonc`), log);
+  assert.deepEqual(deployed, []);
+  assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE);
+  assert.deepEqual(readdirSync(root).toSorted(), ["cloudflare-os", "deployment.jsonc"]);
+
+  // A pin already at the release moves nothing, so the catalog it read is the one of the pin it deploys.
+  const current = await init(t, [...NEW_THEN_TAKEOVER, ...TAKEOVER], liveAccount());
+  assert.equal(current.code, 0);
+  assert.deepEqual(current.events, ["catalog", "move"]);
+  assert.doesNotMatch(current.stderr(), /So it stops here/);
+  assert.equal(valueAtPath(current.written(), ["workers", "workshop", "name"]), "acme-backend");
+});
+
+test("run by a command that deploys, a takeover that moves the pin stops before that command carries on with what it read", async (t) => {
+  const menu: Step[] = [["What are you setting up?", "takeover"], ["Which hosted instance?", "acme"]];
+  const moved = await init(t, [...menu, [MOVE_QUESTION, true]], liveAccount(), { pin: behindRelease, offerDeploy: false });
+  // Not 0: `cf-os deploy` carries on with the Gatekeeper catalog and configs it read at the old pin only after a 0.
+  assert.equal(moved.code, 1);
+  // Stopped at the gate: no question about the instance, and the catalog not read by code the caller loaded.
+  assert.deepEqual(moved.events, ["move"]);
+  assert.ok(!moved.prompter.asked.some(({ message }) => message.startsWith("Admin emails")));
+  assert.ok(moved.stderr().endsWith(`The cloudflare-os pin is at ${HOSTED_COMMIT} from here on, staged and not committed, but the ` +
+    "command that ran this wizard read the project before the move, the Gatekeeper catalog and each Gatekeeper's config among " +
+    "it, and would deploy the new pin's code under the old pin's. So it stops here, with nothing written and nothing deployed. " +
+    "Run the same command again: it reads the project at the new pin, and the takeover goes on from there."), moved.stderr());
+  assert.equal(readFileSync(join(moved.root, "deployment.jsonc"), "utf8"), TEMPLATE);
+  assert.deepEqual(readdirSync(moved.root).toSorted(), ["cloudflare-os", "deployment.jsonc"]);
+
+  // The name of a new deployment that turns out to be an instance's goes through the same gate.
+  const named = await init(t, [
+    ["What are you setting up?", "new"], ["Base name", "acme"], ['"acme" looks like a hosted instance', "takeover"], [MOVE_QUESTION, true],
+  ], liveAccount(), { pin: behindRelease, offerDeploy: false });
+  assert.equal(named.code, 1);
+  assert.match(named.stderr(), /Run the same command again: it reads the project at the new pin/);
+  assert.deepEqual(readdirSync(named.root).toSorted(), ["cloudflare-os", "deployment.jsonc"]);
+
+  // Run again, the pin is where the release is: nothing moves, and the caller carries on with a file written.
+  const rerun = await init(t, [...menu, ...TAKEOVER.slice(0, -1)], liveAccount(), { offerDeploy: false });
+  assert.equal(rerun.code, 0);
+  assert.deepEqual(rerun.events, ["move", "catalog"]);
+  assert.doesNotMatch(rerun.stderr(), /So it stops here/);
+  assert.equal(valueAtPath(rerun.written(), ["workers", "workshop", "name"]), "acme-backend");
+});
+
+/** A Worker as this project leaves it once it has deployed over it: no version of the hosted flow's, and no release named. */
+const DEPLOYED_OVER = { annotations: {}, releaseVar: false };
+
+/** The instance "acme" with every Worker {@link DEPLOYED_OVER}. */
+const deployedOver = () => liveAccount({
+  acme: DEPLOYED_OVER, "acme-backend": { ...DEPLOYED_OVER, json: { CLOUDFLARE_OS_DEPLOYMENT: undefined } },
+  "acme-gk-context": DEPLOYED_OVER, "acme-gk-scheduler": DEPLOYED_OVER, "acme-gk-github": DEPLOYED_OVER,
+});
+
+test("a takeover of Workers that name no release stops, naming the flag that says which commit they run and where that commit is", async (t) => {
+  const menu: Step[] = [["What are you setting up?", "takeover"], ["Which hosted instance?", "acme"]];
+  const { code, root, stderr, moves } = await init(t, menu, deployedOver());
+  assert.equal(code, 1);
+  assert.ok(stderr().endsWith("No Worker of the instance says which release it runs, and no --release was given: could not determine the " +
+    "commit; pass --commit, or copy the command from the deploy flow.\n" +
+    `With init, --commit goes with the instance: \`pnpm cf-os init --take-over acme --account ${FAKE_ACCOUNT} --commit <sha> --out init.jsonc\`.\n` +
+    "If this project has already deployed over the instance, that is why: Workers it deploys name no release, and the deploy flow " +
+    "has no command for them. The commit to pass is then the cloudflare-os commit it deployed them from, which is the project's " +
+    "pin unless the pin has moved since: `git -C cloudflare-os rev-parse HEAD` prints the commit checked out, which a pin " +
+    "staged and not yet committed is too.\n" +
+    "Nothing was moved or written."), stderr());
+  assert.deepEqual(moves, []);
+  assert.deepEqual(readdirSync(root).toSorted(), ["cloudflare-os", "deployment.jsonc"]);
+
+  // A rerun from the file a takeover wrote and a deploy followed: the file being the instance's own says why.
+  const own = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"acme"').replace('"<CLOUDFLARE_ACCOUNT_ID>"', `"${FAKE_ACCOUNT}"`);
+  const rerun = await init(t, menu, deployedOver(), { template: own, values: {} });
+  assert.equal(rerun.code, 1);
+  assert.ok(rerun.stderr().includes(`\`pnpm cf-os init --take-over acme --account ${FAKE_ACCOUNT} --commit <sha>\`.\n` +
+    "The deployment file is already this instance's, so this project has most likely deployed over it: Workers it deploys name " +
+    "no release, and the deploy flow has no command for them. The commit to pass is then the cloudflare-os commit it deployed " +
+    "them from, which is the project's pin unless the pin has moved since: `git -C cloudflare-os rev-parse HEAD` prints the " +
+    "commit checked out, which a pin staged and not yet committed is too.\n"), rerun.stderr());
+  assert.equal(readFileSync(join(rerun.root, "deployment.jsonc"), "utf8"), own);
+
+  // With that commit passed, the rerun is let through: the project's pin is held against it like any other.
+  const passed = await init(t, TAKEOVER, deployedOver(), { ...takingOver({ commit: HOSTED_COMMIT }), template: own });
+  assert.equal(passed.code, 0);
+  assert.deepEqual(passed.moves, [{ to: HOSTED_COMMIT, dryRun: false, root: passed.root, asks: true }]);
+  assert.match(passed.stderr(), new RegExp(`Taking it over at cloudflare-os commit ${HOSTED_COMMIT}, which --commit names; no Worker says which release that is\\.`));
+});
+
+test("the command a stop names for --commit keeps every flag the run was given", async (t) => {
+  // Releases with no run number to order them by: the commit has to be passed.
+  const hosted = mossAccount();
+  const unorderable = {
+    ...hosted,
+    ...workerLiveReplies({
+      "moss-os": hostedWorkerLive("moss-os", { release: "dev-k3x9", services: { WORKSHOP_BACKEND: "moss-api" } }),
+      "moss-api": hostedWorkerLive("moss-api", {
+        release: "dev-p7q2",
+        vars: { PUBLIC_BASE_URL: "https://os.moss.example", CF_AI_GATEWAY_PROVIDERS: "cloudflare", CF_ACCESS_AUD: "aud-moss" },
+        json: { ADMINS: ["root@moss.example"] },
+      }),
+    }),
+  };
+  const values = { out: "init.jsonc", "take-over": "moss", router: "moss-os", backend: "moss-api" };
+  const { code, root, stderr, moves } = await init(t, [], unorderable,
+    { flags: { account: FAKE_ACCOUNT, profile: "work", config: "deployment.jsonc" }, values });
+  assert.equal(code, 1);
+  assert.match(stderr(), /The releases named cannot be put in order \([^)]*dev-k3x9[^)]*dev-p7q2[^)]*\)/);
+  const command = `pnpm cf-os init --take-over moss --account ${FAKE_ACCOUNT} --router moss-os --backend moss-api --commit <sha> ` +
+    "--profile work --config deployment.jsonc --out init.jsonc";
+  assert.ok(stderr().endsWith(`With init, --commit goes with the instance: \`${command}\`.\nNothing was moved or written.`), stderr());
+  // With the commit in the placeholder's place, it is this run's own command line again: the custom names are not lost.
+  assert.deepEqual(parseCommandLine(command.replace("<sha>", HOSTED_COMMIT).split(" ").slice(2)), {
+    command: "init", positionals: [], values: {
+      "take-over": "moss", account: FAKE_ACCOUNT, router: "moss-os", backend: "moss-api", commit: HOSTED_COMMIT,
+      profile: "work", config: "deployment.jsonc", out: "init.jsonc",
+    },
+  });
+  assert.deepEqual(moves, []);
+  assert.deepEqual(readdirSync(root).toSorted(), ["cloudflare-os", "deployment.jsonc"]);
+});
+
+test("a write that fails after the takeover moved the pin says the pin stays moved", async (t) => {
+  if (process.getuid?.() === 0) return t.skip("root writes a read-only file");
+  const root = scratchProject(t, TEMPLATE);
+  writeFileSync(join(root, "locked.jsonc"), "{}\n");
+  chmodSync(join(root, "locked.jsonc"), 0o444);
+  const prompter = scriptedPrompter([[MOVE_QUESTION, true], ...TAKEOVER.slice(0, -1)]);
+  const harness = testContext({ root, client: cfClient({ spawn: fakeCf(liveAccount()).spawn }), prompter, flags: { account: FAKE_ACCOUNT } });
+  await assert.rejects(configure({ command: "init", values: { out: "locked.jsonc", "take-over": "acme" }, positionals: [] }, harness.ctx,
+    recording({}, testCatalog(), {}, behindRelease).deps), /EACCES|EPERM/);
+  assert.deepEqual(prompter.remaining(), []);
+  assert.match(harness.stderr(), new RegExp(`locked\\.jsonc could not be written, and nothing was\\. The cloudflare-os pin had moved to ${HOSTED_COMMIT}, ` +
+    "staged and not committed, and stays there: run this again once the file can be written\\."));
+  assert.equal(readFileSync(join(root, "locked.jsonc"), "utf8"), "{}\n");
+
+  // A path that cannot be a file at all is refused before the account is read or the pin moved.
+  const refused = testContext({ root, prompter: scriptedPrompter([]), flags: { account: FAKE_ACCOUNT } });
+  await assert.rejects(configure({ command: "init", values: { out: "missing/init.jsonc", "take-over": "acme" }, positionals: [] }, refused.ctx,
+    recording().deps), (error) => error instanceof UsageError && /--out missing\/init\.jsonc: missing is not a directory\. Nothing was moved or written\./.test(error.message));
 });

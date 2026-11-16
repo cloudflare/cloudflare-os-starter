@@ -6,6 +6,15 @@
 // Optional by design. When the client has no credentials the checks are skipped with one line rather
 // than failing, so an offline check keeps working; when it does have them, a mismatch is an error.
 //
+// `verifyMigrations` is the other check made before anything is built or deployed, and a separate
+// one, with its own reads and its own verdict: that no Worker about to be deployed over has Durable
+// Object storage migrated past the migrations this project's configuration has for it. A project
+// pinned behind what the account runs reaches a deploy by many roads (a take-over refused and
+// deployed anyway, a pin rolled back, an old checkout); this holds whichever was taken. It is not
+// optional the way the first is: without credentials it reports that it checked nothing, and what
+// that means is the caller's to decide. `cf-os check`, which deploys nothing, says so and carries
+// on; `cf-os deploy` refuses, since wrangler uploads over newer storage with no more than a warning.
+//
 // An optional Gatekeeper's missing OAuth secrets are warnings instead (`gatekeeperSecretWarnings`).
 
 import {
@@ -23,6 +32,17 @@ import {
 } from "./client.ts";
 import type { DeploymentConfig } from "./deployment-config.ts";
 import type { GatekeeperCatalog } from "./gatekeepers.ts";
+import {
+  flowTag,
+  instanceRelease,
+  liveMigrations,
+  migrationGap,
+  readWorkers,
+  versionReleases,
+  type MigrationStep,
+  type ReleaseReport,
+  type WorkerReading,
+} from "./hosted-release.ts";
 
 /** The outcome: what is wrong, or why nothing was checked. */
 export type AccountCheck = { skipped: string } | { problems: string[] };
@@ -171,6 +191,142 @@ async function checkStorage(reads: AccountReads, config: DeploymentConfig, probl
       `aiGateway.name: no AI Gateway named ${gateway} in account ${config.accountId}. The ` +
       "Workshop would advertise models whose every request fails.");
   }
+}
+
+/** A Worker a deploy is about to upload over, as the project's generated configuration has it. */
+export interface DeployedWorker {
+  /** Its name in the account. */
+  name: string;
+  /** The Durable Object `migrations` of its generated configuration; absent when it has none. */
+  migrations?: readonly MigrationStep[];
+}
+
+/**
+ * The outcome of {@link verifyMigrations}: the refusal, which is null when every Worker may be
+ * deployed over, or why that could not be told. `skipped` is no verdict: credentials kept a read from
+ * being made and nothing that was read shows a gap, so a caller about to deploy must not go on.
+ */
+export type MigrationCheck = { skipped: string } | { refusal: string | null };
+
+/** A read that has finished: what it gave, or the error it failed with. */
+type Settled<T> = { value: T } | { error: unknown };
+
+/** `read`, settled: never rejects, so two can be awaited together and judged in a fixed order. */
+function settled<T>(read: Promise<T>): Promise<Settled<T>> {
+  return read.then((value) => ({ value }), (error: unknown) => ({ error }));
+}
+
+/** Whether `error` is the lack of credentials, or of a `cf` to use them: no fault of the account's. */
+function withoutCredentials(error: unknown): error is CfAuthError | CfUnavailableError {
+  return error instanceof CfAuthError || error instanceof CfUnavailableError;
+}
+
+/**
+ * `name` and every release its live versions the hosted flow uploaded give evidence of, as
+ * {@link instanceRelease} weighs them. A version made by hand is left out: the release variable it
+ * carries is left over from the last hosted upload, and says nothing of what it runs.
+ */
+function releaseReports({ name, versions }: WorkerReading): ReleaseReport[] {
+  return versions
+    .filter((version) => flowTag(version) !== null)
+    .flatMap((version) => versionReleases(version).map((release) => ({ name, release })));
+}
+
+/**
+ * The command that moves the pin to what the Workers named `refused` run, with the commit left for
+ * the operator to supply, and beside it the release their live versions name where that is known:
+ * every one of them is the hosted flow's upload, names the same newest release, and its id carries
+ * the commit.
+ *
+ * The commit is never put into the command. Nothing here knows where the project's pin stands to
+ * it, `cf-os update --to` moves the pin either way, and a Worker is refused for other reasons than a
+ * pin behind (a name pointing at a Worker of another kind, a class added by hand): a command ready
+ * to run would roll back a pin already past that release. So the release is named with the one
+ * case it is the commit to pass in.
+ *
+ * Only the refused Workers count, and all of them must agree. A release named by a Worker that was
+ * not refused, or by some of the refused ones only, is not shown to be what the others run.
+ */
+function pinFix(refused: readonly string[], readings: readonly (WorkerReading | null)[]): string {
+  const generic = "`pnpm cf-os update --to <commit>`, with the cloudflare-os commit those Workers were deployed from or a newer one";
+  const named = refused.map((name) => {
+    const reading = readings.find((candidate) => candidate?.name === name);
+    return reading ? releaseReports(reading) : [];
+  });
+  const newest = instanceRelease(named.flat());
+  if (newest.kind !== "known" || newest.release.sha7 === null) return generic;
+  const { id, sha7 } = newest.release;
+  if (!named.every((reports) => reports.some(({ release }) => release.id === id))) return generic;
+  return `${generic} (their live versions, which the hosted flow uploaded, name release ${id}, built from commit ` +
+    `${sha7}: pass it only where this project's pin is behind that commit, as \`update --to\` an older commit moves ` +
+    "the pin back)";
+}
+
+/**
+ * Refuses a deploy over a Worker whose Durable Object storage was migrated past what this project
+ * has for it: each of `workers` is read as it runs in account `accountId` and held against the
+ * migrations of its generated configuration ({@link migrationGap}). A live migration tag that is
+ * none of the configuration's is a gap; where the API reports no tag, so is a stored class that no
+ * migration of the configuration creates. A Worker the account does not have yet, or one with no
+ * Durable Object storage, has nothing to be behind and passes.
+ *
+ * The refusal names each such Worker with what was found, and the fix: move the pin to what the
+ * account runs, or take the instance over again. Deploying anyway would run older code over storage
+ * a newer release migrated, and no later deploy takes that back.
+ *
+ * Read-only: the account's Durable Object namespaces once, and each Worker's deployments and live
+ * versions, a few Workers at a time. The two reads start together, both are awaited, and they are
+ * judged in a fixed order, so the verdict is the same whichever finishes first:
+ *
+ * - A read that fails for any reason but credentials is a refusal: a deploy that cannot tell must
+ *   not go ahead.
+ * - A read credentials kept from being made takes nothing away from the other. What was read is
+ *   still judged, and a gap it shows is a refusal: the classes a Worker stores, with no tag to go
+ *   with them, or a tag, with no classes.
+ * - Only when no gap shows and a read was not made is the check `skipped`, with the reason. That is
+ *   not a pass ({@link MigrationCheck}).
+ */
+export async function verifyMigrations(
+  client: CloudflareClient,
+  accountId: string,
+  workers: readonly DeployedWorker[],
+): Promise<MigrationCheck> {
+  if (!workers.length) return { refusal: null };
+  const [namespacesRead, workersRead] = await Promise.all([
+    settled(client.listDurableObjectNamespaces(accountId)),
+    settled(readWorkers(client, accountId, workers.map(({ name }) => name))),
+  ]);
+  const failures = [namespacesRead, workersRead].flatMap((read) => "error" in read ? [read.error] : []);
+  const broken = failures.find((error) => !withoutCredentials(error));
+  if (broken !== undefined) {
+    const reason = broken instanceof Error ? broken.message : String(broken);
+    return {
+      refusal: "What the account's Workers run could not be read, so whether their Durable Object storage is ahead of " +
+        `this project's pinned cloudflare-os is not known:\n  - ${reason}\n` +
+        "Deploying older code over storage a newer release has migrated cannot be undone, so nothing was built or " +
+        "deployed. Run this again once the read works.",
+    };
+  }
+  const namespaces = "value" in namespacesRead ? namespacesRead.value : [];
+  const readings = "value" in workersRead ? workersRead.value : null;
+  const gaps = workers.flatMap(({ name, migrations }, index) => {
+    // Unread, a Worker is taken to be there with no tag reported, so the classes it stores still count.
+    const reading = readings ? readings[index] : { name, deployment: null, versions: [] };
+    return migrationGap(liveMigrations(name, reading, namespaces), migrations) ?? [];
+  });
+  if (gaps.length) {
+    return {
+      refusal: "This project's pinned cloudflare-os is behind the Durable Object storage of Workers it would deploy over:\n" +
+        `${gaps.map(({ message }) => `  - ${message}`).join("\n")}\n` +
+        "Deploying would put older code over storage a newer release has already migrated, which cannot be undone, so " +
+        "nothing was built or deployed. Move the pin to what those Workers run, or past it, first: " +
+        `${pinFix(gaps.map(({ worker }) => worker), readings ?? [])}; ` +
+        "or take the instance over again with a fresh command from the hosted deploy flow, which moves the pin forward " +
+        "only (docs/migrate-from-hosted.md).",
+    };
+  }
+  const [unread] = failures;
+  return withoutCredentials(unread) ? { skipped: unread.message } : { refusal: null };
 }
 
 /** `names` as a list in prose: "A", "A and B", "A, B and C" (with `or`, "A or B"). */

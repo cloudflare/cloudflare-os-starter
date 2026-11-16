@@ -12,9 +12,16 @@ Updating is always `cf-os update`, never a hand-moved gitlink or a hand-merged s
 * `--upstream` (upstream's `main`) or `--to <commit|tag|branch>` stages a newer pin, uncommitted, for review; `--preview --to <branch|pull/N>` pins one for a preview only. In the starter repository itself there is no starter to merge, so `pnpm cf-os update --upstream` is the whole step.
 * `--dry-run` first shows both commit ranges. Then carry out `.cf-os/update.md` and its checklist, `references/updating.md`, before committing the pin.
 
+Taking over an instance of the hosted deploy is `cf-os init --take-over <instance>` or `cf-os import <instance> --out deployment.jsonc`, never names copied by hand (`docs/migrate-from-hosted.md`):
+
+* Either moves the pin forward to the release the instance runs before it writes anything, through `update`'s own code: the pin alone, staged and uncommitted, the starter never merged, and never backwards. A pin it cannot move stops it. So does a `--release` or `--commit` that would leave the pin behind the commit the instance's Workers themselves name.
+* `cf-os import <instance>` without `--out` only reports: no file written, no pin moved.
+* The flags (`--take-over`, `--router`, `--backend`, `--release`, `--commit`) are the command the hosted deploy flow prints; `main.test.ts` pins two such commands verbatim.
+
 Checks:
 
 * `pnpm lint` (lint, type-check, build) and `pnpm test` before pushing. `pnpm cf-os check` generates every Worker's config and dry-runs each deploy.
+* `check` and `deploy` refuse a Worker whose live Durable Object migrations are ahead of the pin's. `deploy` also refuses when `cf` cannot read the account to tell.
 * `cf-os` tests are `node:test`: `node --test packages/cf-os/src/<file>.test.ts`. The Workers' tests run on Vitest.
 * `pnpm cf-os deploy` deploys for real, with no confirmation: only when the operator asks.
 

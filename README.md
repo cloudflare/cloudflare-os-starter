@@ -73,7 +73,7 @@ It clones this starter and its submodule, installs, offers to create a private G
 
 `pnpm install` installs the submodule's own workspace too, from a `postinstall` hook. If you install with `--ignore-scripts`, run `pnpm cf-os install` afterwards; `pnpm cf-os check` says so if you forget.
 
-`pnpm cf-os init` offers the [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/#login) sign-in, which deploys, and the `cf` CLI's, which reads defaults from your account and sets up Access. [`packages/cf-os`](packages/cf-os/README.md) lists every command and flag.
+`pnpm cf-os init` offers the [Wrangler](https://developers.cloudflare.com/workers/wrangler/commands/#login) sign-in, which deploys, and the `cf` CLI's, which reads defaults from your account, sets up Access, and lets `pnpm cf-os deploy` read the Workers it is about to deploy over. [`packages/cf-os`](packages/cf-os/README.md) lists every command and flag.
 
 Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](https://developers.cloudflare.com/kv/), [R2](https://developers.cloudflare.com/r2/), [Browser Rendering](https://developers.cloudflare.com/browser-rendering/), and [Dynamic Worker Loaders](https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/). It also needs [Workers AI](https://developers.cloudflare.com/workers-ai/) and [AI Gateway](https://developers.cloudflare.com/ai-gateway/), which the default model catalog runs on. Web Search needs them too, through the account's `default` gateway when the catalog is off, so they are dispensable only with the catalog off and Web Search disabled in `/admin`. [Artifacts](https://developers.cloudflare.com/artifacts/) is optional.
 
@@ -99,7 +99,7 @@ pnpm cf-os check
 pnpm cf-os deploy
 ```
 
-`check` confirms the account has what `deployment.jsonc` names, then builds everything and dry-runs every deploy; `deploy` does the same and deploys for real, without asking for confirmation.
+`check` confirms the account has what `deployment.jsonc` names, then builds everything and dry-runs every deploy; `deploy` does the same and deploys for real, without asking for confirmation. Both also read each Worker they would deploy over, and refuse when its Durable Object storage has been migrated past the pinned Cloudflare OS: older code over newer storage cannot be undone. That read goes through `cf`, so `deploy` refuses without its sign-in (`pnpm exec cf auth login`) or a `CLOUDFLARE_API_TOKEN`, where `check` only says the check was skipped.
 
 With resource values left as `null`, Wrangler creates the three KV namespaces and R2 bucket automatically and reconnects them on later deploys. Set explicit IDs or a bucket name when the deployment must reuse existing resources.
 
@@ -143,4 +143,10 @@ The complete control reference and recipes live in [Customization](docs/customiz
 
 ### Moving here from the hosted deploy (os.cloudflare.app/deploy)
 
-Ejecting an instance created by the hosted flow means redeploying over Workers that already hold your data. Worker names, storage IDs, the public URL, AI Gateway and the Access application all have to be carried across, and each one fails quietly if it is not: the deploy succeeds against empty storage. `pnpm cf-os init`'s **Take over a hosted instance** finds them in your account and fills them in. [Migrating from the hosted deploy](docs/migrate-from-hosted.md) is the checklist.
+Ejecting an instance created by the hosted flow means redeploying over Workers that already hold your data. Worker names, storage IDs, the public URL, AI Gateway and the Access application all have to be carried across, and each one fails quietly if it is not: the deploy succeeds against empty storage. The version has to be carried across too: a project pinned behind the release the instance runs would deploy older code over storage already migrated, which cannot be undone. One command does both:
+
+```sh
+npx cf-os@latest init my-os --take-over <instance> --account <account-id>
+```
+
+It creates the project, reads the instance in your account, moves the project's Cloudflare OS pin forward to the release the instance runs, and fills `deployment.jsonc` in. The hosted flow prints this command with what it knows of the instance filled in. In a project you already have, it is `pnpm cf-os init --take-over <instance>`, or **Take over a hosted instance** among `pnpm cf-os init`'s questions; `pnpm cf-os import <instance>` reports the same without changing anything. [Migrating from the hosted deploy](docs/migrate-from-hosted.md) is the guide: what each value protects, what is not carried over, and what to check before the first deploy.

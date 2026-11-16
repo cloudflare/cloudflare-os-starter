@@ -1,10 +1,20 @@
-// `cf-os init [<dir>] [--template <git-url|path>] [--ref <branch|tag>]`, outside a project
+// `cf-os init [<dir>] [--template <git-url|path>] [--ref <branch|tag>] [--take-over <instance>
+//   [--router <name>] [--backend <name>] [--release <id>] [--commit <sha>]]`, outside a project
 //
 // Creates a project: clones the starter with its history and its `cloudflare-os` submodule, renames
 // `origin` to `starter` (leaving `origin` for the project's own repository), installs, offers
 // to create a private GitHub repository for it with `gh` and push there, then hands over to the new
 // project's own `cf-os init` to configure and deploy it. Without a terminal it stops after the
 // install and prints the next commands.
+//
+// With `--take-over`, the project is created to take over an instance of the hosted deploy, which is
+// the command the hosted deploy flow prints: the new project's `cf-os init` is handed the instance
+// and every flag that describes it, and carries the take-over out. Without a terminal, the command
+// printed is `cf-os import` with those same flags, which asks nothing, and the exit code is 1, as
+// the take-over asked for was not carried out. Either moves the project's Cloudflare OS pin forward
+// to the release the instance runs, which needs a checkout with nothing uncommitted. A project just
+// cloned is one: cloning and renaming a remote change no tracked file, and an install that did
+// change one would have the move refused, saying so, not skipped.
 //
 // Private, and created rather than forked: a fork of the public starter has to stay public.
 //
@@ -16,7 +26,15 @@
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { UsageError, type CommandArgs, type Context } from "../context.ts";
+import {
+  takeoverArgs,
+  takeoverFlags,
+  takeOverInstance,
+  UsageError,
+  type CommandArgs,
+  type Context,
+  type TakeoverFlags,
+} from "../context.ts";
 import { delegate, localEntry } from "../project.ts";
 import { waitOn } from "../prompt.ts";
 import { defaultCapture, defaultSpawn, succeeded, type CaptureTool, type SpawnTool, type ToolResult } from "../tools.ts";
@@ -56,12 +74,22 @@ function defaultDeps(): ScaffoldDeps {
   };
 }
 
-/** Why `target` cannot be created into, or undefined when it can. */
-function targetProblem(target: string): string | undefined {
+/**
+ * Why `target` cannot be created into, or undefined when it can. For a project that is already
+ * there, what to run in it instead: the take-over `takeOver` asks for with every flag it was given,
+ * as when the command the hosted deploy flow prints is run a second time, or plain `init`.
+ */
+function targetProblem(target: string, takeOver?: TakeOverCommand): string | undefined {
   if (!existsSync(target)) return undefined;
   if (!statSync(target).isDirectory()) return `${target} exists and is not a directory.`;
   if (readdirSync(target).length === 0) return undefined;
   if (existsSync(join(target, "deployment.jsonc"))) {
+    if (takeOver) {
+      // `--config` named a file as seen from outside the project, so it is not handed on.
+      const inProject = { ...takeOver, config: undefined };
+      return `${target} is already a project, so nothing was created. To take ${takeOver.instance} over from it: cd ` +
+        `into it and run \`${initCommand(inProject)}\` (without a terminal: \`${importCommand(inProject, "deployment.jsonc")}\`).`;
+    }
     return `${target} is already a project. To configure it: cd into it and run \`pnpm cf-os init\`.`;
   }
   return `${target} is not empty. Pick a new directory, or an empty one.`;
@@ -181,9 +209,88 @@ async function offerRepository(ctx: Context, deps: ScaffoldDeps, target: string,
     "arrive with `npx cf-os@latest update`.");
 }
 
+/** A take-over as a command line gives it: the instance, and everything said about it and where to find it. */
+export interface TakeOverCommand {
+  /** The instance to take over. */
+  instance: string;
+  /** What `--router`, `--backend`, `--release` and `--commit` gave. */
+  flags: TakeoverFlags;
+  /** `--account`, when given. */
+  account?: string;
+  /** `--profile`, when given. */
+  profile?: string;
+  /** `--config`, when given, as it was typed. */
+  config?: string;
+}
+
+/**
+ * {@link TakeOverCommand} as the arguments after a command's name and the instance: `--account`,
+ * then the take-over's own flags in the order the hosted deploy flow prints them, then `--profile`.
+ */
+function handedOn({ flags, account, profile }: TakeOverCommand): string[] {
+  return [
+    ...account ? ["--account", account] : [],
+    ...takeoverArgs(flags),
+    ...profile ? ["--profile", profile] : [],
+  ];
+}
+
+/**
+ * The command that carries `takeOver` out with nobody to ask: `cf-os import`, run in the project,
+ * with every flag the take-over was given, writing into `out`. It moves the project's Cloudflare OS
+ * pin forward to the release the instance runs, then writes what it found.
+ */
+export function importCommand(takeOver: TakeOverCommand, out: string): string {
+  return [
+    "pnpm cf-os import", takeOver.instance, ...handedOn(takeOver),
+    ...takeOver.config ? ["--config", takeOver.config] : [],
+    "--out", out,
+  ].join(" ");
+}
+
+/**
+ * The command that carries `takeOver` out at a terminal: `cf-os init --take-over`, run in the
+ * project, with every flag the take-over was given, and `--out` when `out` names a file to write
+ * other than the one read.
+ */
+export function initCommand(takeOver: TakeOverCommand, out?: string): string {
+  return [
+    "pnpm cf-os init --take-over", takeOver.instance, ...handedOn(takeOver),
+    ...takeOver.config ? ["--config", takeOver.config] : [],
+    ...out ? ["--out", out] : [],
+  ].join(" ");
+}
+
+/** A Cloudflare account ID, as `--account` takes it. */
+const ACCOUNT_ID = /^[a-f\d]{32}$/i;
+
+/** What the take-over flags are for, said when one is given without `--take-over`. */
+const FLAGS_NEED_TAKE_OVER =
+  "--router, --backend, --release and --commit describe the hosted instance to take over: pass --take-over <instance> with them.";
+
+/**
+ * The take-over `values` ask for, each value checked to be of the form its flag takes, `--account`
+ * among `given` included; undefined when `--take-over` was not given. A flag that describes an
+ * instance, given without one, is a {@link UsageError}, as is a value of the wrong form: both before
+ * anything is cloned or read.
+ */
+export function takeOverOf(values: CommandArgs["values"], given: Context["flags"]): TakeOverCommand | undefined {
+  const instance = takeOverInstance(values);
+  const flags = takeoverFlags(values);
+  if (instance === undefined) {
+    if (takeoverArgs(flags).length) throw new UsageError(FLAGS_NEED_TAKE_OVER);
+    return undefined;
+  }
+  if (given.account !== undefined && !ACCOUNT_ID.test(given.account)) {
+    throw new UsageError(`--account must be a 32-hex account ID, not "${given.account}".`);
+  }
+  return { instance, flags, account: given.account, profile: given.profile, config: given.config };
+}
+
 /** Creates a project from `args`, resolving to the exit code. */
 export async function scaffold(args: CommandArgs, ctx: Context, deps: ScaffoldDeps): Promise<number> {
   if (args.values.out) throw new UsageError("--out only applies inside a project, to configure it.");
+  const takeOver = takeOverOf(args.values, ctx.flags);
   const template = (args.values.template as string | undefined) ?? DEFAULT_TEMPLATE;
   const ref = args.values.ref as string | undefined;
   let dir = args.positionals[0];
@@ -191,11 +298,11 @@ export async function scaffold(args: CommandArgs, ctx: Context, deps: ScaffoldDe
     if (!ctx.prompter) throw new UsageError("Pass the directory to create the project in: `cf-os init <dir>`.");
     dir = await ctx.prompter.text("Where should the project go?", {
       initial: DEFAULT_DIR,
-      validate: (value) => targetProblem(resolve(ctx.cwd, value)),
+      validate: (value) => targetProblem(resolve(ctx.cwd, value), takeOver),
     });
   }
   const target = resolve(ctx.cwd, dir);
-  const problem = targetProblem(target);
+  const problem = targetProblem(target, takeOver);
   if (problem) throw new Error(problem);
 
   const missing = preflight(ctx.cwd, deps);
@@ -217,15 +324,34 @@ export async function scaffold(args: CommandArgs, ctx: Context, deps: ScaffoldDe
   const install = deps.spawn("pnpm", ["install"], { cwd: target, capture: false });
   if (install.error || install.status !== 0) {
     stopLoginCheck.abort();
+    // The take-over the command was for, with its flags: plain `init` does not find an instance under names of its own.
+    const next = takeOver ? initCommand({ ...takeOver, config: undefined }) : "pnpm cf-os init";
     throw new Error(`pnpm install failed in ${target}. Its output is above; fix it, then run ` +
-      "`pnpm install` and `pnpm cf-os init` there.");
+      `\`pnpm install\` and \`${next}\` there.`);
   }
 
-  const passOn = [
-    ...ctx.flags.account ? ["--account", ctx.flags.account] : [],
-    ...ctx.flags.profile ? ["--profile", ctx.flags.profile] : [],
-  ];
+  // What the new project's own `cf-os init` is handed: the take-over with every flag it was given, or
+  // the account and the sign-in alone.
+  const passOn = takeOver
+    ? ["--take-over", takeOver.instance, ...handedOn(takeOver)]
+    : [
+      ...ctx.flags.account ? ["--account", ctx.flags.account] : [],
+      ...ctx.flags.profile ? ["--profile", ctx.flags.profile] : [],
+    ];
   if (!ctx.prompter) {
+    if (takeOver) {
+      // `--config` named a file outside the project that is being created, so it is not handed on.
+      const inProject = { ...takeOver, config: undefined };
+      ctx.out.log(`\nCreated ${target}, but ${takeOver.instance} was not taken over: that asks questions, and there is ` +
+        "no terminal to ask them at. Next, keep the project in a private GitHub repository, then take over " +
+        `${takeOver.instance} from it:\n  cd ${dir}\n  ${repositoryCommand(target)}\n` +
+        `  ${importCommand(inProject, "deployment.jsonc")}\n` +
+        `The last moves the project's cloudflare-os pin forward to the release ${takeOver.instance} runs, staged and ` +
+        "not committed, then writes what it found into deployment.jsonc, asking nothing. At a terminal, " +
+        `\`${initCommand(inProject)}\` does the same and asks for the rest.`);
+      // The project is there, the take-over the command was for is not: not a success to script on.
+      return 1;
+    }
     ctx.out.log(`\nCreated ${target}. Next, keep it in a private GitHub repository, then configure and ` +
       `deploy it:\n  cd ${dir}\n  ${repositoryCommand(target)}\n` +
       `  pnpm cf-os init${passOn.length ? ` ${passOn.join(" ")}` : ""}`);
@@ -234,11 +360,18 @@ export async function scaffold(args: CommandArgs, ctx: Context, deps: ScaffoldDe
   await offerRepository(ctx, deps, target, login!);
   const entry = localEntry(target);
   if (!existsSync(entry)) {
+    if (takeOver) {
+      ctx.out.log(`\nCreated ${target}, but this starter has no packages/cf-os to take ${takeOver.instance} over ` +
+        "with, so nothing was taken over. Clone a starter that has it.");
+      return 1;
+    }
     ctx.out.log(`\nCreated ${target}, but this starter has no packages/cf-os to configure it with. Edit ` +
       "its deployment.jsonc by hand.");
     return 0;
   }
-  ctx.out.log(`\nCreated ${target}. Now configuring it.\n`);
+  ctx.out.log(takeOver
+    ? `\nCreated ${target}. Now taking over ${takeOver.instance} from it.\n`
+    : `\nCreated ${target}. Now configuring it.\n`);
   return deps.configure(entry, ["init", ...passOn], target);
 }
 

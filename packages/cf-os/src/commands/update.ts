@@ -22,6 +22,13 @@
 // It runs in the copy that was started and is never handed to the project's own (main.ts): it is
 // what replaces that copy, and a project older than this command does not have it. So, like
 // scaffolding, it is on the packed path: node builtins and this package's dependency-free modules.
+//
+// A command of this package that needs the pin somewhere before it carries on (taking over a hosted
+// instance, which must not deploy a pin older than the release the instance runs) runs it in-process,
+// through `movePin`, with options that are not flags. `pinOnly` leaves the starter out, so nothing
+// is merged that the operator did not ask for. `forwardOnly` moves the pin only to a commit that
+// descends from it, as the submodule's commit graph has it, and stops when the graph cannot say;
+// `atLeast` holds where that leaves the pin against other commits it must not be behind.
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
@@ -62,6 +69,110 @@ export interface UpdateDeps {
 
 function defaultDeps(): UpdateDeps {
   return { spawn: defaultSpawn(), now: () => new Date() };
+}
+
+/** How a command of this package restricts an update it runs in-process. Neither is a flag. */
+export interface UpdateOptions {
+  /**
+   * Leave the starter out, in a starter project too: nothing of it is fetched or merged, whatever
+   * else is asked for, and only the pin moves. `--ref` and `--template` are refused, as they name a
+   * starter to merge.
+   */
+  pinOnly?: boolean;
+  /**
+   * Move the pin only forward: to a commit that descends from it, by the submodule's commit graph
+   * and never by dates or names. A target that is the pin, or an ancestor of it, changes nothing (the
+   * summary's status is `current`); one that has left the pin's history, or that git cannot compare
+   * with it, is refused. Needs a target (`--to` or `--upstream`), and implies `pinOnly`.
+   *
+   * Uncommitted changes that leave the submodule where the index pins it are not in the way until a
+   * move turns out to be needed, and a pin staged and checked out counts as the pin.
+   */
+  forwardOnly?: boolean;
+  /**
+   * With `forwardOnly`: commits, each by its SHA (all 40 characters, or seven or more of them), that
+   * the pin must be at or past once the run is through, wherever the target leaves it. One the pin
+   * would be behind, or that the commit graph cannot place, refuses the run before anything moves.
+   * The target is the caller's word for what to pin; these are what else is known to run.
+   */
+  atLeast?: readonly string[];
+}
+
+/** What {@link movePin} came to. Every SHA is a full one. */
+export type PinMove =
+  /**
+   * The pin is staged at `to`, uncommitted, with the brief written. `problems` lists what was left
+   * undone after that (a failed install), each with its fix: the project does not build until they
+   * are dealt with.
+   */
+  | {
+    status: "moved"; path: string; from: string; to: string;
+    /** Upstream commits the move brings; null when they could not be listed. */
+    commits: number | null;
+    /** The brief's path. */
+    brief: string;
+    /** Whether `pnpm install` ran; null when the root has nothing to install. */
+    installed: boolean | null;
+    problems: string[];
+  }
+  /** A dry run: the pin is behind `to`, and nothing is in the way of moving it there. Nothing was changed. */
+  | { status: "behind"; path: string; from: string; to: string; commits: number | null }
+  /** The pin is `to` (`past` false) or descends from it (`past` true), so there is nothing to move. Nothing was changed. */
+  | { status: "current"; path: string; from: string; to: string; past: boolean }
+  /** The person at the terminal said no to the move. Nothing was changed; `command` makes it. */
+  | { status: "declined"; path: string; from: string; to: string; command: string }
+  /**
+   * The pin was not moved, and is not shown to be where the run was to leave it: at or past the
+   * target and every `atLeast` commit. `reason` says why, with its fix. Nothing was changed, except
+   * with `incomplete`: the move began and a step of it failed, the submodule may be checked out
+   * somewhere other than the pin, and `reason` is that step's own account, with the commands that
+   * finish it.
+   */
+  | {
+    status: "blocked";
+    /**
+     * What is in the way: the `checkout`'s state (uncommitted changes, a merge in progress, a submodule
+     * not checked out or not at its pin), the `target` (not a commit upstream's main has, or one that
+     * could not be fetched), the `relation` of the two (the target does not descend from the pin, or
+     * git could not tell), a `floor` (an `atLeast` commit the pin would be behind, or that git could
+     * not place), or a move that began and was left `incomplete`.
+     */
+    cause: "checkout" | "target" | "relation" | "floor" | "incomplete";
+    reason: string;
+    /**
+     * Whether the pin is known to be behind the target, so that what was refused is a move forward:
+     * the project is then older than the target until the move is made. False when the two have
+     * diverged, and when they were never compared.
+     */
+    behind: boolean;
+    /**
+     * `pnpm cf-os update --to <sha>`, which makes the move once `reason` is dealt with: set only when
+     * the pin is known not to be past the target (it is behind it, or the two have diverged). Undefined
+     * when the two were never compared, as that command would then roll the pin back if the target
+     * turned out to be behind it; the fix is to deal with `reason` and run the calling command again.
+     * As the command-line `update`, it also merges the starter, asking first at a terminal.
+     */
+    command: string | undefined;
+    /** The project's pin, once it was read. */
+    from: string | undefined;
+    /** The target's full SHA, once it was resolved. */
+    to: string | undefined;
+  };
+
+/** How far a run got, for {@link movePin}'s account of one that stops. */
+interface Progress {
+  /**
+   * What a stop at this point is about: the checkout's state, the target commit, how the two relate,
+   * or a commit the pin must also be at or past (`floor`). From `moving` on, a failure is an error and
+   * not a refusal.
+   */
+  stage: "checkout" | "target" | "relation" | "floor" | "moving";
+  /** The pin the project has, once read. */
+  from?: string;
+  /** The target's full SHA, once resolved. */
+  to?: string;
+  /** How the pin stands to the target, once it is established as not past it, so `update --to` would not roll it back. */
+  stands?: "behind" | "diverged";
 }
 
 /** Runs git in the repository root, capturing its output. */
@@ -176,6 +287,25 @@ function pinRange(ctx: Context, deps: UpdateDeps, path: string, oldPin: string, 
   };
 }
 
+/**
+ * Where `pin` stands to `target` in the submodule's commit graph: the `same` commit, `behind` it (the
+ * target descends from the pin), `past` it (the pin descends from the target), `diverged` (each has
+ * commits the other lacks), or `unknown` when git could not compare them, a commit it does not have
+ * among the reasons. A shallow clone hides history and never adds any, so `behind` and `past` hold
+ * there too, while `diverged` there may only mean the path between the two was not fetched.
+ */
+function relation(
+  ctx: Context, deps: UpdateDeps, path: string, pin: string, target: string,
+): "same" | "behind" | "past" | "diverged" | "unknown" {
+  if (pin === target) return "same";
+  const forward = git(ctx, deps, ["-C", path, "merge-base", "--is-ancestor", pin, target]);
+  if (succeeded(forward)) return "behind";
+  const back = git(ctx, deps, ["-C", path, "merge-base", "--is-ancestor", target, pin]);
+  if (succeeded(back)) return "past";
+  // Exit 1 is a definite no; anything else, git could not tell.
+  return forward.status === 1 && back.status === 1 ? "diverged" : "unknown";
+}
+
 /** Whether a submodule URL is upstream's: https or ssh, with or without `.git`. */
 function isUpstream(url: string): boolean {
   return /^(?:https?:\/\/|ssh:\/\/git@|git@)github\.com[:/]cloudflare\/cloudflare-os(?:\.git)?\/?$/i.test(url.trim());
@@ -184,9 +314,10 @@ function isUpstream(url: string): boolean {
 /**
  * The Cloudflare OS submodule, from `git config -f .gitmodules --get-regexp ^submodule\.`'s output:
  * `given` (`--submodule`), else the one entry whose URL is upstream's, else one at `cloudflare-os/`,
- * where a starter project has it even when it pins a fork.
+ * where a starter project has it even when it pins a fork. `flag` is whether whoever reads a refusal
+ * can pass `--submodule`: a command running this in-process has no such flag to offer.
  */
-export function findSubmodule(gitmodules: string, given?: string): { path: string; url?: string } {
+export function findSubmodule(gitmodules: string, given?: string, flag = true): { path: string; url?: string } {
   const entries = new Map<string, { path?: string; url?: string }>();
   for (const line of gitmodules.split("\n")) {
     const match = /^submodule\.(.+)\.(path|url)\s+(.*)$/.exec(line.trim());
@@ -205,13 +336,15 @@ export function findSubmodule(gitmodules: string, given?: string): { path: strin
   const upstream = submodules.filter((entry) => entry.url && isUpstream(entry.url));
   if (upstream.length > 1) {
     throw new Error(`Several submodules point at ${UPSTREAM} (${upstream.map((entry) => entry.path).join(", ")}). ` +
-      "Name the one to update with --submodule <path>.");
+      (flag ? "Name the one to update with --submodule <path>."
+        : `Nothing says which of them this project builds from: a starter project has the one, at ${STARTER_SUBMODULE}/.`));
   }
   if (upstream.length) return upstream[0];
   const starter = at(STARTER_SUBMODULE);
   if (starter) return starter;
-  throw new Error(`No submodule in .gitmodules points at ${UPSTREAM}. If this repository pins Cloudflare OS from ` +
-    "somewhere else (a fork, say), name its submodule with --submodule <path>.");
+  throw new Error(`No submodule in .gitmodules points at ${UPSTREAM}` + (flag
+    ? ". If this repository pins Cloudflare OS from somewhere else (a fork, say), name its submodule with --submodule <path>."
+    : `, and none is at ${STARTER_SUBMODULE}/, where a starter project has it, so there is no pin to compare or move.`));
 }
 
 /** A GitHub compare page between two commits of `repository`, when it is on GitHub. */
@@ -228,6 +361,8 @@ const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ?
 interface Update {
   /** Whether this is a starter project, which merges the starter; otherwise only the pin moves. */
   isStarter: boolean;
+  /** Whether the starter is left out of this run ({@link UpdateOptions.pinOnly}), so only the pin moves in a starter project too. */
+  pinOnly: boolean;
   /** The submodule's path in the repository. */
   path: string;
   /** `--submodule`, when it was given. */
@@ -285,19 +420,47 @@ interface Update {
   problems: string[];
 }
 
-/** The root of the git checkout the command was run in. */
-function repositoryRoot(ctx: Context, deps: UpdateDeps): string {
+/**
+ * The root of the git checkout the command was run in. `inProcess` is whether another command is
+ * running this for the pin alone, which a refusal then speaks of instead of an update nobody asked for.
+ */
+function repositoryRoot(ctx: Context, deps: UpdateDeps, inProcess: boolean): string {
   const top = deps.spawn("git", ["rev-parse", "--show-toplevel"], { cwd: ctx.cwd, capture: true });
   if (top.error) throw new Error(`Could not run git: ${top.error.message}`);
-  if (top.status !== 0) throw new Error(`${ctx.cwd} is not a git checkout, so there is nothing to update.`);
+  if (top.status !== 0) {
+    throw new Error(inProcess
+      ? `${ctx.cwd} is not a git checkout, so it pins no Cloudflare OS commit to compare or move.`
+      : `${ctx.cwd} is not a git checkout, so there is nothing to update.`);
+  }
   return resolve(top.stdout.trim());
 }
 
-/** Fails unless the checkout can take a merge, or a moved pin. */
-function preconditions(ctx: Context, deps: UpdateDeps, path: string): { staleCheckout: boolean } {
+/** Whether this run merges the starter: a starter project's, unless the starter is left out. */
+const merging = (state: Pick<Update, "isStarter" | "pinOnly">) => state.isStarter && !state.pinOnly;
+
+/** What {@link preconditions} found of a checkout it did not refuse. */
+interface Checkout {
+  /** Whether the submodule is checked out somewhere other than its pin, unstaged, at commits something keeps. */
+  staleCheckout: boolean;
+  /** With `defer`: the refusal for the uncommitted changes there are, which stand in the way of a move only. */
+  refusal: string | undefined;
+  /** With `defer`: whether those changes include the pin, staged and checked out. */
+  stagedPin: boolean;
+}
+
+/**
+ * Fails unless the checkout can take a merge, or a moved pin. With `defer`, uncommitted changes are
+ * returned as `refusal` instead, for the caller to throw once it knows the pin has to move: they are
+ * in the way of a move, not of comparing two commits. Only those that leave the submodule where the
+ * index pins it are deferred, so that what is checked out there is a pin to compare with.
+ */
+function preconditions(ctx: Context, deps: UpdateDeps, path: string, defer = false): Checkout {
+  // What to run once a refusal is dealt with. A deferring caller is another command running this
+  // in-process, and the command-line `update` it would otherwise name does more than that command asked for.
+  const again = defer ? "run this again" : "run update again";
   if (succeeded(git(ctx, deps, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]))) {
     throw new Error("A merge is already in progress. Finish it (resolve, then `git commit`) or abandon it " +
-      "(`git merge --abort`), then run update again.");
+      `(\`git merge --abort\`), then ${again}.`);
   }
   // Not trimmed: the first column is significant.
   const status = git(ctx, deps, ["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=dirty"]);
@@ -318,20 +481,25 @@ function preconditions(ctx: Context, deps: UpdateDeps, path: string): { staleChe
         .some((line) => line.split(" ")[3] === head);
     if (!kept) {
       throw new Error(`${path} is checked out at ${short(head)}, which nothing keeps (no branch or tag of it, and no commit here pins it), and updating ` +
-        `would check out the pin instead. Keep it first (\`git -C ${path} branch <name> ${short(head)}\`), then run ` +
-        "update again.");
+        `would check out the pin instead. Keep it first (\`git -C ${path} branch <name> ${short(head)}\`), then ` +
+        `${again}.`);
     }
   }
   const changed = lines.filter((line) => line !== ` M ${path}`);
   if (changed.length) {
     // Usually the pin an earlier `update --upstream` staged, which stashing would not obviously undo.
     const staged = changed.some((line) => line[0] !== " " && line.slice(3) === path);
-    throw new Error("The checkout has uncommitted changes, and updating needs a clean one. Commit or stash " +
-      `them (\`git stash\`), then run update again:\n${changed.map((line) => `  ${line}`).join("\n")}` +
+    const refusal = "The checkout has uncommitted changes, and updating needs a clean one. Commit or stash " +
+      `them (\`git stash\`), then ${again}:\n${changed.map((line) => `  ${line}`).join("\n")}` +
       (staged ? `\nThe ${path} pin is staged, by an earlier update perhaps: commit it, or drop it with ` +
-        `\`git restore --staged ${path}\`.` : ""));
+        `\`git restore --staged ${path}\`.` : "");
+    // `M  <path>` is the pin staged with the submodule checked out at it. Any other change to the
+    // submodule's own entry (staged and checked out elsewhere, conflicted, removed) leaves no pin.
+    const pinned = changed.every((line) => line.slice(3) !== path || line === `M  ${path}`);
+    if (!defer || !pinned) throw new Error(refusal);
+    return { staleCheckout, refusal, stagedPin: staged };
   }
-  return { staleCheckout };
+  return { staleCheckout, refusal: undefined, stagedPin: false };
 }
 
 /** The upstream ref the pin goes to with `--upstream` or `--to`, a full SHA shortened. */
@@ -347,7 +515,7 @@ function listed(lines: string[]): string[] {
 
 /** The terminal's account of what is coming. */
 function describe(ctx: Context, state: Update): void {
-  if (state.isStarter) {
+  if (merging(state)) {
     ctx.out.log([
       state.starter.length
         ? `Starter (${state.template} ${state.ref}): ${plural(state.starter.length, "new commit")}.`
@@ -602,18 +770,26 @@ function apiStep(state: Update): string[] {
     "whether the API changed; if so, grep for the commands of the methods that did."];
 }
 
-/** The coding agent's steps after a starter merge. */
+/**
+ * The coding agent's steps in a starter project: after a starter merge, or, with the starter left out,
+ * after the pin alone moved under code the starter adapted to the old one.
+ */
 function starterSteps(state: Update): string[] {
   return [
-    "Read `.agents/skills/cloudflare-os-operator/references/updating.md` (in the merged tree, so it is the " +
-      "newest version), then work through its checklist against both commit ranges above.",
-    state.merge === "conflicted"
-      ? "Resolve the conflicts listed above. Keep the operator's values and customisations: " +
-        "`deployment.jsonc`'s values, their own Gatekeepers (such as `packages/custom-gatekeeper`), branding. " +
-        "Take the starter's tooling and docs. For `deployment.jsonc`, keep every value and adopt new fields and " +
-        "comments. Then conclude the merge (`git add` the files, `git commit --no-edit`) and run `pnpm install`."
-      : "Nothing conflicted. Where the merge brought starter changes to files the operator customised, check " +
-        "their values and customisations survived.",
+    ...state.pinOnly
+      ? ["Read `.agents/skills/cloudflare-os-operator/references/updating.md`, then work through its checklist " +
+        "against the commit range above. Only the pin moved: the starter was not merged, so this project's copy of " +
+        "its code is the one adapted to the old pin. The starter's `main` may already be adapted to the new one: " +
+        "`npx cf-os@latest update` merges it, once this pin is committed."]
+      : ["Read `.agents/skills/cloudflare-os-operator/references/updating.md` (in the merged tree, so it is the " +
+        "newest version), then work through its checklist against both commit ranges above.",
+      state.merge === "conflicted"
+        ? "Resolve the conflicts listed above. Keep the operator's values and customisations: " +
+          "`deployment.jsonc`'s values, their own Gatekeepers (such as `packages/custom-gatekeeper`), branding. " +
+          "Take the starter's tooling and docs. For `deployment.jsonc`, keep every value and adopt new fields and " +
+          "comments. Then conclude the merge (`git add` the files, `git commit --no-edit`) and run `pnpm install`."
+        : "Nothing conflicted. Where the merge brought starter changes to files the operator customised, check " +
+          "their values and customisations survived."],
     ...state.staged && state.rollback ? [rollbackStep(state)] : [],
     ...state.staged && !state.rollback
       ? [`The ${state.path} pin moved off the starter's, to a commit the starter has not adapted to: everything ` +
@@ -634,11 +810,14 @@ function starterSteps(state: Update): string[] {
     ...apiStep(state),
     ...state.newPin !== state.oldPin ? [EXPORT_STEP] : [],
     ...urlStep(state),
-    "Keep any follow-up fixes in commits of their own, after the merge, so the update itself stays reviewable.",
+    state.pinOnly
+      ? "Keep any fixes the pin needs in commits of their own, after the one moving it, so the move itself stays " +
+        "reviewable."
+      : "Keep any follow-up fixes in commits of their own, after the merge, so the update itself stays reviewable.",
     "Run `pnpm lint` and `pnpm cf-os check`. Deploy (`pnpm cf-os deploy`) only once the operator approves.",
     "Summarise for the operator: user-visible changes, breaking changes, Durable Object migrations, new config " +
-      "fields, vars or Gatekeepers, and what, if anything, needed fixing. If nothing beyond the merge was needed, " +
-      "say why (`updating.md`'s \"prove it\" list).",
+      `fields, vars or Gatekeepers, and what, if anything, needed fixing. If nothing beyond the ${
+        state.pinOnly ? "pin move" : "merge"} was needed, say why (\`updating.md\`'s "prove it" list).`,
   ];
 }
 
@@ -697,13 +876,13 @@ function leftOut(state: Update): string {
 }
 
 /** What a run did, as JSON on stdout for whoever ran it: the exit code alone cannot say. */
-function summary(state: Update, status: "up-to-date" | "dry-run" | "declined" | "updated", brief?: string) {
+function summary(state: Update, status: "up-to-date" | "current" | "dry-run" | "declined" | "updated", brief?: string) {
   const moved = state.newPin !== state.oldPin;
   return {
     status,
-    mode: state.isStarter ? "starter" : "pin",
+    mode: merging(state) ? "starter" : "pin",
     submodule: state.path,
-    starter: state.isStarter
+    starter: merging(state)
       ? {
         template: state.template, ref: state.ref, from: state.oldHead, to: state.target, commits: state.starter.length,
         merge: state.merge, conflicts: state.conflicts,
@@ -747,7 +926,7 @@ function brief(state: Update, when: Date): string {
         : state.rollback
         ? `upstream's \`${upstreamRef(state)}\`, a rollback, checked out and **staged, not committed**`
         : `upstream's \`${upstreamRef(state)}\`, checked out and **staged, not committed**: it is unreviewed`
-      : state.isStarter ? "the starter's pin, checked out" : "not staged: see below";
+      : merging(state) ? "the starter's pin, checked out" : "not staged: see below";
   const install = !state.installable
     ? "The root has no `package.json`, so nothing was installed."
     : state.installed
@@ -756,7 +935,7 @@ function brief(state: Update, when: Date): string {
         ? "`pnpm install` did not run: conflict markers would break it. Run it once the merge is concluded."
         : "`pnpm install` did not complete. Run it once the problems below are fixed.";
   const reinstall = state.installable ? " and `pnpm install`" : "";
-  const undo = state.isStarter
+  const undo = merging(state)
     ? [
       ...state.merge === "conflicted" ? ["- While the merge is in progress: `git merge --abort`."] : [],
       ...state.staged
@@ -789,15 +968,15 @@ function brief(state: Update, when: Date): string {
     "",
     "| | From | To |",
     "| --- | --- | --- |",
-    ...state.isStarter
+    ...merging(state)
       ? [`| Starter (${state.template}, \`${state.ref}\`) | \`${state.oldHead}\` | \`${state.target}\` |`]
       : [],
     `| \`${state.path}\` | \`${state.oldPin}\` | \`${state.newPin}\` (${pinState}) |`,
     "",
-    ...state.isStarter ? [`Merge: ${mergeState}`, ""] : [],
+    ...merging(state) ? [`Merge: ${mergeState}`, ""] : [],
     `Install: ${install}`,
     ...state.problems.length ? ["", "Still to do:", "", ...state.problems.map((problem) => `- ${problem}`)] : [],
-    ...state.isStarter
+    ...merging(state)
       ? [
         "",
         `## Starter commits (${state.starter.length})`,
@@ -835,7 +1014,7 @@ function brief(state: Update, when: Date): string {
     "If you ran `cf-os update` yourself, these steps are yours: carry them out now, rather than handing them back " +
       "to the operator.",
     "",
-    state.isStarter
+    merging(state)
       ? "Finish bringing this project up to date with the changes above, then report to the operator."
       : "Finish moving this repository's Cloudflare OS pin, then report to the operator.",
     "",
@@ -854,8 +1033,19 @@ function writeBrief(ctx: Context, state: Update, when: Date): string {
   return path;
 }
 
-/** Updates the repository from `args`, resolving to the exit code. */
-export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps): Promise<number> {
+/** What one run came to: the exit code, and the summary the command line prints. */
+interface Performed {
+  code: number;
+  summary: ReturnType<typeof summary>;
+}
+
+/** Updates the repository from `args`, noting in `progress` how far it has got. */
+async function perform(
+  args: CommandArgs, ctx: Context, deps: UpdateDeps, options: UpdateOptions, progress: Progress,
+): Promise<Performed> {
+  // A move that may only go forward is a move of the pin alone.
+  const pinOnly = Boolean(options.pinOnly || options.forwardOnly);
+  const forwardOnly = Boolean(options.forwardOnly);
   const given = args.values.template as string | undefined;
   // A path is relative to where the command was run, but git runs in the repository root.
   const template = given && existsSync(resolve(ctx.cwd, given)) ? resolve(ctx.cwd, given) : given ?? DEFAULT_TEMPLATE;
@@ -866,12 +1056,17 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
     throw new Error("--preview pins an upstream branch for a merge request's preview, so it needs --to <branch|pull/N|commit>.");
   }
   const upstream = Boolean(args.values.upstream) || to !== undefined;
+  if (forwardOnly && !upstream) throw new Error("forwardOnly compares the pin with a target, so it needs --to or --upstream.");
+  if (pinOnly && (args.values.ref !== undefined || given !== undefined)) {
+    throw new Error("--ref and --template name the starter to merge, and this run moves the pin alone, so there is none.");
+  }
 
-  const root = repositoryRoot(ctx, deps);
+  const root = repositoryRoot(ctx, deps, forwardOnly);
   ctx = { ...ctx, root };
   // No `.gitmodules` reads as no submodules.
   const gitmodules = git(ctx, deps, ["config", "-f", ".gitmodules", "--get-regexp", "^submodule\\."]);
-  const { path, url } = findSubmodule(succeeded(gitmodules) ? gitmodules.stdout : "", args.values.submodule as string | undefined);
+  const { path, url } = findSubmodule(succeeded(gitmodules) ? gitmodules.stdout : "", args.values.submodule as string | undefined,
+    !forwardOnly);
   const isStarter = existsSync(join(root, "deployment.jsonc"));
   if (!isStarter) {
     if (args.values.ref !== undefined || given !== undefined) {
@@ -883,19 +1078,25 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
         "reviewed pin to take; pass --upstream to stage upstream's main for review, or --to <ref> for a given commit.");
     }
   }
-  const { staleCheckout } = preconditions(ctx, deps, path);
+  const { staleCheckout, refusal, stagedPin } = preconditions(ctx, deps, path, forwardOnly);
   const checkedOut = existsSync(join(root, path, ".git"));
   if (upstream && !checkedOut) {
-    throw new Error(`${path}/ is not checked out, so --upstream has nothing to move. Run ` +
-      `\`git submodule update --init ${path}\`, then update again.`);
+    throw new Error(forwardOnly
+      ? `${path}/ is not checked out, so its pin can be neither compared nor moved. Run ` +
+        `\`git submodule update --init ${path}\`, then run this again.`
+      : `${path}/ is not checked out, so --upstream has nothing to move. Run ` +
+        `\`git submodule update --init ${path}\`, then update again.`);
   }
   const oldHead = gitValue(ctx, deps, ["rev-parse", "HEAD"], "The repository has no commits to update.");
   const oldPin = gitValue(ctx, deps, ["rev-parse", `HEAD:${path}`], `HEAD does not pin ${path}.`);
+  progress.from = oldPin;
 
   let target = oldHead;
   let starter: string[] = [];
   let starterPin = oldPin;
-  if (isStarter) {
+  // With the starter left out, nothing of it is fetched, so there is nothing to merge either.
+  const merges = isStarter && !pinOnly;
+  if (merges) {
     ctx.out.log(`Fetching ${ref} from ${template}.`);
     const fetched = deps.spawn("git", ["fetch", "--no-tags", template, ref], { cwd: root, capture: false });
     if (fetched.error) throw new Error(`Could not run git: ${fetched.error.message}`);
@@ -910,12 +1111,15 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
         "would be on no branch. Switch to a branch (`git switch <branch>`) or finish the rebase, then run update again.");
     }
   }
-  const mergedPin = isStarter ? pinAfterMerge(ctx, deps, path, target, starter.length, oldPin, starterPin) : oldPin;
+  const mergedPin = merges ? pinAfterMerge(ctx, deps, path, target, starter.length, oldPin, starterPin) : oldPin;
 
   // The new pin's history, fetched from upstream itself rather than through the submodule's remote.
   let newPin = mergedPin;
   let offMain = false;
+  // With forwardOnly: the pin the target is at or behind, when it is, so nothing has to move.
+  let settled: string | undefined;
   if (upstream) {
+    progress.stage = "target";
     let target: string | undefined;
     // git fetches a commit by its full SHA only, so an abbreviated one is looked up in main's history instead.
     const abbreviated = to !== undefined && /^[0-9a-f]{4,39}$/i.test(to);
@@ -937,17 +1141,37 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
     const main = gitValue(ctx, deps, ["-C", path, "rev-parse", "FETCH_HEAD^{commit}"], "Could not read upstream's main.");
     if (abbreviated) {
       // main reaches back only to the old pin, so this finds a newer commit, not a rollback's.
-      target = gitValue(ctx, deps, ["-C", path, "rev-parse", "--verify", "--quiet", `${to}^{commit}`],
-        `${to} is not a commit on upstream's main since the current pin. git fetches a commit by its full SHA only, ` +
-        "so for an older one (a rollback), pass all 40 characters; for a preview, the branch's name.");
+      const lookup = () => git(ctx, deps, ["-C", path, "rev-parse", "--verify", "--quiet", `${to}^{commit}`]);
+      let found = lookup();
+      // A target that may be at or behind the pin is looked for in the whole of main, which a shallow
+      // clone has to fetch first.
+      const whole = forwardOnly && !succeeded(found) && isShallow(ctx, deps, path);
+      if (whole) {
+        const all = deps.spawn("git", ["-C", path, "fetch", "--no-tags", "--unshallow", UPSTREAM, "main"], { cwd: root, capture: false });
+        if (!succeeded(all)) throw new Error(`Could not fetch the whole of main from ${UPSTREAM}. git's output is above.`);
+        found = lookup();
+      }
+      if (found.error) throw new Error(`Could not run git: ${found.error.message}`);
+      if (found.status !== 0) {
+        throw new Error(forwardOnly
+          ? `${to} is not a commit on upstream's main: no commit in its history abbreviates to it, or more than one ` +
+            "does. Pass all 40 characters."
+          : `${to} is not a commit on upstream's main since the current pin. git fetches a commit by its full SHA only, ` +
+            "so for an older one (a rollback), pass all 40 characters; for a preview, the branch's name.");
+      }
+      target = found.stdout.trim();
     }
     // What git can fetch it by: an abbreviated SHA, once found, by its full one.
     const fetchable = abbreviated ? target! : spec!;
     if (target && !succeeded(git(ctx, deps, ["-C", path, "merge-base", "--is-ancestor", target, main]))) {
       if (!preview) {
+        // A forward-only move is another command's, which takes a commit's SHA and has no --preview to add.
         throw new Error(`${to} (${short(target)}) is not on upstream's main, and only commits on main are pinned. ` +
-          "Pass a commit, tag or branch whose commit is on main, or add --preview to pin it for a merge request's " +
-          "preview deploy.");
+          (forwardOnly
+            ? "Nothing was moved. Where it is the commit a hosted instance's release was built from, the instance has " +
+              "to be updated to a release built from main before this project can be pinned for it."
+            : "Pass a commit, tag or branch whose commit is on main, or add --preview to pin it for a merge request's " +
+              "preview deploy."));
       }
       offMain = true;
       // Fetched at depth 1, the branch has no history yet: deepened as main was, so it meets the old pin.
@@ -962,43 +1186,124 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
       deps.spawn("git", ["-C", path, "fetch", "--no-tags", "--unshallow", UPSTREAM, "main", ...offMain ? [fetchable] : []],
         { cwd: root, capture: false });
     }
+    if (forwardOnly) {
+      // What is checked out: the committed pin, or one staged over it.
+      const pin = stagedPin ? gitValue(ctx, deps, ["rev-parse", `:${path}`], `Could not read the staged ${path} pin.`) : oldPin;
+      Object.assign(progress, { stage: "relation", from: pin, to: newPin });
+      let stands = relation(ctx, deps, path, pin, newPin);
+      // A shallow history may only be hiding the path between the two; the whole of it cannot.
+      if ((stands === "diverged" || stands === "unknown") && isShallow(ctx, deps, path)) {
+        deps.spawn("git", ["-C", path, "fetch", "--no-tags", "--unshallow", UPSTREAM, "main", ...offMain ? [fetchable] : []],
+          { cwd: root, capture: false });
+        stands = relation(ctx, deps, path, pin, newPin);
+        // Still cut short (the fetch failed, or a pin off main keeps its own cut): a no is not a definite one.
+        if (stands === "diverged" && isShallow(ctx, deps, path)) stands = "unknown";
+      }
+      if (stands === "unknown") {
+        throw new Error(`git could not compare ${path}'s pin ${short(pin)} with ${short(newPin)}, so whether that is ` +
+          "a move forward is unknown, and nothing was moved.");
+      }
+      if (stands === "diverged") {
+        // What the move would be is known, and it is not a rollback: `update --to` makes it, listing what it leaves out.
+        progress.stands = "diverged";
+        throw new Error(`${short(newPin)} does not descend from ${path}'s pin ${short(pin)}: the pin has commits it ` +
+          "lacks (a preview pin, or one from another repository), so moving there is not a move forward, and nothing " +
+          "was moved.");
+      }
+      if (options.atLeast?.length) {
+        progress.stage = "floor";
+        // Where this run leaves the pin: at the target when that is ahead, else where it is.
+        const reached = stands === "behind" ? newPin : pin;
+        // The whole of main, where a shallow history may be what hides a commit or a path to it.
+        const deepen = () => {
+          if (!isShallow(ctx, deps, path)) return false;
+          deps.spawn("git", ["-C", path, "fetch", "--no-tags", "--unshallow", UPSTREAM, "main", ...offMain ? [fetchable] : []],
+            { cwd: root, capture: false });
+          return true;
+        };
+        for (const floor of options.atLeast) {
+          const lookup = () => git(ctx, deps, ["-C", path, "rev-parse", "--verify", "--quiet", `${floor}^{commit}`]);
+          let found = lookup();
+          if (!succeeded(found) && deepen()) found = lookup();
+          if (found.error) throw new Error(`Could not run git: ${found.error.message}`);
+          if (found.status !== 0) {
+            throw new Error(`${floor} is not a commit ${path} has of upstream's main (none abbreviates to it, or more than ` +
+              `one does), so whether ${short(reached)} is at or past it is unknown, and nothing was moved.`);
+          }
+          const commit = found.stdout.trim();
+          // How the floor stands to where the pin ends up: the same commit or behind it is the pin at or past the floor.
+          let stood = relation(ctx, deps, path, commit, reached);
+          if (stood !== "same" && stood !== "behind" && deepen()) stood = relation(ctx, deps, path, commit, reached);
+          if (stood === "same" || stood === "behind") continue;
+          throw new Error(stood === "past"
+            ? `${short(commit)} is ahead of ${short(reached)}, where this would leave ${path}'s pin, so the pin would be ` +
+              "behind it, and nothing was moved."
+            : `git could not place ${short(commit)} in the history of ${short(reached)}, where this would leave ${path}'s ` +
+              "pin, so whether the pin would be behind it is unknown, and nothing was moved.");
+        }
+        progress.stage = "relation";
+      }
+      if (stands === "behind") {
+        progress.stands = "behind";
+        progress.stage = "checkout";
+        if (refusal) throw new Error(refusal);
+      } else {
+        // At or past the target, but only as pinned: a build uses what is checked out.
+        if (staleCheckout) {
+          progress.stage = "checkout";
+          const head = git(ctx, deps, ["-C", path, "rev-parse", "HEAD"]).stdout.trim();
+          throw new Error(`${path} is checked out at ${short(head)}, not at its pin ${short(pin)}, so what a build ` +
+            `would use is not the pin. Check the pin out (\`git submodule update --init --recursive ${path}\`), then ` +
+            "run this again.");
+        }
+        settled = pin;
+      }
+    }
   } else if (checkedOut && newPin !== oldPin) {
     // Not fatal: checking the pin out fetches it again, through the submodule's own remote.
     fetchUpstream(ctx, deps, path, newPin, [oldPin]);
   }
-  const range: PinRange = newPin === oldPin ? EMPTY_RANGE : checkedOut ? pinRange(ctx, deps, path, oldPin, newPin) : UNLISTED;
+  const range: PinRange = newPin === oldPin || settled ? EMPTY_RANGE
+    : checkedOut ? pinRange(ctx, deps, path, oldPin, newPin) : UNLISTED;
   // The merged pin's own commits, when the staged pin replaces it: those the old pin had are in the range already.
   const replaced = upstream && mergedPin !== oldPin && mergedPin !== newPin;
   const starterLeftOut = replaced ? commits(ctx, deps, [mergedPin, `^${newPin}`, `^${oldPin}`], path) : [];
   const starterLeftOutContract = replaced ? commits(ctx, deps, [mergedPin, `^${newPin}`, `^${oldPin}`], path, CONTRACT) : [];
   const result: Update = {
-    isStarter, path, givenSubmodule: args.values.submodule as string | undefined, template, ref, oldHead, target, starter,
+    isStarter, pinOnly, path, givenSubmodule: args.values.submodule as string | undefined, template, ref, oldHead, target, starter,
     oldPin, starterPin, mergedPin, newPin, upstream, to, ...range,
     starterLeftOut, starterLeftOutContract, preview: offMain,
     foreignUrl: url && !isUpstream(url) ? url : undefined, merge: "none", conflicts: [], staged: false, installable: existsSync(join(root, "package.json")), installed: false,
     problems: [],
   };
+  if (settled) {
+    ctx.out.log(settled === newPin
+      ? `${path} is already pinned at ${short(newPin)}: nothing was changed.`
+      : `${path} is pinned at ${short(settled)}, which is past ${short(newPin)}: nothing was changed.`);
+    const found = summary(result, "current");
+    // Nothing moves: the pin the target was compared with, and the target.
+    return { code: 0, summary: { ...found, pin: { ...found.pin, from: settled, moved: false, commits: 0 } } };
+  }
   if (!starter.length && newPin === oldPin && !staleCheckout && checkedOut) {
     ctx.out.log("Already up to date.");
-    ctx.out.json(summary(result, "up-to-date"));
-    return 0;
+    return { code: 0, summary: summary(result, "up-to-date") };
   }
   ctx.out.log("");
   describe(ctx, result);
 
   if (args.values["dry-run"]) {
-    ctx.out.log(`\nDry run: nothing was ${isStarter ? "merged, " : ""}checked out or written.`);
-    ctx.out.json(summary(result, "dry-run"));
-    return 0;
+    ctx.out.log(`\nDry run: nothing was ${merges ? "merged, " : ""}checked out or written.`);
+    return { code: 0, summary: summary(result, "dry-run") };
   }
+  // From here a failure is one of a step already under way, or of the prompt itself.
+  progress.stage = "moving";
   // Without a terminal (an agent running it) it carries on: every step is undone with git.
   if (ctx.prompter && !await ctx.prompter.confirm(question(result), true)) {
     ctx.out.log("Nothing was changed.");
-    ctx.out.json(summary(result, "declined"));
-    return 0;
+    return { code: 0, summary: summary(result, "declined") };
   }
 
-  if (starter.length) merge(ctx, deps, result);
+  if (merges && starter.length) merge(ctx, deps, result);
   checkOutSubmodule(ctx, deps, result);
   if (result.installable && result.merge !== "conflicted" && !result.problems.length) {
     ctx.out.log("");
@@ -1021,9 +1326,11 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
     }
   }
 
-  const written = writeBrief(ctx, result, deps.now());
-  const where = displayPath(ctx, written);
-  const outcome = !isStarter ? "" : {
+  // A forward-only move that staged nothing moved nothing, so there is no move for a brief to
+  // describe: the run is a refusal, and a refusal writes no file.
+  const written = forwardOnly && !result.staged ? undefined : writeBrief(ctx, result, deps.now());
+  const where = written === undefined ? "" : displayPath(ctx, written);
+  const outcome = !merges ? "" : {
     none: "Nothing to merge.",
     merged: `Merged ${plural(starter.length, "starter commit")} cleanly.`,
     conflicted: `The merge stopped on conflicts in:\n${result.conflicts.map((file) => `  ${file}`).join("\n")}`,
@@ -1033,20 +1340,106 @@ export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps):
       ? `${path} is at upstream's ${upstreamRef(result)} (${short(result.newPin)}), staged and not committed: a preview ` +
         "pin, not for merging."
       : `${path} is at upstream's ${short(result.newPin)}, staged and not committed, for review.`
-    : result.newPin !== oldPin && !result.conflicts.includes(path) ? `${path} is at the starter's ${short(result.newPin)}.` : "";
-  ctx.out.log(["", outcome, pin, ...result.problems, `Wrote ${where}.`].filter(Boolean).join("\n"));
+    : result.newPin !== oldPin && !result.conflicts.includes(path) && !pinOnly
+      ? `${path} is at the starter's ${short(result.newPin)}.`
+      : "";
+  ctx.out.log(["", outcome, pin, ...result.problems, where && `Wrote ${where}.`].filter(Boolean).join("\n"));
   const clean = isStarter && result.merge !== "conflicted" && !result.problems.length && !result.staged;
-  // With nobody at a terminal, it is usually the coding agent itself that ran this: the brief's steps are its own.
-  ctx.out.log(!ctx.prompter
-    ? `\nNext: carry out the steps in ${where} now. They are addressed to you, the agent that ran this; do not ` +
-      "hand them back to the operator."
-    : clean
-      ? `\nNext: \`pnpm cf-os check\`, then \`pnpm cf-os deploy\`. ${where} lists what changed, for your coding agent to review.`
-      : `\nNext: ask your coding agent to follow ${where}.`);
-  ctx.out.json(summary(result, "updated", written));
+  // The command that left the starter out carries on from here, and says what is next itself.
+  if (!pinOnly) {
+    // With nobody at a terminal, it is usually the coding agent itself that ran this: the brief's steps are its own.
+    ctx.out.log(!ctx.prompter
+      ? `\nNext: carry out the steps in ${where} now. They are addressed to you, the agent that ran this; do not ` +
+        "hand them back to the operator."
+      : clean
+        ? `\nNext: \`pnpm cf-os check\`, then \`pnpm cf-os deploy\`. ${where} lists what changed, for your coding agent to review.`
+        : `\nNext: ask your coding agent to follow ${where}.`);
+  }
   // 1 when work the command started is left undone (conflicts, a failed step), even with the pin moved:
   // the JSON says how far it got.
-  return result.merge === "conflicted" || result.problems.length ? 1 : 0;
+  return { code: result.merge === "conflicted" || result.problems.length ? 1 : 0, summary: summary(result, "updated", written) };
+}
+
+/**
+ * Updates the repository from `args`, resolving to the exit code. `options` restricts the run for a
+ * command of this package that makes it in-process; the command line passes none. The summary goes
+ * to stdout either way: a command with a result of its own to print there uses {@link movePin}.
+ */
+export async function update(args: CommandArgs, ctx: Context, deps: UpdateDeps, options: UpdateOptions = {}): Promise<number> {
+  const performed = await perform(args, ctx, deps, options, { stage: "checkout" });
+  ctx.out.json(performed.summary);
+  return performed.code;
+}
+
+/** Whether `value` could be a commit's SHA, abbreviated to seven characters or more: nothing git would read as an option or a ref. */
+const isSha = (value: string) => /^[0-9a-f]{7,40}$/.test(value);
+
+/** The command line that moves the pin to `commit`, for the operator to run when {@link movePin} did not. */
+const moveCommand = (commit: string) => `pnpm cf-os update --to ${commit}`;
+
+/**
+ * Moves the Cloudflare OS pin forward to `to`, a commit of upstream's `main` by its SHA (all 40
+ * characters, or seven or more of them), for a command that must not carry on with a pin behind
+ * it. The pin alone moves, as `cf-os update --to` moves it: checked out, staged and not committed,
+ * with the install run and the brief written. The starter is never fetched or merged, and nothing
+ * moves unless `to` descends from the pin in the submodule's commit graph, so the pin never goes
+ * back: see {@link PinMove} for each outcome.
+ *
+ * `atLeast` are other commits the pin must be at or past once this is through
+ * ({@link UpdateOptions.atLeast}): one it would be behind refuses the run with nothing moved.
+ *
+ * `dryRun` compares and changes nothing, beyond fetching upstream's history into the submodule. What
+ * the run did goes to stderr and into the result; nothing is written to stdout, which belongs to the
+ * calling command. At a terminal the move is confirmed first; a `ctx` without a prompter moves it
+ * unasked. A cancelled prompt and an error thrown after the move began are thrown on; a step of the
+ * move that fails without throwing (a checkout git refuses) is returned as `blocked`, `incomplete`.
+ */
+export async function movePin(
+  to: string,
+  ctx: Context,
+  { dryRun = false, atLeast = [] }: { dryRun?: boolean; atLeast?: readonly string[] } = {},
+  deps: UpdateDeps = defaultDeps(),
+): Promise<PinMove> {
+  const sha = to.toLowerCase();
+  if (!isSha(sha)) {
+    return {
+      status: "blocked", cause: "target", behind: false, command: undefined, from: undefined, to: undefined,
+      reason: `${to} is not a commit SHA: seven to 40 hexadecimal characters.`,
+    };
+  }
+  const floors = atLeast.map((floor) => floor.toLowerCase());
+  const unreadable = floors.find((floor) => !isSha(floor));
+  if (unreadable !== undefined) {
+    return {
+      status: "blocked", cause: "floor", behind: false, command: undefined, from: undefined, to: undefined,
+      reason: `${unreadable} is not a commit SHA: seven to 40 hexadecimal characters.`,
+    };
+  }
+  const progress: Progress = { stage: "checkout" };
+  let performed: Performed;
+  try {
+    performed = await perform({ command: "update", values: { to: sha, "dry-run": dryRun }, positionals: [] }, ctx, deps,
+      { pinOnly: true, forwardOnly: true, atLeast: floors }, progress);
+  } catch (error) {
+    if (!(error instanceof Error) || progress.stage === "moving") throw error;
+    return {
+      status: "blocked", cause: progress.stage, reason: error.message, behind: progress.stands === "behind",
+      // No command for a floor: moving to the target is what would leave the pin behind it.
+      command: progress.stands && progress.to && progress.stage !== "floor" ? moveCommand(progress.to) : undefined,
+      from: progress.from, to: progress.to,
+    };
+  }
+  const { status, submodule: path, pin, installed, problems, brief: written } = performed.summary;
+  const { from, to: target } = pin;
+  if (status === "current" || status === "up-to-date") return { status: "current", path, from, to: target, past: from !== target };
+  if (status === "dry-run") return { status: "behind", path, from, to: target, commits: pin.commits };
+  if (status === "declined") return { status: "declined", path, from, to: target, command: moveCommand(target) };
+  if (!pin.staged || written === null) {
+    return {
+      status: "blocked", cause: "incomplete", reason: problems.join("\n"), behind: true, command: moveCommand(target), from, to: target,
+    };
+  }
+  return { status: "moved", path, from, to: target, commits: pin.commits, brief: written, installed, problems };
 }
 
 /** `cf-os update`. */

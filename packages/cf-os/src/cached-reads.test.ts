@@ -3,7 +3,7 @@ import test from "node:test";
 import { cachedReads } from "./cached-reads.ts";
 import { cfClient } from "./cf-client.ts";
 import { memoryClient } from "./core/memory-client.ts";
-import { FAKE_ACCOUNT, fakeCf, flag } from "./fake-cf.ts";
+import { FAKE_ACCOUNT, fakeCf, flag, workerLiveReplies } from "./fake-cf.ts";
 import { scriptedPrompter } from "./test-support.ts";
 
 test("labels every client method a step can wait on", async () => {
@@ -11,7 +11,7 @@ test("labels every client method a step can wait on", async () => {
   const prompter = scriptedPrompter([]);
   const loud = cachedReads(client).loud(prompter) as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
   const methods = Object.keys(client).filter((key) => typeof (client as unknown as Record<string, unknown>)[key] === "function");
-  assert.ok(methods.length >= 17);
+  assert.ok(methods.length >= 20);
   for (const method of methods) await loud[method](FAKE_ACCOUNT, "zone-1", "os.example.com").catch(() => {});
   assert.equal(prompter.waited.length, methods.length);
   assert.ok(prompter.waited.every((label) => label.trim()), "an empty label");
@@ -37,4 +37,18 @@ test("makes each read once across both views, and every create each time it is a
   await quiet.createAccessApp(FAKE_ACCOUNT, app);
   assert.deepEqual(cf.calls.map((call) => call.args.slice(0, 2).join(" ")),
     ["workers list", "zero-trust access", "zero-trust access"]);
+});
+
+test("reads what a Worker runs once, however many steps ask", async () => {
+  const live = { acme: { deployments: [{ id: "d1", versions: [{ version_id: "v1", percentage: 100 }] }], versions: [{ id: "v1" }] } };
+  const cf = fakeCf(workerLiveReplies(live));
+  const { quiet, loud } = cachedReads(cfClient({ spawn: cf.spawn }));
+  const prompter = scriptedPrompter([]);
+  const deployments = await quiet.listWorkerDeployments(FAKE_ACCOUNT, "acme");
+  assert.deepEqual(await loud(prompter).listWorkerDeployments(FAKE_ACCOUNT, "acme"), deployments);
+  await loud(prompter).getWorkerVersion(FAKE_ACCOUNT, "acme", "v1");
+  await quiet.getWorkerVersion(FAKE_ACCOUNT, "acme", "v1");
+  assert.deepEqual(cf.calls.map((call) => call.args.slice(0, 3).join(" ")), ["workers deployments list", "workers versions get"]);
+  // Only the read still in flight drew a spinner.
+  assert.deepEqual(prompter.waited, ["Reading the version acme runs"]);
 });

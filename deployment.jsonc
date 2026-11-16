@@ -134,5 +134,16 @@
     "headSamplingRate": 1,
     "logs": { "invocationLogs": false },
     "traces": { "enabled": false, "headSamplingRate": 0.1 }
-  }
+  },
+
+  // Push notifications to phones and browsers go through the notification service a hosted
+  // instance is registered with. Only an instance taken over from the hosted deploy has an identity
+  // there: `pnpm cf-os import` copies it here from the instance's backend, and every deploy sends
+  // it again:
+  //   { "serviceUrl": "https://...", "installId": "...", "keyId": "...", "webPushPublicKey": "..." }
+  // The key that signs with it is never in this file. It is a secret on the Workshop Worker, which
+  // a deploy leaves in place and only the hosted flow can replace.
+  // null: no push; notifications reach open browser tabs only.
+  // Reference: docs/migrate-from-hosted.md
+  "pushIdentity": null
 }

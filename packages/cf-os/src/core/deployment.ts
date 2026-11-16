@@ -4,7 +4,7 @@
 // I/O: the base configs come in parsed and the commands go out as arguments, for
 // `commands/deploy.ts` to read and run.
 
-import { AI_GATEWAY_PROVIDERS } from "./deployment-config.ts";
+import { AI_GATEWAY_PROVIDERS, validatePushIdentity } from "./deployment-config.ts";
 import type {
   BaseConfigs,
   BuildCommand,
@@ -14,6 +14,7 @@ import type {
   RouterRoute,
 } from "./deployment-config.ts";
 import type { CatalogGatekeeper, GatekeeperCatalog } from "./gatekeepers.ts";
+import { PUSH_IDENTITY_VARS, type PushIdentity } from "./hosted-release.ts";
 import { BUILT_IN_GATEKEEPER_SLUGS } from "./naming.ts";
 
 /**
@@ -370,6 +371,7 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   }
 
   validateAiGateway(config);
+  validatePushIdentity(config.pushIdentity);
 
   if (typeof config.errorReporting.enabled !== "boolean") {
     throw new Error("Error reporting enabled must be a boolean.");
@@ -582,6 +584,23 @@ function validateAiGateway(config: DeploymentConfig): void {
   }
 }
 
+/**
+ * The Workshop's plain variables for push identity `push`: the ones the hosted flow set on the
+ * backend, under the names the backend reads ({@link PUSH_IDENTITY_VARS}), each value as the file
+ * holds it. The browser-push key is left out when there is none, as the hosted flow leaves it.
+ *
+ * Variables only. The key that signs with the identity is a secret of the Worker, which no generated
+ * config names in any binding: see where {@link generateConfigs} adds these.
+ */
+export function pushIdentityVars(push: PushIdentity): Record<string, string> {
+  return {
+    [PUSH_IDENTITY_VARS.serviceUrl]: push.serviceUrl,
+    [PUSH_IDENTITY_VARS.installId]: push.installId,
+    [PUSH_IDENTITY_VARS.keyId]: push.keyId,
+    ...(push.webPushPublicKey ? { [PUSH_IDENTITY_VARS.webPushPublicKey]: push.webPushPublicKey } : {}),
+  };
+}
+
 function routeConfig(route: RouterRoute) {
   return route.workersDev
     ? { workers_dev: true, routes: undefined }
@@ -688,6 +707,13 @@ export function generateConfigs(
       };
     }
   }
+  // The push identity a take-over carried over, sent on every deploy because a deploy leaves a
+  // Worker with the variables it sends and no others: left out once, push stops. The key that signs
+  // with it is the Worker's secret, and is deliberately nowhere in this config: `wrangler deploy`
+  // uploads with `keep_bindings` for secrets, so one the config does not name stays bound as it is,
+  // while a variable of the same name here would take its place. A deployment without the block
+  // gets none of this, and its config is what it would be without this step.
+  if (config.pushIdentity) Object.assign(workshop.vars, pushIdentityVars(config.pushIdentity));
   // Unconditional: as well as being the AI Gateway transport, this binding is what webFetch's
   // toMarkdown() runs on.
   workshop.ai = { binding: "WORKERS_AI" };

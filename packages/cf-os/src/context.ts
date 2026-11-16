@@ -7,6 +7,8 @@
 
 import { isAbsolute, relative, resolve } from "node:path";
 import type { CloudflareClient } from "./core/client.ts";
+import { FULL_COMMIT, RELEASE_ID } from "./core/hosted-release.ts";
+import { WORKER_NAME } from "./core/naming.ts";
 import type { Prompter } from "./prompt.ts";
 
 /** Where a command writes. */
@@ -75,3 +77,76 @@ export interface CommandModule {
 
 /** A failure of how the command was invoked: printed with the command's usage, exit 1. */
 export class UsageError extends Error {}
+
+/**
+ * What a take-over of a hosted instance is told beyond the instance's name, on `init` and `import`
+ * alike: the flags of the command the hosted deploy flow prints.
+ */
+export interface TakeoverFlags {
+  /** `--router`: the router Worker's name, where it is not the instance's. */
+  router?: string;
+  /** `--backend`: the backend Worker's name, where it is not `<instance>-backend`. */
+  backend?: string;
+  /** `--release`: the release the command was made for. */
+  release?: string;
+  /** `--commit`: the cloudflare-os commit that release was built from, all 40 hex digits. */
+  commit?: string;
+}
+
+/** The {@link TakeoverFlags}, in the order a printed command gives them. */
+export const TAKEOVER_FLAGS = ["router", "backend", "release", "commit"] as const satisfies readonly (keyof TakeoverFlags)[];
+
+/** What each of {@link TAKEOVER_FLAGS} must look like, and how a value that does not is described. */
+const TAKEOVER_FLAG_FORMS: Record<keyof TakeoverFlags, { pattern: RegExp; expected: string }> = {
+  router: { pattern: WORKER_NAME, expected: "a Worker name: lowercase letters, digits and inner hyphens, at most 63 characters" },
+  backend: { pattern: WORKER_NAME, expected: "a Worker name: lowercase letters, digits and inner hyphens, at most 63 characters" },
+  release: { pattern: RELEASE_ID, expected: "a release id, such as r004945-6c8d301: copy it from the deploy flow" },
+  commit: { pattern: FULL_COMMIT, expected: "a full commit SHA: all 40 hex digits" },
+};
+
+/** The option `name` of `values` as text; undefined when it was not given. */
+function textOption(values: CommandArgs["values"], name: string): string | undefined {
+  const value = values[name];
+  return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * The {@link TakeoverFlags} among a command's parsed `values`, each checked to be of the form its
+ * flag takes. One that is not is a {@link UsageError} naming the flag, before anything is read.
+ */
+export function takeoverFlags(values: CommandArgs["values"]): TakeoverFlags {
+  const flags: TakeoverFlags = {};
+  for (const name of TAKEOVER_FLAGS) {
+    const value = textOption(values, name);
+    if (value === undefined) continue;
+    const { pattern, expected } = TAKEOVER_FLAG_FORMS[name];
+    if (!pattern.test(value)) throw new UsageError(`--${name} ${JSON.stringify(value)} is not ${expected}.`);
+    flags[name] = value;
+  }
+  if (flags.router !== undefined && flags.router === flags.backend) {
+    throw new UsageError(`--router and --backend both name Worker ${flags.router}: an instance has one of each, under two names.`);
+  }
+  return flags;
+}
+
+/**
+ * `init`'s `--take-over <instance>`, checked to be a name an instance can have; undefined when it
+ * was not given. One that is not is a {@link UsageError}.
+ */
+export function takeOverInstance(values: CommandArgs["values"]): string | undefined {
+  const instance = textOption(values, "take-over");
+  if (instance !== undefined && !WORKER_NAME.test(instance)) {
+    throw new UsageError(`--take-over ${JSON.stringify(instance)} is not an instance name: lowercase letters, digits and ` +
+      "inner hyphens, at most 63 characters.");
+  }
+  return instance;
+}
+
+/**
+ * `flags` as command-line arguments, in {@link TAKEOVER_FLAGS}' order: what a command hands on to
+ * the one that carries out the take-over, and what a printed command repeats so a flag given once
+ * is not lost. Every value has passed {@link takeoverFlags}, so none needs quoting for a shell.
+ */
+export function takeoverArgs(flags: TakeoverFlags): string[] {
+  return TAKEOVER_FLAGS.flatMap((name) => flags[name] === undefined ? [] : [`--${name}`, flags[name]]);
+}

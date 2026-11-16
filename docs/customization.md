@@ -37,6 +37,7 @@ The custom logo appears in the app chrome, sign-in screens, and browser tab on e
 | `errorReporting` | Private explicit-issue destination | Console Reporter enabled state, environment, and release metadata |
 | `resources` | Blueprint/avatar KV and blueprint-content R2 | `null` to provision or explicit IDs/names to reuse |
 | `observability` | Worker telemetry | Structured logs, invocation logs, traces, and sampling; see the [observability guide](observability.md) |
+| `pushIdentity` | The push-notification identity of an instance taken over from the hosted deploy | `null` for none. Otherwise the block `pnpm cf-os import` copies from the instance's backend, which every deploy sends again; its signing key is never in the file. See [Migrating from the hosted deploy](migrate-from-hosted.md#8-what-changes-and-what-you-lose) |
 
 Secrets are never valid values in this file. Install them interactively with Wrangler against the Worker that consumes them.
 

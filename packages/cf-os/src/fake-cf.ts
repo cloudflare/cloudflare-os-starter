@@ -119,5 +119,47 @@ export function workerSecretsReply(secrets: Record<string, string[]>): FakeReply
   };
 }
 
+/**
+ * Replies to the two reads of what a Worker runs, from deployments and versions by Worker name, each
+ * printed as given, so a fixture can carry fields the client must drop: `workers deployments list`
+ * wraps the list in `{ deployments }` as the API does, and `workers versions get <id>` answers for
+ * each version by its ID. A Worker missing from `live` fails the way `cf` does for one the account
+ * does not have, and a version asked of the wrong Worker fails too.
+ */
+export function workerLiveReplies(
+  live: Record<string, { deployments: object[]; versions: { id: string }[] }>,
+): Record<string, FakeReply> {
+  const replies: Record<string, FakeReply> = {
+    "workers deployments list": (args) => {
+      const worker = flag(args, "--script-name") ?? "";
+      return Object.hasOwn(live, worker)
+        ? { deployments: live[worker].deployments }
+        : { fail: WORKER_NOT_FOUND_FAILURE.replace(/\/secrets$/, "/deployments") };
+    },
+  };
+  for (const id of new Set(Object.values(live).flatMap(({ versions }) => versions.map((version) => version.id)))) {
+    replies[`workers versions get ${id}`] = (args) => {
+      const worker = flag(args, "--worker-id") ?? "";
+      const version = Object.hasOwn(live, worker) ? live[worker].versions.find((candidate) => candidate.id === id) : undefined;
+      return version ?? { fail: `Worker ${worker} has no version ${id}.\n│ 404 Not Found` };
+    };
+  }
+  return replies;
+}
+
+/**
+ * A `durable-objects namespaces list` reply from the classes with storage, by Worker name, printed
+ * as the API's `{ id, name, script, class, use_sqlite }` list.
+ */
+export function durableObjectNamespacesReply(classes: Record<string, string[]>): FakeReply {
+  return Object.entries(classes).flatMap(([script, names]) => names.map((name) => ({
+    id: `namespace-${script}-${name}`,
+    name: `${script}_${name}`,
+    script,
+    class: name,
+    use_sqlite: true,
+  })));
+}
+
 /** The account every fake fixture belongs to. */
 export const FAKE_ACCOUNT = "0123456789abcdef0123456789abcdef";

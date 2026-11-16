@@ -1,11 +1,13 @@
 // The two shapes a deploy sits between: `deployment.jsonc` on the way in, and the
 // `wrangler.prod.jsonc` files `generateConfigs` (deployment.ts) produces on the way out. The one
 // module typing the deployment file, so a later move to another config format is a translation.
+// `validateConfig` (deployment.ts) checks the file against these types; the `pushIdentity` block's
+// own check, `validatePushIdentity`, is here beside its type.
 //
 // The wrangler side reuses the submodule's own declarations rather than redeclaring them, so a
 // base-config change upstream surfaces here as a type error during the `cf-os` type-check instead of
-// as a silently dropped key at deploy time. The imports are type-only, which under
-// `verbatimModuleSyntax` erase completely -- `node` never resolves them, so the submodule's
+// as a silently dropped key at deploy time. The imports from the submodule are type-only, which
+// under `verbatimModuleSyntax` erase completely -- `node` never resolves them, so the submodule's
 // runtime dependencies are not this module's problem.
 
 import type {
@@ -13,6 +15,7 @@ import type {
   ObservabilityConfig,
   WranglerConfig,
 } from "@gadgets/scripts/release/manifest-lib";
+import { PUSH_IDENTITY_SECRET, PUSH_IDENTITY_VARS, type PushIdentity } from "./hosted-release.ts";
 
 /** A model provider the Workshop can serve through AI Gateway with deployment-managed keys. */
 export type AiGatewayProvider = "anthropic" | "openai" | "google" | "cloudflare";
@@ -146,6 +149,77 @@ export interface DeploymentConfig {
     blueprintContentBucket: string | null;
   };
   observability: DeploymentObservabilityConfig;
+  /**
+   * The push identity a take-over carried over from a hosted instance: who this installation is to
+   * the notification service ({@link validatePushIdentity}). Absent or `null` on a deployment that
+   * has none, which sends no push notifications and deploys no variable for one.
+   */
+  pushIdentity?: PushIdentity | null;
+}
+
+/** The fields of `deployment.jsonc`'s `pushIdentity` block, in the order `cf-os import` writes them. */
+const PUSH_IDENTITY_FIELDS = ["serviceUrl", "installId", "keyId", "webPushPublicKey"] as const satisfies readonly (keyof PushIdentity)[];
+
+/** A value of the block, each sent as a variable and some as an HTTP header: something, with no whitespace anywhere in it. */
+const PUSH_IDENTITY_TOKEN = /^\S+$/;
+
+/**
+ * Checks `deployment.jsonc`'s `pushIdentity` block, throwing the first problem with the config path
+ * it concerns. Absent or `null` is a deployment without one, and passes.
+ *
+ * The block is all or nothing, as the backend reads it: without the service's origin, the install ID
+ * and the key ID together it sends no push at all, so a block missing one is a mistake and not a
+ * smaller identity. `webPushPublicKey` alone may be `null` (or absent), which offers no browser push.
+ * The service's address must be an `https:` URL, since the backend refuses to send a signed request
+ * to any other, with no whitespace anywhere in it, like the block's other values; it is otherwise
+ * taken as written, so the variable a deploy sends is the one the hosted flow set.
+ *
+ * The key that signs with the identity has no field here, and a key added for it is refused: the
+ * file is committed, and the key is the secret {@link PUSH_IDENTITY_SECRET} on the Workshop Worker,
+ * which a deploy neither reads nor sends.
+ */
+export function validatePushIdentity(block: unknown): void {
+  if (block === undefined || block === null) return;
+  if (typeof block !== "object" || Array.isArray(block)) {
+    throw new Error("pushIdentity must be null or an object with serviceUrl, installId, keyId and webPushPublicKey.");
+  }
+  const fields = new Map<string, unknown>(Object.entries(block));
+  const allowed: readonly string[] = PUSH_IDENTITY_FIELDS;
+  const unknown = [...fields.keys()].filter((key) => !allowed.includes(key));
+  if (unknown.length) {
+    throw new Error(
+      `pushIdentity: only ${allowed.slice(0, -1).join(", ")} and ${allowed.at(-1)} are allowed, not ${unknown.join(", ")}. ` +
+      `The key that signs with the identity is never in this file: it stays the secret ${PUSH_IDENTITY_SECRET} on the ` +
+      "Workshop Worker, where a deploy leaves it.");
+  }
+  const serviceUrl = fields.get("serviceUrl");
+  let service: URL | undefined;
+  try {
+    service = typeof serviceUrl === "string" && PUSH_IDENTITY_TOKEN.test(serviceUrl) ? new URL(serviceUrl) : undefined;
+  } catch {
+    service = undefined;
+  }
+  if (service?.protocol !== "https:") {
+    throw new Error(
+      "pushIdentity.serviceUrl must be the notification service's address, an https: URL without whitespace such as " +
+      `https://push.example.com. It becomes ${PUSH_IDENTITY_VARS.serviceUrl}, and the Workshop sends its signed ` +
+      "requests to no other kind of address.");
+  }
+  for (const field of ["installId", "keyId"] as const) {
+    const value = fields.get(field);
+    if (typeof value !== "string" || !PUSH_IDENTITY_TOKEN.test(value)) {
+      throw new Error(
+        `pushIdentity.${field} must be a non-empty string without whitespace. It becomes ${PUSH_IDENTITY_VARS[field]}; ` +
+        "without it the Workshop sends no push at all, so set pushIdentity to null to deploy without one.");
+    }
+  }
+  const webPushPublicKey = fields.get("webPushPublicKey");
+  if (webPushPublicKey !== undefined && webPushPublicKey !== null &&
+      (typeof webPushPublicKey !== "string" || !PUSH_IDENTITY_TOKEN.test(webPushPublicKey))) {
+    throw new Error(
+      "pushIdentity.webPushPublicKey must be null or a non-empty string without whitespace. null offers no " +
+      `browser push; a string becomes ${PUSH_IDENTITY_VARS.webPushPublicKey}.`);
+  }
 }
 
 /** One optional Gatekeeper in `deployment.jsonc`'s `gatekeepers` block. */

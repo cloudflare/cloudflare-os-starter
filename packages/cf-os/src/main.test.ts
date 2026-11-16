@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { cli, finish, invocationDir, type CliDeps } from "./main.ts";
+import { takeoverArgs, takeoverFlags, takeOverInstance, UsageError } from "./context.ts";
+import { cli, finish, invocationDir, parseCommandLine, type CliDeps } from "./main.ts";
 import { DELEGATION_SENTINEL, type SpawnDelegate } from "./project.ts";
 import { apiCliProject, scratchProject, TEMPLATE } from "./test-support.ts";
 
@@ -92,6 +93,156 @@ test("prints each command's help on stdout, anywhere", async (t) => {
   assert.equal(code, 0);
   assert.match(stdout, /Commands:\n {2}init/);
   assert.match(stdout, /^ {2}api {2,}call a running instance's API/m);
+});
+
+// The commands the hosted deploy flow prints for a deployment it cannot or should not update. These
+// two strings are a contract with it: the same two appear verbatim in the deploy service's own test,
+// packages/deploy/src/tests/take-over.test.ts in the gadgets-internal repository, which is the other
+// end. A change to how either parses is a change to both repositories.
+const TAKE_OVER_DEFAULT_NAMES =
+  "npx cf-os@latest init cloudflareos --take-over cloudflareos --account 0123456789abcdef0123456789abcdef --release r004945-6c8d301 --commit 6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d";
+const TAKE_OVER_CUSTOM_NAMES =
+  "npx cf-os@latest init moss --take-over moss --account 0123456789abcdef0123456789abcdef --router moss-os --backend moss-api --release r004945-6c8d301 --commit 6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d";
+
+/** The arguments `cf-os` gets from a printed command line: everything after `npx cf-os@latest`, split as a shell splits it. */
+function printedArgv(line: string): string[] {
+  const [runner, tool, ...argv] = line.split(" ");
+  assert.deepEqual([runner, tool], ["npx", "cf-os@latest"]);
+  return argv;
+}
+
+test("parses the deploy flow's take-over commands exactly as it prints them", () => {
+  const defaults = parseCommandLine(printedArgv(TAKE_OVER_DEFAULT_NAMES));
+  assert.deepEqual(defaults, {
+    command: "init",
+    positionals: ["cloudflareos"],
+    values: {
+      "take-over": "cloudflareos",
+      account: "0123456789abcdef0123456789abcdef",
+      release: "r004945-6c8d301",
+      commit: "6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d",
+    },
+  });
+  const custom = parseCommandLine(printedArgv(TAKE_OVER_CUSTOM_NAMES));
+  assert.deepEqual(custom, {
+    command: "init",
+    positionals: ["moss"],
+    values: {
+      "take-over": "moss",
+      account: "0123456789abcdef0123456789abcdef",
+      router: "moss-os",
+      backend: "moss-api",
+      release: "r004945-6c8d301",
+      commit: "6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d",
+    },
+  });
+  // Every value is of the form its flag takes, so none is refused once the command runs.
+  assert.equal(takeOverInstance(defaults.values), "cloudflareos");
+  assert.deepEqual(takeoverFlags(defaults.values),
+    { release: "r004945-6c8d301", commit: "6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d" });
+  assert.equal(takeOverInstance(custom.values), "moss");
+  assert.deepEqual(takeoverFlags(custom.values),
+    { router: "moss-os", backend: "moss-api", release: "r004945-6c8d301", commit: "6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d" });
+  // And handed on, flag for flag, in the order printed.
+  assert.deepEqual(takeoverArgs(takeoverFlags(custom.values)).join(" "),
+    TAKE_OVER_CUSTOM_NAMES.slice(TAKE_OVER_CUSTOM_NAMES.indexOf("--router")));
+});
+
+test("import takes the same take-over flags inside a project, and --take-over is init's alone", () => {
+  const flags = "--router moss-os --backend moss-api --release r004945-6c8d301 --commit 6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d";
+  assert.deepEqual(parseCommandLine(`import moss --account 0123456789abcdef0123456789abcdef ${flags} --out deployment.jsonc`.split(" ")), {
+    command: "import",
+    positionals: ["moss"],
+    values: {
+      account: "0123456789abcdef0123456789abcdef", router: "moss-os", backend: "moss-api", release: "r004945-6c8d301",
+      commit: "6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d", out: "deployment.jsonc",
+    },
+  });
+  // The flags the deploy flow leaves out when it does not know them are not required.
+  assert.deepEqual(parseCommandLine("init moss --take-over moss --account 0123456789abcdef0123456789abcdef".split(" ")).values,
+    { "take-over": "moss", account: "0123456789abcdef0123456789abcdef" });
+  assert.deepEqual(parseCommandLine(`init --take-over moss ${flags}`.split(" ")).positionals, []);
+  assert.throws(() => parseCommandLine("import moss --take-over moss".split(" ")), /Unknown option '--take-over'/);
+  assert.throws(() => parseCommandLine("init moss --take-over".split(" ")), /argument missing/);
+  for (const other of ["check", "deploy", "access", "secrets", "install", "update"]) {
+    assert.throws(() => parseCommandLine([other, "--commit", "6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d"]), /Unknown option '--commit'/, other);
+  }
+  assert.throws(() => parseCommandLine(["frobnicate"]), /Unknown command "frobnicate"/);
+  assert.throws(() => parseCommandLine([]), /Unknown command ""/);
+});
+
+test("a take-over flag of the wrong form is a usage error naming the flag", () => {
+  const cases: [Record<string, string>, RegExp][] = [
+    [{ "take-over": "Moss OS" }, /--take-over "Moss OS" is not an instance name/],
+    [{ router: "moss_os" }, /--router "moss_os" is not a Worker name/],
+    [{ backend: "-moss" }, /--backend "-moss" is not a Worker name/],
+    [{ release: "r004945/6c8d301" }, /--release "r004945\/6c8d301" is not a release id/],
+    [{ release: "" }, /--release "" is not a release id/],
+    [{ commit: "6c8d301" }, /--commit "6c8d301" is not a full commit SHA: all 40 hex digits/],
+    [{ commit: "main" }, /--commit "main" is not a full commit SHA/],
+    [{ router: "moss", backend: "moss" }, /--router and --backend both name Worker moss/],
+  ];
+  for (const [values, message] of cases) {
+    assert.throws(() => [takeOverInstance(values), takeoverFlags(values)],
+      (error) => error instanceof UsageError && message.test(error.message), JSON.stringify(values));
+  }
+  // None given is none checked, and a value of another command's flag is left alone.
+  assert.deepEqual(takeoverFlags({ out: "x.jsonc", account: "nope" }), {});
+  assert.equal(takeOverInstance({}), undefined);
+  assert.deepEqual(takeoverArgs({}), []);
+});
+
+test("init and import list the take-over flags in their help", async (t) => {
+  const cwd = tempDir(t);
+  for (const name of ["init", "import"]) {
+    const { code, stdout } = await run(t, [name, "--help"], { cwd });
+    assert.equal(code, 0, name);
+    for (const flag of ["--router <name>", "--backend <name>", "--release <id>", "--commit <sha>"]) {
+      assert.ok(stdout.includes(flag), `${name} --help lists ${flag}`);
+    }
+    assert.equal(stdout.includes("--take-over <instance>"), name === "init", name);
+    // The stop is --commit's: --release alone counts a newer release its Workers report, and goes on.
+    assert.match(stdout, /--release <id> .*\n.*Alone, a newer release its Workers report counts instead\n/, name);
+    assert.match(stdout, /With it, stops if the account shows the instance past --release\./, name);
+    assert.doesNotMatch(stdout, /Stops if the account shows the instance past it/, name);
+  }
+  // A value of the wrong form is refused with the command's usage, before any account is read.
+  const { root } = projectWithLocalCopy(t);
+  const bad = await run(t, ["import", "acme", "--commit", "6c8d301"], { cwd: root, self: join(root, "packages", "cf-os", "src", "main.ts") });
+  assert.equal(bad.code, 1);
+  assert.match(bad.log, /--commit "6c8d301" is not a full commit SHA: all 40 hex digits\.\n\nUsage: cf-os import/);
+});
+
+test("init's take-over reaches the command that carries it out: scaffolding outside a project, the project's init inside one", async (t) => {
+  const takeOver = printedArgv(TAKE_OVER_CUSTOM_NAMES).slice(2);
+  // Outside a project, scaffolding takes every flag: it gets as far as the directory, which is in use.
+  const cwd = tempDir(t);
+  mkdirSync(join(cwd, "moss"));
+  writeFileSync(join(cwd, "moss", "notes.txt"), "mine");
+  const outside = await run(t, printedArgv(TAKE_OVER_CUSTOM_NAMES), { cwd });
+  assert.equal(outside.code, 1);
+  assert.match(outside.log, /Init failed\. .*moss is not empty\. Pick a new directory, or an empty one\./);
+  // A flag it could not hand on is refused there, with init's usage, before a directory is looked at.
+  const orphaned = await run(t, ["init", "moss", "--commit", "6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d"], { cwd });
+  assert.equal(orphaned.code, 1);
+  assert.match(orphaned.log, /^--router, --backend, --release and --commit describe the hosted instance to take over: pass --take-over <instance> with them\.\n\nUsage: cf-os init/);
+  const malformed = await run(t, ["init", "fresh", "--take-over", "moss", "--commit", "6c8d301"], { cwd });
+  assert.equal(malformed.code, 1);
+  assert.match(malformed.log, /^--commit "6c8d301" is not a full commit SHA: all 40 hex digits\.\n\nUsage: cf-os init/);
+  assert.equal(existsSync(join(cwd, "fresh")), false);
+
+  // Inside a project, a global copy hands the whole command line to the project's own.
+  const { root, local } = projectWithLocalCopy(t);
+  const handed = await run(t, ["init", ...takeOver], { cwd: root });
+  assert.deepEqual(handed.spawned.map((entry) => entry.args), [[local, "init", ...takeOver]]);
+  // And the project's own runs its init with it: with no terminal, that names the import command, every flag kept.
+  const inside = await run(t, ["init", ...takeOver], { cwd: root, self: local });
+  assert.equal(inside.code, 1);
+  assert.deepEqual(inside.spawned, []);
+  assert.ok(inside.log.includes("\n  pnpm cf-os import moss --account 0123456789abcdef0123456789abcdef --router moss-os --backend moss-api " +
+    "--release r004945-6c8d301 --commit 6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d --out deployment.jsonc\n"), inside.log);
+  assert.equal(inside.stdout, "");
+  assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE);
 });
 
 test("outside a project, only init and update run", async (t) => {
@@ -350,14 +501,41 @@ test("a hand-off passes a SIGTERM sent to it alone on to its child", async (t) =
   assert.equal(output(), "ready\ndrained\nexit 130\n");
 });
 
-/** A module's imports: static ones (`import type` excluded: erased) and literal dynamic ones. */
-function importsOf(file: string): { static: string[]; dynamic: string[] } {
-  const source = readFileSync(file, "utf8");
+/**
+ * The imports in a module's `source`: static ones (`import type` excluded: erased), one written for
+ * its side effects alone included, and literal dynamic ones.
+ */
+function importsIn(source: string): { static: string[]; dynamic: string[] } {
   return {
-    static: [...source.matchAll(/^(?:import|export)\s+(?!type\b)[^;]*?from\s+"([^"]+)"/gm)].map((match) => match[1]),
+    static: [
+      ...source.matchAll(/^(?:import|export)\s+(?!type\b)[^;]*?from\s+"([^"]+)"/gm),
+      ...source.matchAll(/^import\s+"([^"]+)"/gm),
+    ].map((match) => match[1]),
     dynamic: [...source.matchAll(/\bimport\("([^"]+)"\)/g)].map((match) => match[1]),
   };
 }
+
+/** {@link importsIn} the module at `file`. */
+function importsOf(file: string): { static: string[]; dynamic: string[] } {
+  return importsIn(readFileSync(file, "utf8"));
+}
+
+test("the import scan sees every form a static import is written in", () => {
+  const source = [
+    'import "@gadgets/scripts/side-effect";',
+    'import { named } from "./named.ts";',
+    'import whole, { type Kind } from "@scope/whole";',
+    'import {\n  spread,\n  over,\n} from "./lines.ts";',
+    'export { again } from "./again.ts";',
+    'import type { Erased } from "@gadgets/erased";',
+    'export type { ErasedToo } from "./erased.ts";',
+    'const lazy = await import("./lazy.ts");',
+  ].join("\n");
+  assert.deepEqual(importsIn(source), {
+    static: ["./named.ts", "@scope/whole", "./lines.ts", "./again.ts", "@gadgets/scripts/side-effect"],
+    dynamic: ["./lazy.ts"],
+  });
+});
 
 /** Every module reachable from `entries` by static imports alone, and the packages they import. */
 function staticClosure(entries: string[]): { files: Set<string>; packages: Set<string> } {
