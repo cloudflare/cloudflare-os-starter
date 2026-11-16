@@ -22,6 +22,77 @@ export interface CfWorker {
   subdomain?: { enabled?: boolean; url?: string };
 }
 
+/**
+ * One binding of a Worker version, cut down to what the core reads. A secret binding is its name and
+ * type alone: the API never returns a secret's text, and no implementation may ask for or keep one.
+ */
+export interface CfWorkerBinding {
+  name: string;
+  /** `plain_text`, `json`, `service`, `secret_text`, `kv_namespace`, ... */
+  type: string;
+  /** The value of a `plain_text` binding (a plain variable). Absent on every other type. */
+  text?: string;
+  /** The value of a `json` binding (a JSON variable). Absent on every other type. */
+  json?: unknown;
+  /** The Worker a `service` binding points at. Absent on every other type. */
+  service?: string;
+}
+
+/** The annotation holding a version's tag, which `wrangler versions upload --tag` and the API set. */
+export const VERSION_TAG_ANNOTATION = "workers/tag";
+
+/** The annotation holding a version's message. */
+export const VERSION_MESSAGE_ANNOTATION = "workers/message";
+
+/** The annotation saying what created a version or a deployment: `upload`, `secret`, `deployment`, `rollback`, ... */
+export const TRIGGERED_BY_ANNOTATION = "workers/triggered_by";
+
+/** One version of a Worker: the code and configuration one upload made. */
+export interface CfWorkerVersion {
+  id: string;
+  /** The version's number among the Worker's, from one. */
+  number?: number;
+  created_on?: string;
+  /** The client that created it: `api`, `wrangler`, `dash`, ... */
+  source?: string;
+  /** Free-form metadata, by annotation name ({@link VERSION_TAG_ANNOTATION} and its siblings). */
+  annotations?: Record<string, string>;
+  /** Its variables and bindings; secrets by name and type only. */
+  bindings?: CfWorkerBinding[];
+  /**
+   * The Durable Object migration tag, when the API's reply for the version carries one; null when
+   * it does not. Null says nothing either way: the endpoint `cf` reads a version from is not
+   * documented to report the tag, so a Worker with Durable Objects may well read as null. What the
+   * account does always say of a Worker's Durable Objects is its namespaces
+   * ({@link CloudflareClient.listDurableObjectNamespaces}).
+   */
+  migration_tag?: string | null;
+}
+
+/** One deployment of a Worker: the versions it sends traffic to, and their shares. */
+export interface CfWorkerDeployment {
+  id: string;
+  created_on?: string;
+  /** The client that created it. */
+  source?: string;
+  /** Free-form metadata, by annotation name. */
+  annotations?: Record<string, string>;
+  versions: { version_id: string; percentage: number }[];
+}
+
+/**
+ * A Durable Object namespace: the objects stored under one class of one Worker. A migration that
+ * adds a class creates its namespace when it is deployed, so a Worker's namespaces are the classes
+ * its applied migrations left it with.
+ */
+export interface CfDurableObjectNamespace {
+  id: string;
+  /** The Worker the class belongs to. */
+  script: string;
+  /** The class's name in that Worker's code. */
+  class: string;
+}
+
 /** A KV namespace. */
 export interface CfKvNamespace {
   id: string;
@@ -106,6 +177,21 @@ export interface CloudflareClient {
    * the account has no Worker by that name yet.
    */
   listWorkerSecrets(accountId: string, worker: string): Promise<string[] | null>;
+  /**
+   * Worker `worker`'s deployments, the one serving traffic first, or null when the account has no
+   * Worker by that name. A Worker uploaded but never deployed has none.
+   */
+  listWorkerDeployments(accountId: string, worker: string): Promise<CfWorkerDeployment[] | null>;
+  /**
+   * Version `versionId` of Worker `worker`: its annotations, where it came from, and its variables
+   * and bindings. Secrets are listed by name and type; their text is never read.
+   */
+  getWorkerVersion(accountId: string, worker: string, versionId: string): Promise<CfWorkerVersion>;
+  /**
+   * Every Durable Object namespace in the account: which classes of which Workers have storage.
+   * One read answers for every Worker.
+   */
+  listDurableObjectNamespaces(accountId: string): Promise<CfDurableObjectNamespace[]>;
   /** The account's workers.dev subdomain (`<sub>` in `<worker>.<sub>.workers.dev`), when knowable. */
   workersDevSubdomain(accountId: string): Promise<string | null>;
   listKvNamespaces(accountId: string): Promise<CfKvNamespace[]>;

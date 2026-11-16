@@ -2,6 +2,9 @@
 // against them to find a hosted instance's; `init` derives a fresh deployment's names from them, so
 // fresh and migrated deployments look alike. If the hosted flow changes a suffix, this table is the
 // only thing to edit.
+//
+// Two names are the operator's to choose in the hosted flow, the router Worker's and the backend
+// Worker's (`CoreNames`); everything else is named after the instance.
 
 import type { CfWorker } from "./client.ts";
 
@@ -25,16 +28,43 @@ export interface Matcher {
   missing?: string;
 }
 
-/** Every resource named after instance `n`. */
-export function matchers(n: string): Matcher[] {
+/**
+ * The names of an instance's router and backend Workers where they are not the hosted flow's
+ * defaults, `<instance>` and `<instance>-backend`: what `--router` and `--backend` give.
+ */
+export interface CoreNames {
+  router?: string;
+  backend?: string;
+}
+
+/** The router and backend Worker names of instance `n`: `names`' where it gives one, else the hosted flow's default. */
+export function coreNames(n: string, names: CoreNames = {}): Required<CoreNames> {
+  return { router: names.router ?? n, backend: names.backend ?? `${n}-backend` };
+}
+
+/**
+ * The instance a router and a backend are named after, when the two carry the names the hosted flow
+ * gives an instance's by default ({@link coreNames}); null for any other two. The operator may give
+ * the two any names, these included, so it is what the names say and no proof of the instance.
+ */
+export function coreInstance({ router, backend }: Required<CoreNames>): string | null {
+  return backend === coreNames(router).backend ? router : null;
+}
+
+/**
+ * Every resource named after instance `n`. `names` gives the router's and the backend's where the
+ * instance was deployed under names of its own; every other resource is named after `n` either way.
+ */
+export function matchers(n: string, names: CoreNames = {}): Matcher[] {
   const hosted = "hosted" as const;
+  const core = coreNames(n, names);
   return [
     {
-      label: "Router Worker", kind: "worker", name: n, path: ["workers", "router", "name"], value: "name",
+      label: "Router Worker", kind: "worker", name: core.router, path: ["workers", "router", "name"], value: "name",
       source: hosted,
     },
     {
-      label: "Workshop Worker (all user data)", kind: "worker", name: `${n}-backend`,
+      label: "Workshop Worker (all user data)", kind: "worker", name: core.backend,
       path: ["workers", "workshop", "name"], value: "name", source: hosted,
     },
     {
@@ -86,9 +116,12 @@ export function matchers(n: string): Matcher[] {
 export type WorkerKey =
   "router" | "workshop" | "context" | "scheduler" | "websearch" | "customGatekeeper" | "errorReporter";
 
-/** The seven Worker names for instance `n`, keyed as `deployment.jsonc`'s `workers` block keys them. */
-export function workerNames(n: string): Record<WorkerKey, string> {
-  return Object.fromEntries(matchers(n)
+/**
+ * The seven Worker names for instance `n`, keyed as `deployment.jsonc`'s `workers` block keys them,
+ * the router's and the backend's being `names`' where it gives them.
+ */
+export function workerNames(n: string, names: CoreNames = {}): Record<WorkerKey, string> {
+  return Object.fromEntries(matchers(n, names)
     .filter((matcher) => matcher.kind === "worker")
     .map((matcher) => [matcher.path[1], matcher.name])) as Record<WorkerKey, string>;
 }
@@ -99,13 +132,54 @@ export function accessAppName(n: string): RegExp {
 }
 
 /**
+ * The instance an Access application is named after, when its name is exactly the one the hosted
+ * flow creates an instance's application under ({@link accessAppName}); null for a name of any
+ * other form.
+ */
+export function accessAppInstance(name: string): string | null {
+  return /^Cloudflare OS (\S+) [0-9a-f]{8}$/.exec(name)?.[1] ?? null;
+}
+
+/**
+ * The instance an AI Gateway is named after, when it carries the name the hosted flow gives an
+ * instance's gateway ({@link matchers}); null for any other.
+ */
+export function gatewayInstance(gateway: string): string | null {
+  const suffix = "-ai";
+  return gateway.endsWith(suffix) && gateway.length > suffix.length ? gateway.slice(0, -suffix.length) : null;
+}
+
+/**
+ * The instance a Gatekeeper Worker is named after, when it carries the name the hosted flow gives
+ * the Gatekeeper with install slug `slug` ({@link gatekeeperWorkerName}); null when it is called
+ * anything else.
+ */
+export function gatekeeperInstance(worker: string, slug: string): string | null {
+  const suffix = `-gk-${slug}`;
+  return worker.endsWith(suffix) && worker.length > suffix.length ? worker.slice(0, -suffix.length) : null;
+}
+
+/**
  * Router names of the hosted instances among `workers`: every Worker `N` beside a Worker carrying
- * the Workshop name `matchers(N)` gives it. Only an instance has a backend.
+ * the Workshop name `matchers(N)` gives it. Only an instance has a backend. An instance deployed
+ * under a router or backend name of its own ({@link CoreNames}) is not among them: nothing in a list
+ * of Worker names says which two belong together, so it is named by the operator, with `--router`
+ * and `--backend` ({@link CUSTOM_NAMES_HINT}).
+ *
+ * A name listed here is what two Worker names say, and not yet the instance's: an instance whose
+ * router and backend the operator called `X` and `X-backend` is listed as `X` whatever it is named.
+ * A take-over holds the name against what the backend carries before it matches anything under it
+ * (`instanceNameProblem`, discovery.ts).
  */
 export function findInstances(workers: CfWorker[]): string[] {
   const names = new Set(workers.map((worker) => worker.name));
   return [...names].filter((n) => names.has(workerNames(n).workshop)).toSorted();
 }
+
+/** What to do about an instance the hosted flow's naming does not find: said wherever one was not found. */
+export const CUSTOM_NAMES_HINT =
+  "An instance deployed under Worker names of its own is not found by name: pass its name with " +
+  "--router <name> and --backend <name>, the router and backend Workers it was deployed under.";
 
 /** The `N-gk-*` suffixes of the Gatekeepers the starter always deploys: the source of BUILT_IN_GATEKEEPER_SLUGS. */
 export function deployedGatekeeperSuffixes(n: string): Set<string> {

@@ -6,7 +6,7 @@ import type { AccessTarget } from "./access.ts";
 import { isEmail } from "./access.ts";
 import type { CfAiGateway, CfWorker } from "./client.ts";
 import { AI_GATEWAY_PROVIDERS, type AiGatewayProvider } from "./deployment-config.ts";
-import { editsAsFragment, type DeploymentEdit } from "./edits.ts";
+import { editsAsFragment, isPlaceholder, PUSH_IDENTITY_PATH, valueAtPath, type DeploymentEdit } from "./edits.ts";
 import { UNDECLARED_VARS, type CatalogGatekeeper } from "./gatekeepers.ts";
 import { gatekeeperWorkerName, WORKER_NAME, workerNames, type WorkerKey } from "./naming.ts";
 
@@ -139,6 +139,44 @@ export interface NewDeploymentAnswers extends GatekeeperAnswers {
 }
 
 /**
+ * The edit clearing the push identity `file` holds, with a note, when the new deployment `answers`
+ * describe is not the one it belongs to. A push identity is one installation's, and the key that
+ * signs with it is a secret on that installation's Workshop Worker: under another Workshop Worker
+ * name, or in another account, the deploy would send a Worker with no such key another
+ * installation's identity. The same Workshop Worker in the same account keeps it, as long as the
+ * Worker is there to hold the key: `workers` is the account's Workers where they were listed, null
+ * where they could not be, and a list that lacks the Worker shows the deploy would create it, with
+ * no key. Only a list that could not be read leaves the same name in the same account the benefit of
+ * the doubt.
+ */
+export function strayPushIdentity(
+  file: Record<string, unknown>,
+  answers: Pick<NewDeploymentAnswers, "accountId" | "name">,
+  workers: readonly CfWorker[] | null,
+): { edits: DeploymentEdit[]; note?: string } {
+  const path = [...PUSH_IDENTITY_PATH];
+  const block = valueAtPath(file, path);
+  if (block === undefined || block === null) return { edits: [] };
+  const account = valueAtPath(file, ["accountId"]);
+  const workshop = valueAtPath(file, ["workers", "workshop", "name"]);
+  const deployed = workerNames(answers.name).workshop;
+  const sameWorker = typeof account === "string" && !isPlaceholder(account) &&
+    account.toLowerCase() === answers.accountId.toLowerCase() && workshop === deployed;
+  const gone = sameWorker && workers !== null && !workers.some((worker) => worker.name === deployed);
+  if (sameWorker && !gone) return { edits: [] };
+  const described = `The file's ${path.join(".")} block is the push identity of the deployment it described`;
+  const without = "the block is set to null: push notifications reach open browser tabs only.";
+  return {
+    edits: [{ path, value: null }],
+    note: gone
+      ? `${described}, whose signing key is a secret on its Workshop Worker, ${deployed}. The account has no Worker of ` +
+        `that name, so the one this deployment creates has no such key, and ${without}`
+      : `${described}${typeof workshop === "string" && !isPlaceholder(workshop) ? ` (Workshop Worker ${workshop})` : ""}, ` +
+        `whose signing key is a secret on that Worker. A new deployment has no such key, so ${without}`,
+  };
+}
+
+/**
  * The edits recording a new deployment. Storage, error reporting and observability keep the
  * template's defaults (automatic provisioning, on, unchanged); Access's issuer and audience come
  * from the Access step. Without the custom Gatekeeper, its Worker name and text are left as they
@@ -183,6 +221,41 @@ export function newDeploymentAccessTarget(answers: NewDeploymentAnswers): Access
     host: routerHost(answers.name, answers.route),
     admins: answers.admins,
   };
+}
+
+/**
+ * The first of `candidates` that is a usable admin list, as the admin question offers it:
+ * comma-separated. A takeover hands it what the instance's backend carries, then the file's own
+ * list, so the instance's admins are the default wherever they were read. Undefined when none is a
+ * list of email addresses.
+ */
+export function offeredAdmins(...candidates: unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate) && candidate.every((entry) => typeof entry === "string") && !adminsProblem(candidate.join(","))) {
+      return candidate.join(", ");
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The model providers among `value` the provider question can offer, in the order it lists them:
+ * what a takeover preselects from the instance's backend. One the starter does not serve is left
+ * out, as the question has no such choice; discovery says so itself.
+ */
+export function offeredProviders(value: unknown): AiGatewayProvider[] {
+  return Array.isArray(value) ? PROVIDERS.filter((provider) => value.includes(provider)) : [];
+}
+
+/**
+ * Why a takeover of `instance` moves the project's Cloudflare OS pin, said after the question that
+ * confirms the move, which says from which commit to which. `release` is the release the instance
+ * runs; null when only `--commit` says what it was built from.
+ */
+export function pinMoveReason(instance: string, release: string | null): string {
+  return `${instance} runs ${release === null ? "the commit --commit names" : `release ${release}`}, which this ` +
+    "project's pin is behind: deployed as it is, it would put older code over storage the instance has already " +
+    "migrated, which cannot be undone. The move is staged, not committed, and merges nothing of the starter.";
 }
 
 /** What a takeover is asked beyond what discovery finds. */

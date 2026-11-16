@@ -25,11 +25,15 @@ import {
   type CfAccount,
   type CfAiGateway,
   type CfDnsRecord,
+  type CfDurableObjectNamespace,
   type CfIdentityProvider,
   type CfKvNamespace,
   type CfOrganization,
   type CfWhoami,
   type CfWorker,
+  type CfWorkerBinding,
+  type CfWorkerDeployment,
+  type CfWorkerVersion,
   type CfZone,
   type CloudflareClient,
 } from "./core/client.ts";
@@ -246,6 +250,143 @@ export async function listR2Buckets(options: CfOptions): Promise<string[]> {
   }
 }
 
+/** Whether `error` is the API saying the account has no such Worker ({@link WORKER_NOT_FOUND}). */
+function isWorkerNotFound(error: unknown): boolean {
+  return error instanceof CfError && !(error instanceof CfUnavailableError) && WORKER_NOT_FOUND.test(error.message);
+}
+
+/** `value` as an object's fields, or undefined when it is anything else. */
+function fieldsOf(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+/** `value` when it is a string, else undefined. */
+function stringOf(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+/** The string-valued entries of an `annotations` object, or undefined when it has none. */
+function annotationsOf(value: unknown): Record<string, string> | undefined {
+  const entries = Object.entries(fieldsOf(value) ?? {})
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+/**
+ * A binding as the core keeps it: its name and type, and the value only of the three kinds that are
+ * configuration rather than credentials: a plain variable's text, a JSON variable's value, and the
+ * Worker a service binding points at. Every other field is dropped here, so a secret binding is
+ * never more than its name and type whatever the API prints for it.
+ */
+function bindingOf(value: unknown): CfWorkerBinding | undefined {
+  const raw = fieldsOf(value);
+  const name = stringOf(raw?.name);
+  const type = stringOf(raw?.type);
+  if (!raw || name === undefined || type === undefined) return undefined;
+  const binding: CfWorkerBinding = { name, type };
+  if (type === "plain_text" && typeof raw.text === "string") binding.text = raw.text;
+  if (type === "json" && "json" in raw) binding.json = raw.json;
+  if (type === "service" && typeof raw.service === "string") binding.service = raw.service;
+  return binding;
+}
+
+/**
+ * A version out of what `cf workers versions get` prints. The Workers API describes a version in two
+ * shapes, and both are read: when it was created and by what, and its bindings, at the top level
+ * (`/workers/workers/<worker>/versions`, the endpoint `cf` calls) or under `metadata` and `resources`
+ * (`/workers/scripts/<worker>/versions`). An author's address, which the second shape carries, is
+ * not kept.
+ *
+ * `migration_tag` is kept when a reply carries it, in either shape's place for it, and is null
+ * otherwise. Neither endpoint is documented to report it and `cf` has no command for the ones that
+ * are (a Worker's service record and the scripts list), so null is the expected answer and means
+ * nothing: `listDurableObjectNamespaces` is the read that says what storage a Worker has.
+ */
+function versionOf(reply: unknown, label: string): CfWorkerVersion {
+  const raw = fieldsOf(reply);
+  const id = stringOf(raw?.id);
+  if (!raw || id === undefined) throw new CfError(`${label}: expected a version with an id, got ${kindOf(reply)}`);
+  const metadata = fieldsOf(raw.metadata);
+  const resources = fieldsOf(raw.resources);
+  const bindings = Array.isArray(raw.bindings) ? raw.bindings : resources?.bindings;
+  const createdOn = stringOf(raw.created_on) ?? stringOf(metadata?.created_on);
+  const source = stringOf(raw.source) ?? stringOf(metadata?.source);
+  const annotations = annotationsOf(raw.annotations);
+  return {
+    id,
+    ...(typeof raw.number === "number" ? { number: raw.number } : {}),
+    ...(createdOn === undefined ? {} : { created_on: createdOn }),
+    ...(source === undefined ? {} : { source }),
+    ...(annotations ? { annotations } : {}),
+    bindings: Array.isArray(bindings) ? bindings.flatMap((binding) => bindingOf(binding) ?? []) : [],
+    migration_tag: stringOf(raw.migration_tag) ?? stringOf(fieldsOf(resources?.script_runtime)?.migration_tag) ?? null,
+  };
+}
+
+/**
+ * A deployment out of one entry of what `cf workers deployments list` prints. Its author's address
+ * is not kept. Its versions are read whole or not at all: an entry without a version ID and a
+ * numeric share fails the read, since a deployment read as sending traffic nowhere is a Worker read
+ * as running nothing, which is the one thing a live Worker must never be mistaken for.
+ */
+function deploymentOf(entry: unknown, label: string): CfWorkerDeployment {
+  const raw = fieldsOf(entry);
+  const id = stringOf(raw?.id);
+  if (!raw || id === undefined) throw new CfError(`${label}: expected deployments with an id, got ${kindOf(entry)}`);
+  if (!Array.isArray(raw.versions)) {
+    throw new CfError(`${label}: expected deployment ${id} to list its versions, got ${kindOf(raw.versions)}`);
+  }
+  const createdOn = stringOf(raw.created_on);
+  const source = stringOf(raw.source);
+  const annotations = annotationsOf(raw.annotations);
+  return {
+    id,
+    ...(createdOn === undefined ? {} : { created_on: createdOn }),
+    ...(source === undefined ? {} : { source }),
+    ...(annotations ? { annotations } : {}),
+    versions: raw.versions.map((version) => {
+      const versionId = stringOf(fieldsOf(version)?.version_id);
+      const percentage = fieldsOf(version)?.percentage;
+      if (versionId === undefined || typeof percentage !== "number" || !Number.isFinite(percentage)) {
+        throw new CfError(`${label}: expected each version of deployment ${id} to have a version_id and a percentage`);
+      }
+      return { version_id: versionId, percentage };
+    }),
+  };
+}
+
+/**
+ * Every Durable Object namespace in the account that names its Worker and class. `cf` prints one
+ * page at a time and nothing that says how many there are, and a page the API caps below the size
+ * asked for would read as the last, so pages are fetched until one adds no namespace: a missed
+ * namespace is a Worker's storage unseen. A namespace without a Worker or a class (one whose Worker
+ * is gone) belongs to no Worker a deploy touches, and is left out.
+ */
+export async function listDurableObjectNamespaces(options: CfOptions): Promise<CfDurableObjectNamespace[]> {
+  const label = "cf durable-objects namespaces list";
+  const seen = new Map<string, CfDurableObjectNamespace | null>();
+  for (let page = 1; ; page++) {
+    const batch = await cfJson<unknown>(
+      ["durable-objects", "namespaces", "list", "--page", String(page), "--per-page", String(PER_PAGE)], options);
+    if (!Array.isArray(batch)) throw new CfError(`${label}: expected a JSON array, got ${kindOf(batch)}`);
+    const before = seen.size;
+    for (const entry of batch) {
+      const raw = fieldsOf(entry);
+      const id = stringOf(raw?.id);
+      if (!raw || id === undefined) throw new CfError(`${label}: expected namespaces with an id, got ${kindOf(entry)}`);
+      const script = stringOf(raw.script);
+      const className = stringOf(raw.class);
+      seen.set(id, script && className ? { id, script, class: className } : null);
+    }
+    if (seen.size === before) return [...seen.values()].flatMap((namespace) => namespace ?? []);
+  }
+}
+
+/** What kind of JSON value `value` is, for an error naming an unexpected reply. */
+function kindOf(value: unknown): string {
+  return value === null ? "null" : Array.isArray(value) ? "an array" : typeof value === "object" ? "an object" : `a ${typeof value}`;
+}
+
 /** A {@link CloudflareClient} that runs `cf` for every call. */
 export function cfClient(
   { profile, cwd, spawn }: { profile?: string; cwd?: string; spawn?: SpawnCf } = {},
@@ -270,15 +411,36 @@ export function cfClient(
       try {
         secrets = await cfJson<{ name: string }[]>(["workers", "secrets", "list", "--script-name", worker], on(accountId));
       } catch (error) {
-        if (error instanceof CfError && !(error instanceof CfUnavailableError) && WORKER_NOT_FOUND.test(error.message)) {
-          return null;
-        }
+        if (isWorkerNotFound(error)) return null;
         throw error;
       }
       if (!Array.isArray(secrets)) {
         throw new CfError(`cf workers secrets list --script-name ${worker}: expected a JSON array, got ${typeof secrets}`);
       }
       return secrets.map((secret) => secret.name);
+    },
+    async listWorkerDeployments(accountId, worker) {
+      // Unpaged: the deployment serving traffic is the first of the first page. The API wraps the
+      // list in `{ deployments }`, which `cf` prints as it is.
+      const label = `cf workers deployments list --script-name ${worker}`;
+      let reply: unknown;
+      try {
+        reply = await cfJson<unknown>(["workers", "deployments", "list", "--script-name", worker], on(accountId));
+      } catch (error) {
+        if (isWorkerNotFound(error)) return null;
+        throw error;
+      }
+      const deployments = Array.isArray(reply) ? reply : fieldsOf(reply)?.deployments;
+      if (!Array.isArray(deployments)) throw new CfError(`${label}: expected a list of deployments, got ${kindOf(reply)}`);
+      return deployments.map((deployment) => deploymentOf(deployment, label));
+    },
+    async getWorkerVersion(accountId, worker, versionId) {
+      // Without `--include modules`: the version's code is megabytes nothing here reads.
+      const args = ["workers", "versions", "get", versionId, "--worker-id", worker];
+      return versionOf(await cfJson<unknown>(args, on(accountId)), `cf ${args.join(" ")}`);
+    },
+    async listDurableObjectNamespaces(accountId) {
+      return listDurableObjectNamespaces(on(accountId));
     },
     async workersDevSubdomain(accountId) {
       // `cf` has no command for it; every Worker's record carries it.

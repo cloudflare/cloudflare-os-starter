@@ -9,10 +9,13 @@ import {
   type CfAccount,
   type CfAiGateway,
   type CfDnsRecord,
+  type CfDurableObjectNamespace,
   type CfIdentityProvider,
   type CfKvNamespace,
   type CfOrganization,
   type CfWorker,
+  type CfWorkerDeployment,
+  type CfWorkerVersion,
   type CfZone,
   type CloudflareClient,
 } from "./client.ts";
@@ -22,6 +25,17 @@ export interface MemoryAccount {
   workers?: CfWorker[];
   /** Secret names by Worker name; a Worker named here is in the account. One only in `workers` has none. */
   secrets?: Record<string, string[]>;
+  /**
+   * Deployments by Worker name, the one serving traffic first; a Worker named here is in the
+   * account, and one only in `workers`, `secrets` or `versions` was never deployed. An account
+   * without this says nothing of what its Workers run, and asking of one of them fails: a fixture
+   * that never thought about it must not read as an account where nothing is live.
+   */
+  deployments?: Record<string, CfWorkerDeployment[]>;
+  /** Versions by Worker name, which `deployments` refers to by ID. */
+  versions?: Record<string, CfWorkerVersion[]>;
+  /** The account's Durable Object namespaces: the classes of each Worker that have storage. */
+  durableObjectNamespaces?: CfDurableObjectNamespace[];
   kvNamespaces?: CfKvNamespace[];
   buckets?: string[];
   gateways?: CfAiGateway[];
@@ -81,6 +95,30 @@ export function memoryClient(account: MemoryAccount): CloudflareClient & {
       const secrets = account.secrets?.[worker];
       if (secrets) return secrets;
       return account.workers?.some((candidate) => candidate.name === worker) ? [] : null;
+    },
+    async listWorkerDeployments(_accountId, worker) {
+      gate("listWorkerDeployments");
+      const deployments = account.deployments?.[worker];
+      if (deployments) return deployments;
+      const known = account.workers?.some((candidate) => candidate.name === worker) ||
+        Object.hasOwn(account.secrets ?? {}, worker) || Object.hasOwn(account.versions ?? {}, worker);
+      if (!known) return null;
+      if (!account.deployments) {
+        throw new CfError(
+          `The memory account does not say what Worker ${worker} runs: give it \`deployments\` ` +
+          "(`{}` when none of its Workers was ever deployed).");
+      }
+      return [];
+    },
+    async getWorkerVersion(_accountId, worker, versionId) {
+      gate("getWorkerVersion");
+      const version = account.versions?.[worker]?.find((candidate) => candidate.id === versionId);
+      if (!version) throw new CfError(`[10025] Worker ${worker} has no version ${versionId}.`);
+      return version;
+    },
+    async listDurableObjectNamespaces() {
+      gate("listDurableObjectNamespaces");
+      return account.durableObjectNamespaces ?? [];
     },
     async workersDevSubdomain() {
       gate("workersDevSubdomain");
