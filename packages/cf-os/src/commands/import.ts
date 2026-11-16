@@ -654,7 +654,7 @@ export async function run(
     const reset = resets.length ? `, setting ${resets.map(({ path }) => path.join(".")).join(" and ")} back to placeholders` : "";
     ctx.out.log(`\nWrote ${discovery.edits.length} values to ${outWhere}${removed}${unpushed}${reset} (local file only; nothing in ` +
       `the account changed). Review it${outPath === inPath ? ` with \`git diff ${outWhere}\`` : ""}, ` +
-      "fill in what is listed above, then run `pnpm cf-os deploy`." +
+      "fill in what is listed above, then run `pnpm cf-os check` and, once it passes, `pnpm cf-os deploy`." +
       (standing.moved ? " The cloudflare-os pin moved with it, staged and not committed: review that too." : ""));
   } else {
     ctx.out.json(result);

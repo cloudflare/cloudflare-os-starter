@@ -549,6 +549,8 @@ test("--out moves the pin forward first, then reads the catalog, then writes", a
   assert.match(stderr(), new RegExp(`Moved the cloudflare-os pin from ${OLD_PIN} forward to it by 12 commits, staged and not committed, ` +
     "as `pnpm cf-os update --to` leaves it\\. \\.cf-os/update\\.md says what the move brings"));
   assert.match(stderr(), /Wrote \d+ values to deployment\.jsonc \(local file only[\s\S]*The cloudflare-os pin moved with it, staged and not committed/);
+  // The account is checked before anything is deployed over the instance.
+  assert.match(stderr(), /then run `pnpm cf-os check` and, once it passes, `pnpm cf-os deploy`\./);
   assert.deepEqual(resultOf(json).release,
     { id: HOSTED_RELEASE, commit: HOSTED_COMMIT, source: "release", pin: HOSTED_COMMIT, behind: false, moved: true });
   assert.equal(valueAtPath(parseDeployment(readFileSync(join(root, "deployment.jsonc"), "utf8")), ["workers", "workshop", "name"]), "acme-backend");
