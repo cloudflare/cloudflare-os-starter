@@ -41,6 +41,7 @@ describe("custom-gatekeeper", () => {
     expect(observation).toEqual({
       title: "Read deployment information",
       description: "Read the custom information configured by this deployment.",
+      subresources: [],
     });
 
     session[Symbol.dispose]();

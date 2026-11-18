@@ -70,6 +70,9 @@ export class CustomSessionImpl extends RpcTarget implements CustomSession {
     await this.#approvalQueue.authorizeObservation({
       title: "Read deployment information",
       description: "Read the custom information configured by this deployment.",
+      // The same text for everyone the deployment admits, so no resource restricts who may see it.
+      // A real read names every resource whose access rules govern what it returns.
+      subresources: [],
     });
     return this.#info;
   }
@@ -111,7 +114,25 @@ export class CustomGatekeeper extends DurableObject<Cloudflare.Env> implements G
     });
   }
 
+  /**
+   * Allows every observer: no read reports a subresource. A real integration checks each observer's
+   * own access to every subresource here, and throws when it cannot tell.
+   */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    _subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return { allowedObserverIds: observers.map((observer) => observer.id) };
+  }
+
+  /** No read was ever made without reporting its subresources, so there is no history to export. */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return [];
+  }
+
+  /** Compatibility only: observers are authorized per read, in verifyObserverAccess(). */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
+  /** Compatibility only: there is no observer state to remove. */
   async removeObserver(_id: string): Promise<void> {}
 
   async applyAction(action: number): Promise<void> {
@@ -147,7 +168,7 @@ export class CustomAccount extends WorkerEntrypoint<Cloudflare.Env> implements G
     throw new Error("Custom Gatekeeper has no URL-addressed resources.");
   }
 
-  async ensureResources(_resourceUrlPatterns: string[]): Promise<{ url?: string }> {
+  async ensureResources(_resourceTypeIds: string[]): Promise<{ url?: string }> {
     return {};
   }
 
