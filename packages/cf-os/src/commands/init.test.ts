@@ -283,10 +283,14 @@ test("a new deployment asks about a taken PDF renderer name only once a chosen G
     ["Hostname", "ops.example.com"],
   ];
   const end: Step[] = [["No Access application covers ops.example.com", "create"], ["Deploy now?", false]];
-  // Without Google the renderer is never deployed, so the name is no reason to rename: ops is taken as typed.
+  // Without Google the renderer is not deployed, so the name is no reason to rename: ops is taken as
+  // typed. The file still names the renderer for a Gatekeeper added later by hand, which no prompt
+  // guards, so it names a free one, not the account's Worker.
   const without = await init(t, [...start, ...REST, ...end], replies, { catalog: testCatalogWithGoogle() });
   assert.equal(without.code, 0);
   assert.equal(valueAtPath(without.written(), ["workers", "router", "name"]), "ops");
+  assert.equal(valueAtPath(without.written(), ["workers", "pdfRenderer", "name"]), "ops-pdf-renderer-2");
+  assert.match(without.stderr(), /ops-pdf-renderer is a Worker the account already has, so workers\.pdfRenderer\.name is ops-pdf-renderer-2/);
   assert.doesNotMatch(without.stderr(), /Already in the account/);
   assert.ok(!without.prompter.asked.some(({ message }) => message === "PDF renderer Worker name"));
 
@@ -296,9 +300,12 @@ test("a new deployment asks about a taken PDF renderer name only once a chosen G
     { catalog: testCatalogWithGoogle() });
   assert.equal(withGoogle.code, 0);
   assert.equal(withGoogle.prompter.asked.find(({ message }) => message === "PDF renderer Worker name")!.initial, "ops-pdf-renderer");
-  assert.match(withGoogle.stderr(), /binds the PDF renderer, which would be deployed as ops-pdf-renderer, a Worker the account already has/);
+  assert.match(withGoogle.stderr(), /The PDF renderer would be deployed as ops-pdf-renderer, a Worker the account already has, and a Gatekeeper chosen binds it\./);
   assert.equal(valueAtPath(withGoogle.written(), ["workers", "pdfRenderer", "name"]), "ops-pdf");
   assert.deepEqual(valueAtPath(withGoogle.written(), ["gatekeepers"]), { google: { name: "ops-gk-google" } });
+  // A name another of this deployment's Workers takes is refused, though the account has no Worker by it yet.
+  await assert.rejects(init(t, [...start, ...rest, ["PDF renderer Worker name", "ops-gk-google"]], replies,
+    { catalog: testCatalogWithGoogle() }), /"ops-gk-google" fails "PDF renderer Worker name": ops-gk-google is another of this deployment's Workers\./);
 });
 
 test("a new deployment does not send the push identity a takeover left in the file", async (t) => {

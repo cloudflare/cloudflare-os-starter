@@ -618,7 +618,9 @@ async function newDeployment(session: Session, file: Record<string, unknown>): P
   ]);
   const customGatekeeper = choice.custom ? await askDisplay(session, file) : null;
   const gatekeepers = await nameGatekeepers(session, workers, name, choice.slugs);
-  const pdfRenderer = await nameRenderer(session, workers, name, choice.slugs, catalog);
+  const { pdfRenderer: _derived, ...always } = workerNames(name);
+  const pdfRenderer = await nameRenderer(session, workers, name, choice.slugs, catalog,
+    [...Object.values(always), ...Object.values(gatekeepers)]);
 
   const answers = {
     accountId: account.id, name, route, admins, aiGateway: { name: gateway, providers }, customGatekeeper,
@@ -785,9 +787,12 @@ async function nameGatekeepers(
 }
 
 /**
- * The PDF renderer's Worker name for a new deployment `n`, asked for only when one of the Gatekeepers
- * `slugs` binds the renderer and the account already has a Worker named `<n>-pdf-renderer`, which
- * the deploy would overwrite. Undefined means the derived name.
+ * The PDF renderer's Worker name for a new deployment `n`, where `<n>-pdf-renderer` is a Worker the
+ * account already has; undefined means that derived name. With a chosen Gatekeeper that binds the
+ * renderer, the deploy would overwrite it, so the name is asked for. Without one it is not deployed
+ * yet, and the base name stands; but the file still names the renderer for a Gatekeeper added later
+ * by hand, which no prompt guards, so the first free `<n>-pdf-renderer-<i>` is written instead.
+ * `reserved` are the names this deployment's other Workers take.
  */
 async function nameRenderer(
   session: Session,
@@ -795,16 +800,27 @@ async function nameRenderer(
   n: string,
   slugs: string[],
   catalog: GatekeeperCatalog,
+  reserved: readonly string[],
 ): Promise<string | undefined> {
   const binds = slugs.some((slug) => {
     const entry = catalog.offered.find((candidate) => candidate.slug === slug);
     return entry !== undefined && bindsPdfRenderer(entry);
   });
   const derived = workerNames(n).pdfRenderer;
-  if (!binds || !workers?.some((worker) => worker.name === derived)) return undefined;
-  session.ctx.out.log(`A Gatekeeper chosen binds the PDF renderer, which would be deployed as ${derived}, a Worker ` +
-    "the account already has.");
-  return askNewWorker(session, workers, "PDF renderer Worker name", derived);
+  const taken = (name: string) => workers?.some((worker) => worker.name === name) || reserved.includes(name);
+  if (!taken(derived)) return undefined;
+  if (!binds) {
+    const free = Array.from({ length: 98 }, (_, i) => `${derived}-${i + 2}`)
+      .find((name) => WORKER_NAME.test(name) && !taken(name));
+    if (free) {
+      session.ctx.out.log(`${derived} is a Worker the account already has, so workers.pdfRenderer.name is ${free}: ` +
+        "the PDF renderer is deployed only beside a Gatekeeper that binds it, under that name.");
+      return free;
+    }
+  }
+  session.ctx.out.log(`The PDF renderer would be deployed as ${derived}, a Worker the account already has` +
+    (binds ? ", and a Gatekeeper chosen binds it." : "."));
+  return askNewWorker(session, workers ?? [], "PDF renderer Worker name", derived, undefined, reserved);
 }
 
 /**
@@ -871,7 +887,8 @@ async function askDisplay(session: Session, file: Record<string, unknown>): Prom
  * The name of a Worker a takeover adds, which the instance does not have yet. One the account
  * already has is this deployment's only if the operator says so (a rerun after a deploy), or if it
  * is `own`, the name this deployment's file already gives it; otherwise deploying would overwrite
- * another application's Worker, so it asks again.
+ * another application's Worker, so it asks again. One of `reserved`, a name another of this
+ * deployment's Workers takes, is refused outright.
  */
 async function askNewWorker(
   session: Session,
@@ -879,10 +896,13 @@ async function askNewWorker(
   question: string,
   initial: string,
   own?: string,
+  reserved: readonly string[] = [],
 ): Promise<string> {
   const { prompter, ctx } = session;
+  const validate = (name: string) => workerNameProblem(name) ??
+    (reserved.includes(name) ? `${name} is another of this deployment's Workers.` : undefined);
   for (;;) {
-    const name = await prompter.text(question, { initial, validate: workerNameProblem });
+    const name = await prompter.text(question, { initial, validate });
     if (name === own || !workers.some((worker) => worker.name === name)) return name;
     ctx.out.log(`Already in the account: ${name}. Deploying would overwrite it.`);
     if (await prompter.confirm(`Is ${name} this deployment's own, to deploy over?`, false)) return name;
