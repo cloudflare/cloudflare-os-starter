@@ -338,6 +338,8 @@ test("with the instance read, writes only a push identity `cf-os check` accepts"
   const note = inner.notes.join("\n");
   assert.match(note, /The backend's push identity is not carried over, as `cf-os check` would refuse it: pushIdentity\.installId must be a non-empty string without whitespace\./);
   assert.match(note, /The backend's CFOS_INSTALL_ID is "install acme"\. Set pushIdentity by hand[^\n]*push notifications stop\./);
+  // Discovery does not see the file, so the note says what becomes of a block already in it too.
+  assert.match(note, /A block the file already holds is left as it is, and deployed as it is: check it against the backend's variables first\./);
   assert.doesNotMatch(note, /signing key is the secret/);
   // One already as check wants it is written with neither note.
   const plain = await discoverRead(hostedMemoryAccount());

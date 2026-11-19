@@ -424,7 +424,8 @@ export function discover(
       notes.push(`The backend's push identity is not carried over, as \`cf-os check\` would refuse it: ${problem.message}` +
         (problem.variable ? ` The backend's ${problem.variable} is ${JSON.stringify(problem.value)}.` : "") +
         ` Set ${PUSH_IDENTITY_PATH.join(".")} by hand, to the identity the hosted flow registered for the instance, ` +
-        "before deploying: until then the deploy sends none, and push notifications stop.");
+        "before deploying. A block the file already holds is left as it is, and deployed as it is: check it against " +
+        "the backend's variables first. Without one, the deploy sends none, and push notifications stop.");
     }
     if (push && trimmed) {
       notes.push(`The backend's ${PUSH_IDENTITY_VARS.serviceUrl} has whitespace around it, which the backend drops ` +

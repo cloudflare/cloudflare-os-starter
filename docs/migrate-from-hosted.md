@@ -559,8 +559,9 @@ held to what `cf-os check` accepts: whitespace around the service address, which
 when it reads it, is dropped from the file too, with a note. Anything else check would refuse (an
 install id or key id with whitespace inside, an address that is not `https:`) is not written at all:
 the report marks the row, and a note names the variable, the reason, and that `pushIdentity` has to
-be set by hand to the identity the hosted flow registered. Until it is, the deploy sends none and
-push notifications stop. The identity
+be set by hand to the identity the hosted flow registered. A block the file already holds (a rerun
+over the instance's own file) is left as it is and deployed as it is, so check it against the
+backend's variables; without one, the deploy sends none and push notifications stop. The identity
 belongs to the one installation: `pnpm cf-os init` setting up **A new deployment** over a file that
 holds one sets the block to `null`, unless the new deployment is the same Workshop Worker in the same
 account and that Worker may still be there to hold the key. A new deployment's name is one no Worker
