@@ -106,11 +106,14 @@ export async function readBaseConfigs(
   const entries = await Promise.all(Object.entries(PACKAGE_DIRS)
     .filter(([key]) => key !== "pdfRenderer" || renderer)
     .map(async ([key, dir]) => {
-      const path = join(root, dir, "wrangler.jsonc");
-      // Left absent, for `generateConfigs` to say which selection needs it and what to do; any other
-      // failure to read it is the error itself.
-      if (key === "pdfRenderer" && !existsSync(path)) return [key, undefined] as const;
-      return [key, await readJsonc(root, path)] as const;
+      try {
+        return [key, await readJsonc(root, join(root, dir, "wrangler.jsonc"))] as const;
+      } catch (error) {
+        // Left absent, for `generateConfigs` to say which selection needs it and what to do; any
+        // other failure to read it, a permission error say, is the error itself.
+        if (key === "pdfRenderer" && (error as NodeJS.ErrnoException).code === "ENOENT") return [key, undefined] as const;
+        throw error;
+      }
     }));
   return Object.fromEntries(entries.filter(([, base]) => base !== undefined)) as unknown as BaseConfigs;
 }

@@ -899,6 +899,14 @@ export interface HostedInstance {
   backend: BackendValues | null;
   /** The router and backend names it was read under, when it was read from an account ({@link readInstance}). */
   asked?: { router: string; backend: string };
+  /**
+   * The Worker bearing the hosted flow's name for the instance's PDF renderer, where the account has
+   * one and it was asked for ({@link readInstance}): `proven` when every version serving its traffic
+   * carries the hosted flow's tag with the instance's installation fingerprint. Not one of `workers`:
+   * it holds no data, so its release holds no pin, and a Worker that merely bears the name is no
+   * reason to stop a takeover.
+   */
+  renderer?: { name: string; proven: boolean };
 }
 
 /** `reading` judged as the instance's `role`. */
@@ -1207,7 +1215,7 @@ export async function readWorkers(
 export async function readInstance(
   client: CloudflareClient,
   accountId: string,
-  { router, backend, others = [] }: { router: string; backend: string; others?: readonly string[] },
+  { router, backend, others = [], renderer }: { router: string; backend: string; others?: readonly string[]; renderer?: string },
 ): Promise<HostedInstance> {
   const backendReading = await readWorker(client, accountId, backend);
   // What each version serving the backend's traffic binds: a rollout's smaller share may bind a
@@ -1240,5 +1248,49 @@ export async function readInstance(
     if (!reading || !entry) missing.push(name);
     else workers.push(instanceWorker(reading, entry.role, entry.slug));
   }
-  return hostedInstance(workers, missing, { router, backend });
+  const instance = hostedInstance(workers, missing, { router, backend });
+  if (renderer === undefined) return instance;
+  // Read for its tag alone, which says whether it is the instance's. It is no part of the instance:
+  // it holds no data, so what it runs holds no pin, and a Worker merely bearing the name stops nothing.
+  return { ...instance, renderer: { name: renderer, proven: await installationOf(client, accountId, renderer, instance) === "this" } };
+}
+
+/**
+ * Whose installation Worker `name` is, by the hosted flow's own word, its tag's fingerprint: `this`
+ * when every version serving its traffic carries the one `instance`'s router and backend share,
+ * `another` when one carries a different one, `none` when it was read and nothing says (untagged, as
+ * a self-hosted deploy leaves it, or with no deployment), and `unknown` when that cannot be told:
+ * reading it failed, or it is tagged but the router and backend share no one fingerprint to hold it
+ * to (both redeployed by the starter, say). Either of the two will do, as a backend redeployed by
+ * hand loses its tag and the router still says whose installation it is; a Gatekeeper's will not, as
+ * one bound by only part of the backend's traffic may be another installation's.
+ */
+export async function installationOf(
+  client: CloudflareClient,
+  accountId: string,
+  name: string,
+  instance: HostedInstance,
+): Promise<"this" | "another" | "none" | "unknown"> {
+  let reading: WorkerReading | null;
+  try {
+    reading = await readWorker(client, accountId, name);
+  } catch {
+    return "unknown";
+  }
+  return installationOfRead(reading, instance);
+}
+
+/** {@link installationOf}, of what a Worker was read to run: null for one with no deployment. */
+function installationOfRead(reading: WorkerReading | null, instance: HostedInstance): "this" | "another" | "none" | "unknown" {
+  const tags = (reading?.versions ?? []).map((version) => flowTag(version)?.fingerprint);
+  if (tags.every((tag) => tag === undefined)) return "none";
+  // The fingerprint the instance's router and backend carry, which are the instance by name and
+  // binding: a Gatekeeper's alone, one bound by only part of the backend's traffic say, could be
+  // another installation's, and would vouch for its renderer.
+  const carried = [...new Set(instance.workers.filter(({ role }) => role === "router" || role === "backend")
+    .flatMap((worker) => worker.fingerprints))];
+  if (carried.length !== 1) return "unknown";
+  const [fingerprint] = carried;
+  if (tags.some((tag) => tag !== undefined && tag !== fingerprint)) return "another";
+  return tags.every((tag) => tag === fingerprint) ? "this" : "none";
 }

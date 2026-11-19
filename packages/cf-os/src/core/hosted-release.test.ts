@@ -27,6 +27,7 @@ import {
   handEdited,
   hostedInstance,
   instanceRelease,
+  installationOf,
   instanceStops,
   instanceSummary,
   instanceWorker,
@@ -862,6 +863,35 @@ test("reads an instance under custom Worker names, its Gatekeepers still found b
   assert.deepEqual(defaults.missing, ["moss", "moss-backend"]);
   assert.equal(defaults.backend, null);
   assert.deepEqual(defaults.release, { kind: "none" });
+});
+
+test("reads a renderer for its tag alone: what it runs holds no pin, as it holds no data", async () => {
+  // Tagged as the instance's, it is proven, and still no part of the instance: its newer release
+  // holds the pin to nothing.
+  const instance = await readInstance(memoryClient(hostedMemoryAccount({ "acme-pdf-renderer": { release: "r005000-1111111" } })),
+    FAKE_ACCOUNT, { router: "acme", backend: "acme-backend", renderer: "acme-pdf-renderer" });
+  assert.equal(instance.renderer?.proven, true);
+  assert.ok(!instance.workers.some(({ name }) => name === "acme-pdf-renderer"));
+  const decision = decideCommit(instance.reports);
+  assert.equal(decision.ok && decision.commit, "6c8d301");
+});
+
+test("holds a Worker to the fingerprint the router and backend carry, never a Gatekeeper's alone", async () => {
+  // The router and backend untagged, only the GitHub Gatekeeper tagged, as Beta's: its fingerprint
+  // is no word on whose Beta's renderer is, though it matches.
+  const untagged = { annotations: {} };
+  const beta = { annotations: { "workers/tag": "gd:4945:deadbeef" } };
+  const account = hostedMemoryAccount({
+    acme: { ...untagged, services: { WORKSHOP_BACKEND: "acme-backend" } }, "acme-backend": untagged,
+    "acme-gk-context": untagged, "acme-gk-scheduler": untagged, "acme-gk-github": beta, "beta-pdf-renderer": beta,
+  });
+  const client = memoryClient(account);
+  const instance = await readInstance(client, FAKE_ACCOUNT, { router: "acme", backend: "acme-backend" });
+  assert.equal(await installationOf(client, FAKE_ACCOUNT, "beta-pdf-renderer", instance), "unknown");
+  // Tagged alike, the router alone says whose installation it is.
+  const tagged = hostedMemoryAccount({ "acme-backend": untagged, "acme-pdf-renderer": {} });
+  const read = await readInstance(memoryClient(tagged), FAKE_ACCOUNT, { router: "acme", backend: "acme-backend" });
+  assert.equal(await installationOf(memoryClient(tagged), FAKE_ACCOUNT, "acme-pdf-renderer", read), "this");
 });
 
 test("reads Workers found another way too, once each, and names the ones the account lacks", async () => {

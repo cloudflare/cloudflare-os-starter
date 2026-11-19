@@ -922,4 +922,7 @@ test("reads no PDF renderer base on a pin without one, unless a selected Gatekee
   assert.equal(googleBases.pdfRenderer, undefined);
   assert.throws(() => generateConfigs(withGoogle, googleBases, googleCatalog),
     /cloudflare-os\/packages\/pdf-renderer\/wrangler\.jsonc is missing: the pinned cloudflare-os has no PDF renderer/);
+  // Only a missing file: one that cannot be read, a directory in its place say, is that error itself.
+  mkdirSync(join(root, PACKAGE_DIRS.pdfRenderer, "wrangler.jsonc"), { recursive: true });
+  await assert.rejects(readBaseConfigs(root, withGoogle, googleCatalog), { code: "EISDIR" });
 });

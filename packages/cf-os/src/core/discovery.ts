@@ -149,6 +149,13 @@ export interface Discovery {
   orphanedGatekeepers: OrphanedGatekeeper[];
   /** Anything else worth saying: ambiguity, disagreements between sources. */
   notes: string[];
+  /**
+   * The Worker bearing the hosted flow's `N-pdf-renderer` name, where the instance was read and
+   * nothing shows that Worker is its own (`HostedInstance.renderer`): not written, as the deploy
+   * would go over it, and the name the derived default would give too ({@link settleRenderer},
+   * import.ts).
+   */
+  pdfRendererUnproven?: string;
 }
 
 /** What is known of an instance beyond the account's inventory. */
@@ -197,23 +204,64 @@ function gatekeeperBinding(slug: string): string {
 function checkedPush(carried: PushIdentity | null): {
   push: PushIdentity | null;
   trimmed?: boolean;
-  problem?: { message: string; variable?: string; value?: unknown };
+  problem?: PushProblem;
+  /** Set when only the browser key was refused: `push` is the rest, with no browser push. */
+  browserKey?: PushProblem;
 } {
   if (!carried) return { push: null };
-  const push = { ...carried, serviceUrl: carried.serviceUrl.trim() };
+  const push = { ...carried, serviceUrl: readAddress(carried.serviceUrl) };
+  const trimmed = push.serviceUrl === carried.serviceUrl ? {} : { trimmed: true };
+  const problem = pushProblem(push, carried);
+  if (!problem) return { push, ...trimmed };
+  // Native push signs its requests without the browser key, so a bad one costs browser push alone.
+  if (problem.variable === PUSH_IDENTITY_VARS.webPushPublicKey) {
+    const native = { ...push, webPushPublicKey: null };
+    if (!pushProblem(native, carried)) return { push: native, ...trimmed, browserKey: problem };
+  }
+  return { push: null, problem };
+}
+
+/**
+ * `serviceUrl` as the backend's URL parser reads it, where whitespace would have `check` refuse it.
+ * An address that parses as an `https:` URL as it is, as the backend's `new URL(pathname, serviceUrl)`
+ * takes it, is written without what that parser drops around it (C0 controls and spaces, nothing
+ * wider), and serialized where whitespace stays inside, which encodes it. One that does not parse
+ * is left as it is, for `check` to refuse and the identity to be set by hand: `trim()`'s Unicode
+ * whitespace, a non-breaking space say, is not what the backend's parser forgives.
+ */
+function readAddress(serviceUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(serviceUrl);
+  } catch {
+    return serviceUrl;
+  }
+  if (url.protocol !== "https:") return serviceUrl;
+  const stripped = parserStripped(serviceUrl);
+  return /\s/.test(stripped) ? url.href : stripped;
+}
+
+/** `text` without the C0 controls and spaces a URL parser drops around an address. */
+function parserStripped(text: string): string {
+  // eslint-disable-next-line no-control-regex -- the C0 controls are the point.
+  return text.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "");
+}
+
+/** Why `validatePushIdentity` refuses a push identity, with the variable at fault in `carried`. */
+interface PushProblem { message: string; variable?: string; value?: unknown }
+
+/** {@link PushProblem} for `push`, read from `carried`; undefined when `validatePushIdentity` accepts it. */
+function pushProblem(push: PushIdentity, carried: PushIdentity): PushProblem | undefined {
   try {
     validatePushIdentity(push);
+    return undefined;
   } catch (error) {
     const message = (error as Error).message;
     const field = /^pushIdentity\.(\w+)/.exec(message)?.[1];
-    return {
-      push: null,
-      problem: field && field in PUSH_IDENTITY_VARS
-        ? { message, variable: PUSH_IDENTITY_VARS[field as keyof PushIdentity], value: carried[field as keyof PushIdentity] }
-        : { message },
-    };
+    return field && field in PUSH_IDENTITY_VARS
+      ? { message, variable: PUSH_IDENTITY_VARS[field as keyof PushIdentity], value: carried[field as keyof PushIdentity] }
+      : { message };
   }
-  return push.serviceUrl === carried.serviceUrl ? { push } : { push, trimmed: true };
 }
 
 /**
@@ -241,6 +289,8 @@ export function discover(
   const backend = hosted.instance?.backend ?? undefined;
   const bound = backend?.gatekeepers;
 
+  let pdfRendererUnproven: string | undefined;
+
   for (const matcher of matchers(n, hosted.names).filter((candidate) => candidate.source === "hosted")) {
     let found: string | null = null;
     let expected = matcher.name;
@@ -257,6 +307,14 @@ export function discover(
       else if (workerNames.has(matcher.name)) {
         note = `Worker ${matcher.name} is in the account, but the backend does not bind it, so it is not this ` +
           "instance's; naming it here deploys over it";
+      }
+    } else if (matcher.path.join(".") === "workers.pdfRenderer.name" && hosted.instance && workerNames.has(matcher.name)) {
+      // Stateless, and so held to proof rather than the name: the hosted flow's tag on what it runs.
+      if (hosted.instance.renderer?.name === matcher.name && hosted.instance.renderer.proven) found = matcher.name;
+      else {
+        pdfRendererUnproven = matcher.name;
+        note = `Worker ${matcher.name} is in the account, but what it runs is not tagged as this installation's, so it is ` +
+          "not shown to be the instance's; naming it here deploys over it";
       }
     } else if (matcher.kind === "worker" && workerNames.has(matcher.name)) found = matcher.name;
     if (matcher.kind === "kv") found = kvByTitle.get(matcher.name)?.id ?? null;
@@ -411,7 +469,7 @@ export function discover(
     // The push identity: the four variables go into the file, and the key that signs with them stays
     // where it is, a secret of the backend Worker that nothing here reads.
     const { push: backendPush } = backend;
-    const { push, problem, trimmed } = checkedPush(backendPush);
+    const { push, problem, trimmed, browserKey } = checkedPush(backendPush);
     rows.push({
       label: "Push identity",
       found: backendPush ? `install ${backendPush.installId}, key ${backendPush.keyId}, at ${backendPush.serviceUrl}` : null,
@@ -427,9 +485,21 @@ export function discover(
         "before deploying. A block the file already holds is left as it is, and deployed as it is: check it against " +
         "the backend's variables first. Without one, the deploy sends none, and push notifications stop.");
     }
+    if (push && browserKey) {
+      notes.push(`The backend's ${PUSH_IDENTITY_VARS.webPushPublicKey} is ${JSON.stringify(browserKey.value)}, which ` +
+        `\`cf-os check\` would refuse: ${browserKey.message} The rest of the push identity is carried over, with ` +
+        `${PUSH_IDENTITY_PATH.join(".")}.webPushPublicKey null: native push keeps working. Without the key, a browser ` +
+        "can no longer enroll in push, nor renew its subscription, and the browser setting is hidden; browsers already " +
+        "subscribed keep receiving pushes, which the backend still sends, until their subscription lapses. Set the " +
+        "field to the instance's key to restore enrollment.");
+    }
     if (push && trimmed) {
-      notes.push(`The backend's ${PUSH_IDENTITY_VARS.serviceUrl} has whitespace around it, which the backend drops ` +
-        `when it reads the address: ${PUSH_IDENTITY_PATH.join(".")}.serviceUrl is written without it, ${push.serviceUrl}.`);
+      notes.push(parserStripped(backendPush!.serviceUrl) === push.serviceUrl
+        ? `The backend's ${PUSH_IDENTITY_VARS.serviceUrl} has whitespace around it, which the backend drops when it ` +
+          `reads the address: ${PUSH_IDENTITY_PATH.join(".")}.serviceUrl is written without it, ${push.serviceUrl}.`
+        : `The backend's ${PUSH_IDENTITY_VARS.serviceUrl}, ${JSON.stringify(backendPush!.serviceUrl)}, has whitespace in it, ` +
+          `which the backend's URL parser encodes when it reads the address: ${PUSH_IDENTITY_PATH.join(".")}.serviceUrl ` +
+          `is written as it reads it, ${push.serviceUrl}.`);
     }
     if (push) {
       edits.push(pushIdentityEdit(push));
@@ -506,7 +576,7 @@ export function discover(
 
   const matched = ["workers.router.name", "workers.workshop.name"]
     .every((path) => rows.some((row) => row.path === path && row.found !== null));
-  return { matched, edits, rows, foundGatekeepers, orphanedGatekeepers, notes };
+  return { matched, edits, rows, foundGatekeepers, orphanedGatekeepers, notes, ...pdfRendererUnproven && { pdfRendererUnproven } };
 }
 
 /** Something an instance's Workers carry that names the instance. */

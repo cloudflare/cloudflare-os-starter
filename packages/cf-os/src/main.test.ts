@@ -224,7 +224,7 @@ test("init's take-over reaches the command that carries it out: scaffolding outs
   // A flag it could not hand on is refused there, with init's usage, before a directory is looked at.
   const orphaned = await run(t, ["init", "moss", "--commit", "6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d"], { cwd });
   assert.equal(orphaned.code, 1);
-  assert.match(orphaned.log, /^--router, --backend, --release and --commit describe the hosted instance to take over: pass --take-over <instance> with them\.\n\nUsage: cf-os init/);
+  assert.match(orphaned.log, /^--router, --backend, --release, --commit and --pdf-renderer are for the takeover of a hosted instance: pass --take-over <instance> with them\.\n\nUsage: cf-os init/);
   const malformed = await run(t, ["init", "fresh", "--take-over", "moss", "--commit", "6c8d301"], { cwd });
   assert.equal(malformed.code, 1);
   assert.match(malformed.log, /^--commit "6c8d301" is not a full commit SHA: all 40 hex digits\.\n\nUsage: cf-os init/);

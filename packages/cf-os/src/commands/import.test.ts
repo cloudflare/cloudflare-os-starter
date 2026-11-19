@@ -6,11 +6,14 @@ import { cfClient } from "../cf-client.ts";
 import { parseDeployment, valueAtPath } from "../deployment-file.ts";
 import { FAKE_ACCOUNT, fakeCf, workerLiveReplies, type FakeReply } from "../fake-cf.ts";
 import { validatePushIdentity } from "../core/deployment-config.ts";
+import { isPlaceholder } from "../core/edits.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import {
   CANCEL,
   HOSTED_COMMIT,
+  fixtureVersionId,
   HOSTED_RELEASE,
+  hostedAccount,
   hostedAccountLive,
   hostedInstanceLive,
   hostedWorkerLive,
@@ -20,6 +23,7 @@ import {
   scriptedPrompter,
   TEMPLATE,
   testCatalog,
+  testCatalogWithGoogle,
   testContext,
   type HostedWorkerOptions,
   type PinMoveCall,
@@ -252,6 +256,11 @@ test("--out sets another deployment's PDF renderer name to the instance's, not t
   assert.match(stderr(), /workers\.pdfRenderer\.name \(beta-pdf-renderer\)\. workers\.pdfRenderer\.name goes to acme-pdf-renderer instead/);
   assert.match(stderr(), /setting workers\.pdfRenderer\.name to acme-pdf-renderer/);
 });
+
+/** The PDF renderer name `--out acme.jsonc` wrote under `root`. */
+function writtenRenderer(root: string): unknown {
+  return valueAtPath(parseDeployment(readFileSync(join(root, "acme.jsonc"), "utf8")), ["workers", "pdfRenderer", "name"]);
+}
 
 /** {@link gatekeepersTemplate}, naming beta's Context and Web Search Gatekeeper Workers too. */
 function builtInsTemplate(router: string): string {
@@ -907,6 +916,367 @@ test("--router and --backend take over an instance deployed under Worker names o
   const again = await importing(root, ["moss"], { out: "deployment.jsonc", flags: { account: FAKE_ACCOUNT }, account: mossAccount(), values });
   assert.equal(again.code, 0);
   assert.doesNotMatch(again.stderr(), /another deployment's/);
+});
+
+/**
+ * The hosted fixture's account with `renderer` as acme-pdf-renderer, listed like the rest, and a
+ * Google Gatekeeper, acme-gk-google, the backend binds: the renderer is deployed with it.
+ */
+function rendererAccount(renderer: HostedWorkerOptions, extra: Record<string, HostedWorkerOptions> = {}): Record<string, FakeReply> {
+  const live = hostedAccountLive({
+    "acme-backend": { services: { GATEKEEPER_GOOGLE: "acme-gk-google" } },
+    "acme-gk-google": { operation: "gk-google" },
+    "acme-pdf-renderer": renderer, ...extra,
+  });
+  return { ...live, "workers list": [...live["workers list"] as { name: string }[],
+    ...["acme-gk-google", "acme-pdf-renderer", ...Object.keys(extra)].map((name) => ({ name }))] };
+}
+
+test("--out takes a renderer standing under the hosted name for this deployment's on its tag, or the operator's word", async (t) => {
+  const out = { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, catalog: testCatalogWithGoogle() };
+  // Tagged as this installation's, as the hosted flow uploads it: written, nothing asked.
+  const tagged = scratchProject(t, TEMPLATE);
+  assert.equal((await importing(tagged, ["acme"], { ...out, account: rendererAccount({}) })).code, 0);
+  assert.equal(writtenRenderer(tagged), "acme-pdf-renderer");
+
+  // Untagged, and no terminal to ask at: stopped, naming the flag that answers it, with nothing written.
+  const untagged = rendererAccount({ annotations: {} });
+  const stopped = scratchProject(t, TEMPLATE);
+  const stop = await importing(stopped, ["acme"], { ...out, account: untagged });
+  assert.equal(stop.code, 1);
+  assert.ok(!existsSync(join(stopped, "acme.jsonc")));
+  assert.match(stop.stderr(), /Worker acme-pdf-renderer, the name the hosted flow gives acme's renderer, runs what is not tagged as this installation's: nothing shows it is this deployment's PDF renderer, and deploying the renderer as acme-pdf-renderer replaces it\. Pass --pdf-renderer acme-pdf-renderer if it is this deployment's, to deploy over it, or --pdf-renderer <name> for another \(acme-pdf-renderer-2 is free\)\. Nothing was written\./);
+  // The report without --out says what --out needs, and goes on.
+  const report = await importing(scratchProject(t, TEMPLATE), ["acme"], { flags: { account: FAKE_ACCOUNT }, account: untagged, catalog: testCatalogWithGoogle() });
+  assert.equal(report.code, 0);
+  assert.match(report.stderr(), /--out needs it answered: pass --pdf-renderer acme-pdf-renderer if it is this deployment's/);
+
+  // --pdf-renderer answers it: the Worker standing there, to deploy over, or another name.
+  for (const name of ["acme-pdf-renderer", "acme-renderer"]) {
+    const root = scratchProject(t, TEMPLATE);
+    assert.equal((await importing(root, ["acme"], { ...out, account: untagged, values: { "pdf-renderer": name } })).code, 0, name);
+    assert.equal(writtenRenderer(root), name);
+  }
+
+});
+
+/** acme's own file, naming `renderer` as its PDF renderer. */
+function acmeWithRenderer(renderer: string): string {
+  return TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"acme"').replace('"<CLOUDFLARE_ACCOUNT_ID>"', `"${FAKE_ACCOUNT}"`)
+    .replace('"workers": {', `"workers": { "pdfRenderer": { "name": "${renderer}" },`);
+}
+
+test("--out holds the renderer the instance's own file names to the same proof", async (t) => {
+  // Untagged, as this project's deploys leave it, or a name only reserved that another app took since:
+  // the file cannot say which, so it is asked about, and --pdf-renderer answers it.
+  const untagged = rendererAccount({ annotations: {} });
+  const rerun = scratchProject(t, acmeWithRenderer("acme-pdf-renderer"));
+  const stopped = await importing(rerun, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account: untagged, catalog: testCatalogWithGoogle() });
+  assert.equal(stopped.code, 1);
+  assert.match(stopped.stderr(), /Worker acme-pdf-renderer, the file's workers\.pdfRenderer\.name, runs what is not tagged as this installation's: nothing shows it is this deployment's PDF renderer[^\n]*Pass --pdf-renderer acme-pdf-renderer/);
+  const answered = await importing(rerun, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account: untagged,
+    catalog: testCatalogWithGoogle(), values: { "pdf-renderer": "acme-pdf-renderer" } });
+  assert.equal(answered.code, 0, answered.stderr());
+  assert.equal(writtenRenderer(rerun), "acme-pdf-renderer");
+  // One that names another installation's renderer is asked about too, as another's.
+  const beta = rendererAccount({}, { "beta-pdf-renderer": { annotations: { "workers/tag": "gd:4945:deadbeef" } } });
+  const stale = scratchProject(t, acmeWithRenderer("beta-pdf-renderer"));
+  const foreign = await importing(stale, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account: beta, catalog: testCatalogWithGoogle() });
+  assert.equal(foreign.code, 1);
+  assert.match(foreign.stderr(), /Worker beta-pdf-renderer, the file's workers\.pdfRenderer\.name, runs what is tagged as another installation's/);
+  // A name no Worker has yet stands, over the hosted one, tagged though it is, and the report says so.
+  const fresh = scratchProject(t, acmeWithRenderer("acme-new-renderer"));
+  const kept = await importing(fresh, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account: rendererAccount({}), catalog: testCatalogWithGoogle() });
+  assert.equal(kept.code, 0, kept.stderr());
+  assert.equal(writtenRenderer(fresh), "acme-new-renderer");
+  assert.match(kept.stderr(), /PDF renderer Worker +acme-pdf-renderer {2}-> workers\.pdfRenderer\.name\n.*\(the file's acme-new-renderer is kept in its place\)/);
+  assert.match(kept.stderr(), /The file names acme-new-renderer as workers\.pdfRenderer\.name, which stays in place of acme-pdf-renderer, the hosted renderer/);
+  // A saved name that is no Worker name stands for nothing: the hosted one, proven, is written.
+  const blank = scratchProject(t, acmeWithRenderer(""));
+  const blankRun = await importing(blank, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account: rendererAccount({}), catalog: testCatalogWithGoogle() });
+  assert.equal(blankRun.code, 0, blankRun.stderr());
+  assert.equal(writtenRenderer(blank), "acme-pdf-renderer");
+});
+
+test("--out with --pdf-renderer holds the pin to the renderer it names alone, not the file's it replaces", async (t) => {
+  // The file names acme-renderer-custom, tagged as acme's and alone on a newer release; --pdf-renderer
+  // names a fresh one instead, so the deploy never goes over the file's, which holds the pin to nothing.
+  const account = rendererAccount({}, { "acme-renderer-custom": { release: "r005000-1111111" } });
+  const root = scratchProject(t, acmeWithRenderer("acme-renderer-custom"));
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account,
+    catalog: testCatalogWithGoogle(), values: { release: HOSTED_RELEASE, commit: HOSTED_COMMIT, "pdf-renderer": "acme-fresh-renderer" } });
+  assert.equal(code, 0, stderr());
+  assert.equal(writtenRenderer(root), "acme-fresh-renderer");
+});
+
+test("--out holds the pin to the renderer it keeps alone: a leftover under the router's derived name holds it to nothing", async (t) => {
+  // moss keeps its proven moss-pdf-renderer; moss-os-pdf-renderer, tagged as moss's too, is a leftover
+  // on a newer release that the output never deploys over. The command made for moss's release stands.
+  const live = mossLive();
+  live["moss-api"].versions[0].bindings!.push({ name: "GATEKEEPER_GOOGLE", type: "service", service: "moss-gk-google" });
+  live["moss-gk-google"] = hostedWorkerLive("moss-gk-google", { operation: "gk-google" });
+  live["moss-pdf-renderer"] = hostedWorkerLive("moss-pdf-renderer");
+  live["moss-os-pdf-renderer"] = hostedWorkerLive("moss-os-pdf-renderer", { release: "r005000-1111111" });
+  const root = scratchProject(t, TEMPLATE);
+  const { code, stderr } = await importing(root, ["moss"], {
+    out: "deployment.jsonc", flags: { account: FAKE_ACCOUNT }, account: mossAccount(live), catalog: testCatalogWithGoogle(),
+    values: { router: "moss-os", backend: "moss-api", release: HOSTED_RELEASE, commit: HOSTED_COMMIT },
+  });
+  assert.equal(code, 0, stderr());
+  assert.equal(valueAtPath(parseDeployment(readFileSync(join(root, "deployment.jsonc"), "utf8")), ["workers", "pdfRenderer", "name"]),
+    "moss-pdf-renderer");
+});
+
+test("--out keeps a free renderer name, asking nothing, where no Gatekeeper selected binds the renderer", async (t) => {
+  // No Google in the catalog's offer, so none is deployed: acme-pdf-renderer, untagged, is not gone over now,
+  // and a free name keeps one added later from going over it.
+  const root = scratchProject(t, TEMPLATE);
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account: rendererAccount({ annotations: {} }) });
+  assert.equal(code, 0, stderr());
+  assert.equal(writtenRenderer(root), "acme-pdf-renderer-2");
+  assert.match(stderr(), /No Gatekeeper selected binds the renderer, so none is deployed now; workers\.pdfRenderer\.name is acme-pdf-renderer-2, so one added later does not go over it\./);
+});
+
+test("--out asks about a renderer that is not deployed now where no free name is left to keep for later", async (t) => {
+  // Every name a free one would take is taken: left as it is, Google added later would deploy over
+  // acme-pdf-renderer, so it is asked about as if deployed, and without a terminal --out stops.
+  const account = rendererAccount({ annotations: {} });
+  const taken = [...Array.from({ length: 98 }, (_, i) => `acme-pdf-renderer-${i + 2}`), ...Array.from({ length: 98 }, (_, i) => `acme-pdf-${i + 2}`)];
+  const crowded = { ...account, "workers list": [...account["workers list"] as { name: string }[], ...taken.map((name) => ({ name }))] };
+  const root = scratchProject(t, TEMPLATE);
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account: crowded });
+  assert.equal(code, 1);
+  assert.match(stderr(), /Pass --pdf-renderer acme-pdf-renderer if it is this deployment's, to deploy over it, or --pdf-renderer <name> for another\. Nothing was written\./);
+});
+
+test("--out says, in the report, the renderer --pdf-renderer names in place of the one found", async (t) => {
+  const root = scratchProject(t, TEMPLATE);
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account: rendererAccount({}),
+    catalog: testCatalogWithGoogle(), values: { "pdf-renderer": "acme-new-renderer" } });
+  assert.equal(code, 0, stderr());
+  assert.equal(writtenRenderer(root), "acme-new-renderer");
+  assert.match(stderr(), /PDF renderer Worker +acme-pdf-renderer {2}-> workers\.pdfRenderer\.name\n.*\(--pdf-renderer: acme-new-renderer is written\)/);
+  assert.match(stderr(), /--pdf-renderer names acme-new-renderer as workers\.pdfRenderer\.name, in place of acme-pdf-renderer: the deploy creates it\./);
+  // With no Gatekeeper selected that binds the renderer, the name is only kept for later.
+  const later = await importing(scratchProject(t, TEMPLATE), ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT },
+    account: rendererAccount({ annotations: {} }), values: { "pdf-renderer": "acme-pdf-renderer" } });
+  assert.equal(later.code, 0, later.stderr());
+  assert.match(later.stderr(), /--pdf-renderer names acme-pdf-renderer as workers\.pdfRenderer\.name: kept for later, as no Gatekeeper selected binds the renderer, so this deploy leaves that Worker alone\./);
+});
+
+/** acme's own file, its renderer and its Error Reporter both beta-pdf-renderer, the reporter `enabled` or not. */
+function sharing(enabled: boolean): string {
+  return acmeWithRenderer("beta-pdf-renderer")
+    .replace('"<ERROR_REPORTER_WORKER_NAME>"', '"beta-pdf-renderer"')
+    .replace('"errorReporting": { "enabled": true', `"errorReporting": { "enabled": ${enabled}`);
+}
+
+test("--out checks a saved renderer name a disabled Worker shares, and writes any name that stands in its place", async (t) => {
+  // Google is the instance's, and no acme-pdf-renderer is in the account; beta-pdf-renderer is Beta's.
+  const live = hostedAccountLive({
+    "acme-backend": { services: { GATEKEEPER_GOOGLE: "acme-gk-google" } },
+    "acme-gk-google": { operation: "gk-google" },
+    "beta-pdf-renderer": { annotations: { "workers/tag": "gd:4945:deadbeef" } },
+  });
+  const account = { ...live, "workers list": [...live["workers list"] as { name: string }[], { name: "acme-gk-google" }, { name: "beta-pdf-renderer" }] };
+  // The reporter is off, so the name is the renderer's alone: held to the proof, and asked about.
+  const off = scratchProject(t, sharing(false));
+  const asked = await importing(off, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account, catalog: testCatalogWithGoogle() });
+  assert.equal(asked.code, 1);
+  assert.match(asked.stderr(), /Worker beta-pdf-renderer, the file's workers\.pdfRenderer\.name, runs what is tagged as another installation's/);
+  // On, the reporter takes the name: the renderer goes under the free acme-pdf-renderer, written in its place.
+  const on = scratchProject(t, sharing(true));
+  const replaced = await importing(on, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account, catalog: testCatalogWithGoogle() });
+  assert.equal(replaced.code, 0, replaced.stderr());
+  assert.equal(writtenRenderer(on), "acme-pdf-renderer");
+});
+
+test("--out frees a name for the renderer that discovery takes from another Worker", async (t) => {
+  // On a pin whose Google binds no renderer, acme's own file gives acme-converter to Google and to its
+  // dormant renderer alike. Discovery names Google acme-gk-google, as the backend binds it: the name
+  // is the renderer's alone in the output, and stands.
+  const catalog = testCatalogWithGoogle();
+  delete catalog.offered.find((entry) => entry.slug === "google")!.config.services;
+  const root = scratchProject(t, acmeWithRenderer("acme-converter")
+    .replace('"gatekeepers": {},', '"gatekeepers": { "google": { "name": "acme-converter" } },'));
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT },
+    account: rendererAccount({ annotations: {} }), catalog });
+  assert.equal(code, 0, stderr());
+  const written = parseDeployment(readFileSync(join(root, "acme.jsonc"), "utf8"));
+  assert.equal(valueAtPath(written, ["gatekeepers", "google", "name"]), "acme-gk-google");
+  assert.equal(writtenRenderer(root), "acme-converter");
+});
+
+test("--out refuses a --pdf-renderer another of the output's Workers takes, with nothing written", async (t) => {
+  // acme-gk-google is the Google Gatekeeper the output keeps: one Worker cannot be the renderer too.
+  const root = scratchProject(t, TEMPLATE);
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account: rendererAccount({}),
+    catalog: testCatalogWithGoogle(), values: { "pdf-renderer": "acme-gk-google" } });
+  assert.equal(code, 1);
+  assert.ok(!existsSync(join(root, "acme.jsonc")));
+  assert.match(stderr(), /--pdf-renderer acme-gk-google is another of this deployment's Workers' names too, and a Worker has one role: name another\. Nothing was written\./);
+});
+
+test("--out lets the proven renderer stand where only a name another deployment's file gives, and the output resets, takes it", async (t) => {
+  // Beta's file names its Error Reporter moss-pdf-renderer, which --out sets back to a placeholder:
+  // the name is moss's proven renderer's, and stands.
+  const live = mossLive();
+  live["moss-pdf-renderer"] = hostedWorkerLive("moss-pdf-renderer");
+  const root = scratchProject(t, gatekeepersTemplate("beta").replace('"<ERROR_REPORTER_WORKER_NAME>"', '"moss-pdf-renderer"'));
+  const { code, stderr } = await importing(root, ["moss"], { out: "deployment.jsonc", flags: { account: FAKE_ACCOUNT },
+    account: mossAccount(live), values: { router: "moss-os", backend: "moss-api" } });
+  assert.equal(code, 0, stderr());
+  const written = parseDeployment(readFileSync(join(root, "deployment.jsonc"), "utf8"));
+  assert.equal(valueAtPath(written, ["workers", "pdfRenderer", "name"]), "moss-pdf-renderer");
+  assert.ok(isPlaceholder(String(valueAtPath(written, ["workers", "errorReporter", "name"]))));
+});
+
+test("--out lets no saved renderer name stand that a Worker serving the instance in another role has", async (t) => {
+  // 90% of the backend binds acme-search-current for Web Search, 10% still acme-search-legacy, which
+  // acme's own file keeps for its renderer. The live instance calls it for search: the proven
+  // acme-pdf-renderer stands instead.
+  const live = hostedInstanceLive({
+    "acme-backend": { services: { GATEKEEPER_GOOGLE: "acme-gk-google", GATEKEEPER_WEBSEARCH: "acme-search-current" } },
+    "acme-gk-google": { operation: "gk-google" },
+    "acme-search-current": {},
+    "acme-search-legacy": {},
+    "acme-pdf-renderer": {},
+  });
+  const backend = live["acme-backend"];
+  const [majority] = backend.versions;
+  const minority = { ...majority, id: fixtureVersionId("acme-backend", 3), number: 3,
+    bindings: majority.bindings!.map((binding) => binding.name === "GATEKEEPER_WEBSEARCH" ? { ...binding, service: "acme-search-legacy" } : binding) };
+  backend.versions = [majority, minority];
+  backend.deployments = [{ ...backend.deployments[0], versions: [{ version_id: majority.id, percentage: 90 }, { version_id: minority.id, percentage: 10 }] }];
+  const account = {
+    ...hostedAccount(), ...workerLiveReplies(live),
+    "workers list": [...hostedAccount()["workers list"] as { name: string }[],
+      ...["acme-gk-google", "acme-search-current", "acme-search-legacy", "acme-pdf-renderer"].map((name) => ({ name }))],
+  } as Record<string, FakeReply>;
+  const root = scratchProject(t, acmeWithRenderer("acme-search-legacy"));
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account, catalog: testCatalogWithGoogle() });
+  assert.equal(code, 0, stderr());
+  assert.equal(writtenRenderer(root), "acme-pdf-renderer");
+});
+
+test("--out lets no saved renderer name stand that a router version routes Gatekeeper traffic to", async (t) => {
+  // 10% of the router still sends /gatekeeper/legacy to acme-legacy-route, which acme's own file keeps
+  // for its renderer: the proven acme-pdf-renderer stands instead.
+  const live = hostedInstanceLive({
+    "acme-backend": { services: { GATEKEEPER_GOOGLE: "acme-gk-google" } },
+    "acme-gk-google": { operation: "gk-google" },
+    "acme-legacy-route": {},
+    "acme-pdf-renderer": {},
+  });
+  const router = live.acme;
+  const [majority] = router.versions;
+  const minority = { ...majority, id: fixtureVersionId("acme", 3), number: 3,
+    bindings: [...majority.bindings!, { name: "GATEKEEPER_LEGACY", type: "service", service: "acme-legacy-route" }] };
+  router.versions = [majority, minority];
+  router.deployments = [{ ...router.deployments[0], versions: [{ version_id: majority.id, percentage: 90 }, { version_id: minority.id, percentage: 10 }] }];
+  const account = {
+    ...hostedAccount(), ...workerLiveReplies(live),
+    "workers list": [...hostedAccount()["workers list"] as { name: string }[],
+      ...["acme-gk-google", "acme-legacy-route", "acme-pdf-renderer"].map((name) => ({ name }))],
+  } as Record<string, FakeReply>;
+  const root = scratchProject(t, acmeWithRenderer("acme-legacy-route"));
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account, catalog: testCatalogWithGoogle() });
+  assert.equal(code, 0, stderr());
+  assert.equal(writtenRenderer(root), "acme-pdf-renderer");
+});
+
+test("--out stops for another --pdf-renderer where the renderer's name is reserved and no free one is left", async (t) => {
+  // 10% of the router still routes to the untagged acme-pdf-renderer, and every name a free one would
+  // take is taken: the renderer cannot go over the live route target, nor around it unasked.
+  const live = hostedInstanceLive({
+    "acme-backend": { services: { GATEKEEPER_GOOGLE: "acme-gk-google" } },
+    "acme-gk-google": { operation: "gk-google" },
+    "acme-pdf-renderer": { annotations: {} },
+  });
+  const router = live.acme;
+  const [majority] = router.versions;
+  const minority = { ...majority, id: fixtureVersionId("acme", 3), number: 3,
+    bindings: [...majority.bindings!, { name: "GATEKEEPER_LEGACY", type: "service", service: "acme-pdf-renderer" }] };
+  router.versions = [majority, minority];
+  router.deployments = [{ ...router.deployments[0], versions: [{ version_id: majority.id, percentage: 90 }, { version_id: minority.id, percentage: 10 }] }];
+  const taken = [...Array.from({ length: 98 }, (_, i) => `acme-pdf-renderer-${i + 2}`), ...Array.from({ length: 98 }, (_, i) => `acme-pdf-${i + 2}`)];
+  const account = {
+    ...hostedAccount(), ...workerLiveReplies(live),
+    "workers list": [...hostedAccount()["workers list"] as { name: string }[],
+      ...["acme-gk-google", "acme-pdf-renderer", ...taken].map((name) => ({ name }))],
+  } as Record<string, FakeReply>;
+  const root = scratchProject(t, TEMPLATE);
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account, catalog: testCatalogWithGoogle() });
+  assert.equal(code, 1);
+  assert.match(stderr(), /acme-pdf-renderer is another of this deployment's Workers, and no free name was found for the renderer: pass --pdf-renderer with a name no Worker has\. Nothing was written\./);
+  assert.doesNotMatch(stderr(), /Pass --pdf-renderer acme-pdf-renderer if it is this deployment's/);
+});
+
+test("--out refuses a --pdf-renderer the live backend still binds, its Error Reporter included", async (t) => {
+  // The Workshop still binds acme-legacy-errors as its Error Reporter: no renderer may go over it.
+  const live = hostedAccountLive({
+    "acme-backend": { services: { GATEKEEPER_GOOGLE: "acme-gk-google", ERROR_REPORTER: "acme-legacy-errors" } },
+    "acme-gk-google": { operation: "gk-google" },
+    "acme-legacy-errors": {},
+  });
+  const account = { ...live, "workers list": [...live["workers list"] as { name: string }[], { name: "acme-gk-google" }, { name: "acme-legacy-errors" }] };
+  const root = scratchProject(t, TEMPLATE);
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account,
+    catalog: testCatalogWithGoogle(), values: { "pdf-renderer": "acme-legacy-errors" } });
+  assert.equal(code, 1);
+  assert.match(stderr(), /--pdf-renderer acme-legacy-errors is another of this deployment's Workers' names too/);
+});
+
+test("--out gives the renderer a name that fits where the router's derived one is too long", async (t) => {
+  // A 60-character router name makes <router>-pdf-renderer 73 characters: no Worker name.
+  const long = `moss-${"r".repeat(55)}`;
+  const live: Record<string, ReturnType<typeof hostedWorkerLive>> = { ...mossLive() };
+  delete live["moss-os"];
+  live[long] = hostedWorkerLive(long, { services: { WORKSHOP_BACKEND: "moss-api" } });
+  live["moss-api"].versions[0].bindings!.push({ name: "GATEKEEPER_GOOGLE", type: "service", service: "moss-gk-google" });
+  live["moss-gk-google"] = hostedWorkerLive("moss-gk-google", { operation: "gk-google" });
+  const root = scratchProject(t, TEMPLATE);
+  const { code, stderr } = await importing(root, ["moss"], { out: "deployment.jsonc", flags: { account: FAKE_ACCOUNT },
+    account: mossAccount(live as ReturnType<typeof mossLive>), values: { router: long, backend: "moss-api" }, catalog: testCatalogWithGoogle() });
+  assert.equal(code, 0, stderr());
+  const renderer = valueAtPath(parseDeployment(readFileSync(join(root, "deployment.jsonc"), "utf8")), ["workers", "pdfRenderer", "name"]);
+  assert.equal(renderer, "moss-pdf-2");
+});
+
+test("--out lets no saved renderer name stand that another of the output's Workers takes", async (t) => {
+  // acme's own file names acme-gk-google as its renderer, which the output's Google Gatekeeper is:
+  // the proven acme-pdf-renderer stands instead, and check has nothing to refuse.
+  const root = scratchProject(t, acmeWithRenderer("acme-gk-google"));
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT }, account: rendererAccount({}),
+    catalog: testCatalogWithGoogle() });
+  assert.equal(code, 0, stderr());
+  assert.equal(writtenRenderer(root), "acme-pdf-renderer");
+});
+
+test("--out under a router name of its own asks about a Worker standing under the derived renderer name", async (t) => {
+  // moss, router moss-os: the renderer would be deployed as moss-os-pdf-renderer, which an untagged Worker holds.
+  // With Google, bound by the backend, the renderer is deployed.
+  const live = mossLive();
+  live["moss-api"].versions[0].bindings!.push({ name: "GATEKEEPER_GOOGLE", type: "service", service: "moss-gk-google" });
+  live["moss-gk-google"] = hostedWorkerLive("moss-gk-google", { operation: "gk-google" });
+  live["moss-os-pdf-renderer"] = hostedWorkerLive("moss-os-pdf-renderer", { annotations: {} });
+  const { code, stderr } = await importing(scratchProject(t, TEMPLATE), ["moss"], {
+    out: "deployment.jsonc", flags: { account: FAKE_ACCOUNT }, account: mossAccount(live), values: { router: "moss-os", backend: "moss-api" },
+    catalog: testCatalogWithGoogle(),
+  });
+  assert.equal(code, 1);
+  assert.match(stderr(), /Worker moss-os-pdf-renderer, the name the renderer would be deployed under, runs what is not tagged as this installation's[^\n]*Pass --pdf-renderer moss-os-pdf-renderer if it is this deployment's/);
+  // Another deployment's file, whose renderer name goes to the hosted moss-pdf-renderer, which is
+  // free: the name the output writes is the one checked, and nothing stops.
+  const foreign = scratchProject(t, TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"beta"').replace('"<CLOUDFLARE_ACCOUNT_ID>"', `"${FAKE_ACCOUNT}"`)
+    .replace('"workers": {', '"workers": { "pdfRenderer": { "name": "beta-pdf-renderer" },'));
+  const reset = await importing(foreign, ["moss"], {
+    out: "deployment.jsonc", flags: { account: FAKE_ACCOUNT }, account: mossAccount(live), values: { router: "moss-os", backend: "moss-api" },
+    catalog: testCatalogWithGoogle(),
+  });
+  assert.equal(reset.code, 0, reset.stderr());
+  assert.equal(valueAtPath(parseDeployment(readFileSync(join(foreign, "deployment.jsonc"), "utf8")), ["workers", "pdfRenderer", "name"]),
+    "moss-pdf-renderer");
 });
 
 test("under Worker names of its own, the instance's file is known by its router's name, not the instance's", async (t) => {

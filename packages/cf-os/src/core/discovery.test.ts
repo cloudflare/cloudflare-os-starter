@@ -232,7 +232,10 @@ async function discoverRead(
   { names = {}, offered = ["github"] }: { names?: { router?: string; backend?: string }; offered?: string[] } = {},
 ): Promise<Discovery> {
   const client = memoryClient(account);
-  const instance = await readInstance(client, ACCOUNT, { router: names.router ?? "acme", backend: names.backend ?? "acme-backend" });
+  // The renderer read as `inspectInstance` reads it: where the account has a Worker by its hosted name.
+  const hostedRenderer = account.workers?.some((worker) => worker.name === "acme-pdf-renderer") ? "acme-pdf-renderer" : undefined;
+  const instance = await readInstance(client, ACCOUNT,
+    { router: names.router ?? "acme", backend: names.backend ?? "acme-backend", ...hostedRenderer && { renderer: hostedRenderer } });
   return discover("acme", await fetchInventory(client, ACCOUNT), offered, [], { names, instance });
 }
 
@@ -241,6 +244,30 @@ function hostedWith(names: string[], overrides: Record<string, HostedWorkerOptio
   const account = hostedMemoryAccount(overrides);
   return { ...account, workers: [...account.workers ?? [], ...names.map((name) => ({ name }))] };
 }
+
+/** The PDF renderer name `discovery` writes. */
+function renderer(discovery: Discovery): unknown {
+  return discovery.edits.find((edit) => edit.path.join(".") === "workers.pdfRenderer.name")?.value;
+}
+
+test("with the instance read, the PDF renderer is written only where the hosted flow's tag shows it is the instance's", async () => {
+  // Tagged with the installation's fingerprint, as the hosted flow uploads it: the instance's own.
+  const own = await discoverRead(hostedWith(["acme-pdf-renderer"], { "acme-pdf-renderer": {} }));
+  assert.equal(renderer(own), "acme-pdf-renderer");
+  assert.equal(own.pdfRendererUnproven, undefined);
+  // Untagged, another installation's, or not readable: a Worker bearing the name, and nothing more.
+  for (const [what, overrides] of [
+    ["untagged", { "acme-pdf-renderer": { annotations: {} } }],
+    ["another installation's", { "acme-pdf-renderer": { annotations: { "workers/tag": "gd:4945:deadbeef" } } }],
+    ["unread", {}],
+  ] as const) {
+    const discovery = await discoverRead(hostedWith(["acme-pdf-renderer"], overrides));
+    assert.equal(renderer(discovery), undefined, what);
+    assert.equal(discovery.pdfRendererUnproven, "acme-pdf-renderer", what);
+    assert.match(discovery.rows.find((row) => row.path === "workers.pdfRenderer.name")!.note!,
+      /^Worker acme-pdf-renderer is in the account, but what it runs is not tagged as this installation's/, what);
+  }
+});
 
 test("with the instance read, writes what its backend carries: admins, providers, the origin and the push identity", async () => {
   const discovery = await discoverRead(hostedMemoryAccount());
@@ -329,6 +356,16 @@ test("with the instance read, writes only a push identity `cf-os check` accepts"
   });
   assert.doesNotThrow(() => validatePushIdentity(pushOf(spaced)));
   assert.match(spaced.notes.join("\n"), /NOTIFICATION_SERVICE_URL has whitespace around it[^\n]*pushIdentity\.serviceUrl is written without it, https:\/\/push\.example\.com\./);
+  // Whitespace inside an address the backend's URL parser reads all the same: written as it reads it.
+  const inside = await discoverRead(hostedMemoryAccount({ "acme-backend": { vars: { NOTIFICATION_SERVICE_URL: "https://push.example.com/unused path" } } }));
+  assert.equal((pushOf(inside) as { serviceUrl: string }).serviceUrl, "https://push.example.com/unused%20path");
+  assert.doesNotThrow(() => validatePushIdentity(pushOf(inside)));
+  assert.match(inside.notes.join("\n"), /NOTIFICATION_SERVICE_URL, "https:\/\/push\.example\.com\/unused path", has whitespace in it[^\n]*written as it reads it, https:\/\/push\.example\.com\/unused%20path\./);
+  // A non-breaking space before it, which the backend's URL parser does not forgive: not "fixed",
+  // but left out for the operator, as an address the backend cannot use.
+  const nbsp = await discoverRead(hostedMemoryAccount({ "acme-backend": { vars: { NOTIFICATION_SERVICE_URL: "\u00a0https://push.example.com" } } }));
+  assert.ok(!nbsp.edits.some((edit) => edit.path[0] === "pushIdentity"));
+  assert.match(nbsp.notes.join("\n"), /The backend's push identity is not carried over, as `cf-os check` would refuse it: pushIdentity\.serviceUrl/);
   // An install id with whitespace inside, which the notification service knows it by: left out, the
   // row marked, and the note naming the variable, the reason and the hand edit push waits on.
   const inner = await discoverRead(hostedMemoryAccount({ "acme-backend": { vars: { CFOS_INSTALL_ID: "install acme" } } }));
@@ -341,6 +378,14 @@ test("with the instance read, writes only a push identity `cf-os check` accepts"
   // Discovery does not see the file, so the note says what becomes of a block already in it too.
   assert.match(note, /A block the file already holds is left as it is, and deployed as it is: check it against the backend's variables first\./);
   assert.doesNotMatch(note, /signing key is the secret/);
+  // A browser key check refuses costs browser push alone: native push signs without it, so the rest is carried.
+  const browser = await discoverRead(hostedMemoryAccount({ "acme-backend": { vars: { NOTIFICATION_WEB_PUSH_PUBLIC_KEY: " BKey " } } }));
+  assert.deepEqual(pushOf(browser), {
+    serviceUrl: "https://push.example.com", installId: "install-acme", keyId: "key-1", webPushPublicKey: null,
+  });
+  assert.doesNotThrow(() => validatePushIdentity(pushOf(browser)));
+  assert.match(browser.notes.join("\n"), /NOTIFICATION_WEB_PUSH_PUBLIC_KEY is " BKey ", which `cf-os check` would refuse: pushIdentity\.webPushPublicKey must be[^\n]*pushIdentity\.webPushPublicKey null: native push keeps working\. Without the key, a browser can no longer enroll in push, nor renew its subscription[^\n]*browsers already subscribed keep receiving pushes/);
+  assert.doesNotMatch(browser.notes.join("\n"), /push identity is not carried over/);
   // One already as check wants it is written with neither note.
   const plain = await discoverRead(hostedMemoryAccount());
   assert.doesNotMatch(plain.notes.join("\n"), /whitespace around it|is not carried over, as `cf-os check`/);

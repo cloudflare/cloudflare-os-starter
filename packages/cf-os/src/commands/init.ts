@@ -105,6 +105,7 @@ import {
   fileIsInstance,
   foreignPushIdentity,
   foreignRenderer,
+  settleRenderer,
   formatInstance,
   formatReport,
   inspectInstance,
@@ -933,9 +934,6 @@ async function takeover(
   const discovery = discoverInstance(instance, inventory, catalog, { names: core, instance: hosted });
   const { removals: pushRemovals, note: pushNote } = foreignPushIdentity(file, account.id, instance, discovery, core.router);
   if (pushNote) discovery.notes.push(pushNote);
-  // Another deployment's renderer name, which a deploy with Google would deploy over, as `--out` resets it.
-  const { reset: rendererReset, note: rendererNote } = foreignRenderer(file, account.id, instance, core.router, discovery);
-  if (rendererNote) discovery.notes.push(rendererNote);
   ctx.out.log(`\n${formatReport(instance, discovery)}\n`);
   // What the gate let through has both, so this holds only where discovery disagrees with it.
   if (!discovery.matched) {
@@ -981,6 +979,24 @@ async function takeover(
     gatekeepers: await nameGatekeepers(session, inventory.workers, instance, choice.slugs, live),
     removedGatekeepers: deselected(gatekeepersIn(file), choice, catalog),
   };
+  // Where the renderer goes, asked once the Gatekeepers are chosen: a Worker standing under its name
+  // that nothing shows is this deployment's is the operator's to deploy over, or to name around,
+  // where one of them binds the renderer; else a free name is kept for one added later.
+  const stop = await settleRenderer(file, account.id, instance, core.router, discovery, inventory.workers, {
+    client, instance: hosted, prompter, chosen: chosen?.flags["pdf-renderer"], write: true, say: (text) => ctx.out.log(text),
+    // What the answers write, which the output deploys under as surely as the file's.
+    edits: takeoverEdits(answers),
+    deploys: choice.slugs.some((slug) => catalog.offered.some((entry) => entry.slug === slug && bindsPdfRenderer(entry))),
+  });
+  // At a terminal, as init always is, it asks rather than stops, but for a --pdf-renderer that cannot be.
+  if (stop) {
+    ctx.out.log(`${stop} Nothing was written` +
+      `${pin.moved ? `, though the cloudflare-os pin had moved to ${pin.pin}, staged and not committed, and stays there` : ""}.`);
+    return null;
+  }
+  // Another deployment's renderer name, which a deploy with Google would deploy over, as `--out` resets it.
+  const { reset: rendererReset, note: rendererNote } = foreignRenderer(file, account.id, instance, core.router, discovery);
+  if (rendererNote) ctx.out.log(rendererNote);
   // takeoverEdits records the Gatekeepers chosen, found or not; discovery's are only what it found.
   const asked = [...takeoverEdits(answers), ...await askUndeclaredVars(session, file, choice.slugs)];
   // An answer stands in place of the value discovery found for the same path, which was its default.

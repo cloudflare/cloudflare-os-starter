@@ -266,7 +266,8 @@ const ACCOUNT_ID = /^[a-f\d]{32}$/i;
 
 /** What the take-over flags are for, said when one is given without `--take-over`. */
 const FLAGS_NEED_TAKE_OVER =
-  "--router, --backend, --release and --commit describe the hosted instance to take over: pass --take-over <instance> with them.";
+  "--router, --backend, --release, --commit and --pdf-renderer are for the takeover of a hosted instance: pass " +
+  "--take-over <instance> with them.";
 
 /**
  * The take-over `values` ask for, each value checked to be of the form its flag takes, `--account`

@@ -22,6 +22,12 @@ import { configure, type InitDeps } from "./init.ts";
 import { DEFAULT_TEMPLATE, importCommand, initCommand, scaffold, UPSTREAM, type ScaffoldDeps } from "./scaffold.ts";
 import { BRIEF, movePin } from "./update.ts";
 
+// Keeps the git commands this suite runs, and those of the code it drives, out of any trace2
+// listener in the user's git config: one that writes into a repository's .git can race the
+// cleanup of a scratch repository, failing it with ENOTEMPTY, or hold the run open past the test
+// runner's idle limit. The environment variable overrides trace2.eventTarget.
+process.env.GIT_TRACE2_EVENT = "0";
+
 /** One recorded external command. */
 interface Ran {
   command: string;
@@ -442,7 +448,7 @@ test("without a terminal, prints the import command that takes the instance over
 
 test("refuses a take-over it cannot hand on, before anything is cloned", async (t) => {
   const cases: [Record<string, string>, RegExp][] = [
-    [{ commit: "6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d" }, /--router, --backend, --release and --commit describe the hosted instance to take over: pass --take-over <instance> with them\./],
+    [{ commit: "6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d" }, /--router, --backend, --release, --commit and --pdf-renderer are for the takeover of a hosted instance: pass --take-over <instance> with them\./],
     [{ "take-over": "moss", commit: "6c8d301" }, /--commit "6c8d301" is not a full commit SHA: all 40 hex digits/],
     [{ "take-over": "moss", release: "r004945/6c8d301" }, /--release "r004945\/6c8d301" is not a release id/],
     [{ "take-over": "Moss OS" }, /--take-over "Moss OS" is not an instance name/],
