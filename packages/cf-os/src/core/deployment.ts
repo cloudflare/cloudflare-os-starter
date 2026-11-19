@@ -208,7 +208,11 @@ export function publicOrigin(config: DeploymentConfig): string {
   return `https://${config.workers.router.route.customDomain!}`;
 }
 
-function validatePublicBaseUrl(config: DeploymentConfig, route: RouterRoute): void {
+/**
+ * Throws unless `publicBaseUrl` is null on a custom domain, or an `https://` origin the router
+ * answers on: its custom domain, or `https://<router name>.<subdomain>.workers.dev`.
+ */
+export function validatePublicBaseUrl(config: DeploymentConfig, route: RouterRoute): void {
   const value = config.publicBaseUrl;
   if (value === undefined) {
     throw new Error(

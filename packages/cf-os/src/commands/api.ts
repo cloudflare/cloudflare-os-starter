@@ -21,7 +21,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { configPath, displayPath, type CommandArgs, type Context } from "../context.ts";
 import type { DeploymentConfig } from "../core/deployment-config.ts";
-import { publicOrigin } from "../core/deployment.ts";
+import { publicOrigin, validatePublicBaseUrl } from "../core/deployment.ts";
 import { parseDeployment } from "../deployment-file.ts";
 import { exitCodeOf } from "../project.ts";
 import { check as installed, NOT_CHECKED_OUT } from "./install.ts";
@@ -37,8 +37,9 @@ export type DefaultInstance = { url: string } | { unavailable: string };
 
 /**
  * The deployment file's public origin (honouring `--config`), held to what deploy holds
- * `publicBaseUrl` to: an `https://` origin and nothing else. `ws://` and a plain-text Access token are
- * for an explicit `--url`, so any other origin is a reason instead.
+ * `publicBaseUrl` to: an `https://` origin and nothing else, one the router's route answers on.
+ * `ws://` and a plain-text Access token are for an explicit `--url`, so any other origin is a reason
+ * instead.
  */
 export async function defaultInstance(ctx: Context): Promise<DefaultInstance> {
   const path = configPath(ctx);
@@ -59,7 +60,7 @@ export async function defaultInstance(ctx: Context): Promise<DefaultInstance> {
     return { unavailable: `${(error as Error).message.replace(/\.$/, "")}: fix it, or pass --url <origin>.` };
   }
   const route = config.workers?.router?.route;
-  // Unvalidated, as deploy's checks are not run here: publicOrigin needs a string or nothing.
+  // Deploy's other checks are not run here, so the type is checked: publicOrigin needs a string or nothing.
   if (config.publicBaseUrl && typeof config.publicBaseUrl !== "string") {
     return { unavailable: `${where}'s publicBaseUrl is not a string: fix publicBaseUrl, or pass --url <origin>.` };
   }
@@ -76,6 +77,15 @@ export async function defaultInstance(ctx: Context): Promise<DefaultInstance> {
   }
   if (parsed?.protocol !== "https:" || parsed.origin !== origin) {
     return { unavailable: `${where}'s public origin, ${origin}, is not an https:// origin: fix publicBaseUrl, or pass --url <origin>.` };
+  }
+  // A publicBaseUrl the router does not answer on, left behind by a route changed since, is one
+  // deploy refuses: calling it would reach another deployment, or nothing.
+  if (typeof config.publicBaseUrl === "string") {
+    try {
+      validatePublicBaseUrl(config, route ?? {});
+    } catch (error) {
+      return { unavailable: `${where}: ${(error as Error).message.replace(/\.$/, "")}: fix publicBaseUrl, or pass --url <origin>.` };
+    }
   }
   return { url: origin };
 }

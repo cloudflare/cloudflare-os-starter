@@ -21,10 +21,10 @@ const deployment = (origin: string | null, customDomain: string | null = "os.exa
 
 test("the default instance is the deployment's https:// origin, honouring --config", async (t) => {
   const root = scratchProject(t, deployment(null));
-  writeFileSync(join(root, "other.jsonc"), deployment("https://other.example.com/"));
+  writeFileSync(join(root, "other.jsonc"), deployment("https://acme-os.acme.workers.dev", null));
   assert.deepEqual(await defaultInstance(testContext({ root }).ctx), { url: "https://os.example.com" });
   assert.deepEqual(await defaultInstance(testContext({ root, flags: { config: "other.jsonc" } }).ctx),
-    { url: "https://other.example.com" });
+    { url: "https://acme-os.acme.workers.dev" });
 });
 
 test("without one, the reason is a complete message naming --url", async (t) => {
@@ -38,6 +38,14 @@ test("without one, the reason is a complete message naming --url", async (t) => 
       /^http\.jsonc's public origin, http:\/\/os\.example\.com, is not an https:\/\/ origin: fix publicBaseUrl, or pass --url <origin>\.$/],
     ["path.jsonc", deployment("https://os.example.com/os"),
       /^path\.jsonc's public origin, https:\/\/os\.example\.com\/os, is not an https:\/\/ origin: fix publicBaseUrl, or pass --url <origin>\.$/],
+    // One the router's route does not answer on, as deploy refuses it: left behind by a route
+    // changed since, it would call another deployment.
+    ["stale.jsonc", deployment("https://old.example.com", "new.example.com"),
+      /^stale\.jsonc: publicBaseUrl \(https:\/\/old\.example\.com\) does not match workers\.router\.route\.customDomain \(new\.example\.com\)\. .*: fix publicBaseUrl, or pass --url <origin>\.$/],
+    ["renamed.jsonc", deployment("https://old-os.acme.workers.dev", null),
+      /^renamed\.jsonc: publicBaseUrl \(https:\/\/old-os\.acme\.workers\.dev\) names Worker "old-os", but the router is "acme-os"\. .*[^.]: fix publicBaseUrl, or pass --url <origin>\.$/],
+    ["slash.jsonc", deployment("https://os.example.com/"),
+      /^slash\.jsonc: publicBaseUrl must be an HTTPS origin only, with no path and no trailing slash: fix publicBaseUrl/],
     ["number.jsonc", JSON.stringify({ publicBaseUrl: 42 }),
       /^number\.jsonc's publicBaseUrl is not a string: fix publicBaseUrl, or pass --url <origin>\.$/],
     ["broken.jsonc", "{ nope",
