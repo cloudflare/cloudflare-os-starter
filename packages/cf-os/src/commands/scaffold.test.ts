@@ -315,8 +315,7 @@ test("checks gh's sign-in while the install runs, and stops the check when the i
 });
 
 // The commands the hosted deploy flow prints for a deployment it cannot or should not update: the
-// two main.test.ts parses, which are a contract with the deploy service's own test
-// (packages/deploy/src/tests/take-over.test.ts in the gadgets-internal repository). Here: what
+// two main.test.ts parses, which mirror the hosted deploy flow's own take-over test. Here: what
 // scaffolding does with every flag of each.
 const TAKE_OVER_DEFAULT_NAMES =
   "npx cf-os@latest init cloudflareos --take-over cloudflareos --account 0123456789abcdef0123456789abcdef --release r004945-6c8d301 --commit 6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d";

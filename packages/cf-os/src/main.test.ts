@@ -96,9 +96,8 @@ test("prints each command's help on stdout, anywhere", async (t) => {
 });
 
 // The commands the hosted deploy flow prints for a deployment it cannot or should not update. These
-// two strings are a contract with it: the same two appear verbatim in the deploy service's own test,
-// packages/deploy/src/tests/take-over.test.ts in the gadgets-internal repository, which is the other
-// end. A change to how either parses is a change to both repositories.
+// two strings are a contract with it: they mirror the hosted deploy flow's own take-over test, which
+// is the other end. A change to how either parses is a change to both.
 const TAKE_OVER_DEFAULT_NAMES =
   "npx cf-os@latest init cloudflareos --take-over cloudflareos --account 0123456789abcdef0123456789abcdef --release r004945-6c8d301 --commit 6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d";
 const TAKE_OVER_CUSTOM_NAMES =
