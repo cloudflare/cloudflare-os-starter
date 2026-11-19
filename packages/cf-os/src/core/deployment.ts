@@ -4,7 +4,7 @@
 // I/O: the base configs come in parsed and the commands go out as arguments, for
 // `commands/deploy.ts` to read and run.
 
-import { AI_GATEWAY_PROVIDERS } from "./deployment-config.ts";
+import { AI_GATEWAY_PROVIDERS, validatePushIdentity } from "./deployment-config.ts";
 import type {
   BaseConfigs,
   BuildCommand,
@@ -13,8 +13,9 @@ import type {
   ProdWranglerConfig,
   RouterRoute,
 } from "./deployment-config.ts";
-import type { CatalogGatekeeper, GatekeeperCatalog } from "./gatekeepers.ts";
-import { BUILT_IN_GATEKEEPER_SLUGS } from "./naming.ts";
+import { PDF_RENDERER_SERVICE, type CatalogGatekeeper, type GatekeeperCatalog } from "./gatekeepers.ts";
+import { PUSH_IDENTITY_VARS, type PushIdentity } from "./hosted-release.ts";
+import { BUILT_IN_GATEKEEPER_SLUGS, WORKER_NAME } from "./naming.ts";
 
 /**
  * Where each Worker's package lives, relative to the project root, keyed as `deployment.jsonc` keys
@@ -29,6 +30,7 @@ export const PACKAGE_DIRS = {
   websearch: "cloudflare-os/packages/gatekeeper-websearch",
   customGatekeeper: "packages/custom-gatekeeper",
   errorReporter: "packages/error-reporter",
+  pdfRenderer: "cloudflare-os/packages/pdf-renderer",
 } as const;
 
 /** A key of {@link PACKAGE_DIRS}: one of the starter's own Workers. */
@@ -66,7 +68,26 @@ export function workerDir(id: WorkerId, catalog: GatekeeperCatalog): string {
 /** Worker `id`'s name in `config`. */
 export function workerName(config: DeploymentConfig, id: WorkerId): string {
   const slug = slugOf(id);
-  return slug === undefined ? config.workers[id as PackageKey]!.name : config.gatekeepers![slug].name;
+  if (slug !== undefined) return config.gatekeepers![slug].name;
+  return id === "pdfRenderer" ? pdfRendererName(config) : config.workers[id as PackageKey]!.name;
+}
+
+/**
+ * The PDF renderer's Worker name: `workers.pdfRenderer.name`, else `<router name>-pdf-renderer`,
+ * which is what the hosted deploy calls an instance's (`N-<package>`, never overridden there).
+ */
+export function pdfRendererName(config: DeploymentConfig): string {
+  return config.workers.pdfRenderer?.name ?? `${config.workers.router.name}-${PDF_RENDERER_SERVICE}`;
+}
+
+/**
+ * Whether an optional Gatekeeper `config` selects binds upstream's PDF renderer, which is then
+ * deployed too. The hosted deploy ships it to every instance; here it is deployed only for a
+ * Gatekeeper that uses it, so a deployment without one has no Worker nothing calls.
+ */
+export function deploysPdfRenderer(config: DeploymentConfig, catalog: GatekeeperCatalog): boolean {
+  return gatekeeperSlugs(config).some((slug) => offeredGatekeeper(catalog, slug).config.services
+    ?.some((service) => service.service === PDF_RENDERER_SERVICE));
 }
 
 /** Every generated config, by the Worker it is for. */
@@ -313,20 +334,15 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     throw new Error("customGatekeeper.enabled must be a boolean.");
   }
   validateGatekeeperEntries(config);
-  const workerNames = [
-    ...Object.entries(config.workers)
-      .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
-      .filter(([key]) => key !== "customGatekeeper" || customGatekeeper)
-      .map(([, worker]) => worker!.name),
-    ...Object.values(config.gatekeepers ?? {}).map((entry) => entry.name),
-  ];
-  const duplicate = workerNames.find((name, index) => workerNames.indexOf(name) !== index);
-  if (duplicate !== undefined) {
-    throw new Error(
-      "Router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, Error Reporter and " +
-      `optional Gatekeeper names must be unique: ${duplicate} is used twice.`);
+  const renderer: unknown = config.workers.pdfRenderer;
+  if (renderer !== undefined &&
+      (!renderer || typeof renderer !== "object" || typeof (renderer as { name?: unknown }).name !== "string")) {
+    throw new Error("workers.pdfRenderer must be an object with a name, or absent to name it <router name>-pdf-renderer.");
   }
-  if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
+  const workerNames = deployedWorkerNames(config);
+  const duplicate = workerNames.find((name, index) => workerNames.indexOf(name) !== index);
+  if (duplicate !== undefined) throw sharedNameError(duplicate);
+  if (!workerNames.every((name) => WORKER_NAME.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
   }
 
@@ -370,6 +386,7 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   }
 
   validateAiGateway(config);
+  validatePushIdentity(config.pushIdentity);
 
   if (typeof config.errorReporting.enabled !== "boolean") {
     throw new Error("Error reporting enabled must be a boolean.");
@@ -413,6 +430,27 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     throw new Error("Observability trace sampling must be between 0 and 1.");
   }
   return config;
+}
+
+/**
+ * The names of the Workers `config` deploys, but for the PDF renderer's: whether that one is
+ * deployed depends on the catalog, so {@link validateGatekeepers} checks it.
+ */
+function deployedWorkerNames(config: DeploymentConfig): string[] {
+  return [
+    ...Object.entries(config.workers)
+      .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
+      .filter(([key]) => key !== "customGatekeeper" || customGatekeeperEnabled(config))
+      .filter(([key]) => key !== "pdfRenderer")
+      .map(([, worker]) => worker!.name),
+    ...Object.values(config.gatekeepers ?? {}).map((entry) => entry.name),
+  ];
+}
+
+function sharedNameError(name: string): Error {
+  return new Error(
+    "Router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, Error Reporter, PDF " +
+    `renderer and optional Gatekeeper names must be unique: ${name} is used twice.`);
 }
 
 /**
@@ -495,6 +533,18 @@ export function validateGatekeepers(config: DeploymentConfig, catalog: Gatekeepe
       if (entry.vars?.[input.name] === undefined) {
         throw new Error(`Missing required deployment value: gatekeepers.${slug}.vars.${input.name} (${input.label}).`);
       }
+    }
+  }
+  // Checked only where the renderer is deployed, so a name it would have, too long beside a long
+  // router name, say, fails no deployment that never deploys it.
+  if (deploysPdfRenderer(config, catalog)) {
+    const name = pdfRendererName(config);
+    if (deployedWorkerNames(config).includes(name)) throw sharedNameError(name);
+    if (!WORKER_NAME.test(name)) {
+      throw new Error(
+        `workers.pdfRenderer.name: ${name} is not a Worker name: lowercase letters, numbers and hyphens, at ` +
+        "most 63 characters." + (config.workers.pdfRenderer ? "" : " It is the router's name with -pdf-renderer " +
+        "added, which Google's Gatekeeper needs deployed; set workers.pdfRenderer.name to a shorter one."));
     }
   }
 }
@@ -582,6 +632,23 @@ function validateAiGateway(config: DeploymentConfig): void {
   }
 }
 
+/**
+ * The Workshop's plain variables for push identity `push`: the ones the hosted flow set on the
+ * backend, under the names the backend reads ({@link PUSH_IDENTITY_VARS}), each value as the file
+ * holds it. The browser-push key is left out when there is none, as the hosted flow leaves it.
+ *
+ * Variables only. The key that signs with the identity is a secret of the Worker, which no generated
+ * config names in any binding: see where {@link generateConfigs} adds these.
+ */
+export function pushIdentityVars(push: PushIdentity): Record<string, string> {
+  return {
+    [PUSH_IDENTITY_VARS.serviceUrl]: push.serviceUrl,
+    [PUSH_IDENTITY_VARS.installId]: push.installId,
+    [PUSH_IDENTITY_VARS.keyId]: push.keyId,
+    ...(push.webPushPublicKey ? { [PUSH_IDENTITY_VARS.webPushPublicKey]: push.webPushPublicKey } : {}),
+  };
+}
+
 function routeConfig(route: RouterRoute) {
   return route.workersDev
     ? { workers_dev: true, routes: undefined }
@@ -641,6 +708,9 @@ export function generateConfigs(
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
+  const pdfRenderer = deploysPdfRenderer(config, catalog)
+    ? structuredClone(bases.pdfRenderer)
+    : undefined;
   const origin = publicOrigin(config);
   const optional = Object.entries(config.gatekeepers ?? {});
 
@@ -688,6 +758,13 @@ export function generateConfigs(
       };
     }
   }
+  // The push identity a take-over carried over, sent on every deploy because a deploy leaves a
+  // Worker with the variables it sends and no others: left out once, push stops. The key that signs
+  // with it is the Worker's secret, and is deliberately nowhere in this config: `wrangler deploy`
+  // uploads with `keep_bindings` for secrets, so one the config does not name stays bound as it is,
+  // while a variable of the same name here would take its place. A deployment without the block
+  // gets none of this, and its config is what it would be without this step.
+  if (config.pushIdentity) Object.assign(workshop.vars, pushIdentityVars(config.pushIdentity));
   // Unconditional: as well as being the AI Gateway transport, this binding is what webFetch's
   // toMarkdown() runs on.
   workshop.ai = { binding: "WORKERS_AI" };
@@ -788,6 +865,10 @@ export function generateConfigs(
     setCommon(errorReporter, config, config.workers.errorReporter!.name);
   }
 
+  // Nothing but the common block: it takes no vars and holds nothing. Upstream's CPU limit, which
+  // a long scan's pages need, and the rule that loads PDFium as compiled WebAssembly carry over.
+  if (pdfRenderer) setCommon(pdfRenderer, config, pdfRendererName(config));
+
   // Base config as upstream ships it -- migrations, rules, build command -- plus the common block,
   // the operator's vars, and `BASE_URL`, which upstream's optional Gatekeepers build their OAuth
   // redirect and every absolute link from, and throw without. The value is the one the hosted
@@ -798,6 +879,11 @@ export function generateConfigs(
   for (const [slug, entry] of optional) {
     const generated = structuredClone(offeredGatekeeper(catalog, slug).config);
     setCommon(generated, config, entry.name);
+    // The only service binding the catalog lets through: to this deployment's PDF renderer.
+    if (generated.services) {
+      generated.services = generated.services.map((service) => service.service === PDF_RENDERER_SERVICE
+        ? { ...service, service: pdfRendererName(config) } : service);
+    }
     generated.vars = {
       ...generated.vars,
       ...(generated.ai && gateway && !gateway.crossAccount ? { CF_AI_GATEWAY: config.aiGateway.name } : {}),
@@ -811,6 +897,7 @@ export function generateConfigs(
     router, workshop, context, scheduler, websearch,
     ...(customGatekeeper && { customGatekeeper }),
     ...(errorReporter && { errorReporter }),
+    ...(pdfRenderer && { pdfRenderer }),
     gatekeepers,
   };
 }
@@ -868,6 +955,8 @@ export function buildCommands(config: DeploymentConfig, catalog: GatekeeperCatal
     [{ args: submoduleBuild("@gadgets/gatekeeper-websearch") }],
     ...(customGatekeeperEnabled(config) ? [[{ args: ownBuild("custom-gatekeeper") }]] : []),
     ...(config.errorReporting.enabled ? [[{ args: ownBuild("error-reporter") }]] : []),
+    // Its `build` task type-checks; wrangler's build command runs capnweb-validate at deploy time.
+    ...(deploysPdfRenderer(config, catalog) ? [[{ args: submoduleBuild("@gadgets/pdf-renderer") }]] : []),
     // One step each. Every optional Gatekeeper's `build` task depends on `build:configurator`, the
     // codegen (cloudflare-os/scripts/gatekeeper-configurator-vite-config.ts), and the outer
     // `--no-cache` reaches that dependency too -- measured: both run with "cache disabled". Their
@@ -884,13 +973,14 @@ export function buildCommands(config: DeploymentConfig, catalog: GatekeeperCatal
 /**
  * The Workers in deploy waves: those inside one wave can deploy concurrently, and each wave starts
  * only once the one before has deployed. A service binding must name a Worker that already exists
- * -- the Workers API rejects one to a script that does not -- so the Workshop, which binds every
- * Gatekeeper and the Error Reporter, follows all of them, and the router, which binds the Workshop
- * and every Gatekeeper, goes last. A failure before the router leaves the previous router version
- * serving.
+ * -- the Workers API rejects one to a script that does not -- so the PDF renderer, when deployed,
+ * comes before the Gatekeepers that bind it, the Workshop, which binds every Gatekeeper and the
+ * Error Reporter, follows all of them, and the router, which binds the Workshop and every
+ * Gatekeeper, goes last. A failure before the router leaves the previous router version serving.
  */
-export function deployWaves(config: DeploymentConfig): WorkerId[][] {
+export function deployWaves(config: DeploymentConfig, catalog: GatekeeperCatalog): WorkerId[][] {
   return [
+    ...(deploysPdfRenderer(config, catalog) ? [["pdfRenderer" as const]] : []),
     [
       ...(config.errorReporting.enabled ? ["errorReporter" as const] : []),
       "context", "scheduler", "websearch",
@@ -903,6 +993,6 @@ export function deployWaves(config: DeploymentConfig): WorkerId[][] {
 }
 
 /** {@link deployWaves}, flattened: one order the Workers can deploy in, one at a time. */
-export function deployOrder(config: DeploymentConfig): WorkerId[] {
-  return deployWaves(config).flat();
+export function deployOrder(config: DeploymentConfig, catalog: GatekeeperCatalog): WorkerId[] {
+  return deployWaves(config, catalog).flat();
 }

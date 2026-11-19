@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { validatePushIdentity } from "./core/deployment-config.ts";
+import { PUSH_IDENTITY_PATH, pushIdentityEdit } from "./core/edits.ts";
 import {
   applyDeploymentEdits,
   parseDeployment,
@@ -101,4 +104,46 @@ test("updates the file on disk", async (t) => {
   const text = readFileSync(path, "utf8");
   assert.ok(text.includes("// Account comment."));
   assert.equal(valueAtPath(parseDeployment(text), ["accountId"]), "abc");
+});
+
+test("writes a take-over's push identity where the template holds null, whole, and as the deploy validates it", async () => {
+  const template = await readFile(join(import.meta.dirname, "..", "..", "..", "deployment.jsonc"), "utf8")
+    .catch(() => null);
+  const annotated = ANNOTATED.replace(/\n\}\n$/, `,
+
+  // Push comment.
+  "pushIdentity": null
+}
+`);
+  const push = { serviceUrl: "https://push.example.com", installId: "install-acme", keyId: "key-1", webPushPublicKey: null };
+  const path = [...PUSH_IDENTITY_PATH];
+  const written = applyDeploymentEdits(annotated, [pushIdentityEdit(push)]);
+  assert.deepEqual(valueAtPath(parseDeployment(written), path), push);
+  for (const comment of ["// Account comment.", "// Router comment.", "// Push comment."]) {
+    assert.ok(written.includes(comment), `lost ${comment}`);
+  }
+  // In the key's place, under its comment, not appended somewhere else.
+  assert.match(written, /\/\/ Push comment\.\n {2}"pushIdentity": \{/);
+  assert.doesNotThrow(() => validatePushIdentity(valueAtPath(parseDeployment(written), path)));
+
+  // A second take-over writes the block whole: no field of the first identity outlives it.
+  const first = written.replace('"keyId": "key-1"', '"keyId": "key-1",\n    "left": "over"');
+  assert.equal(valueAtPath(parseDeployment(first), [...path, "left"]), "over");
+  const next = { ...push, installId: "install-other", webPushPublicKey: "BFixtureWebPushPublicKey" };
+  const replaced = applyDeploymentEdits(first, [pushIdentityEdit(next)]);
+  assert.deepEqual(valueAtPath(parseDeployment(replaced), path), next);
+  assert.doesNotThrow(() => validatePushIdentity(valueAtPath(parseDeployment(replaced), path)));
+
+  // Into a file without the key, the block is added, and it still parses.
+  const added = applyDeploymentEdits(ANNOTATED, [pushIdentityEdit(push)]);
+  assert.deepEqual(valueAtPath(parseDeployment(added), path), push);
+  assert.ok(added.includes("// Router comment."));
+
+  // The repository's own file, where it holds the key: the same, whatever else is in it.
+  if (template !== null && valueAtPath(parseDeployment(template), path) !== undefined) {
+    const filled = applyDeploymentEdits(template, [pushIdentityEdit(push)]);
+    assert.deepEqual(valueAtPath(parseDeployment(filled), path), push);
+    assert.equal(filled.split("\n").filter((line) => line.trimStart().startsWith("//")).length,
+      template.split("\n").filter((line) => line.trimStart().startsWith("//")).length);
+  }
 });

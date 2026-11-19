@@ -138,6 +138,33 @@ The checks ran through `cf` and found something the file names that the account 
 
 If `pnpm cf-os check` printed `Skipped Cloudflare-side checks`, none of that was verified. `cf` was not signed in, or its token lacks a permission the line names. Treat the run as offline-only.
 
+### `check` or `deploy` refuses: storage ahead of the pinned `cloudflare-os`
+
+`This project's pinned cloudflare-os is behind the Durable Object storage of Workers it would deploy over` means a Worker in the account was last deployed from a newer `cloudflare-os` than this checkout pins: its live migration tag is none of the generated configuration's, or it stores Durable Objects of a class no migration there creates. Nothing was built or deployed. Deploying anyway would run older code over storage a newer release migrated, and no later deploy takes that back, so never work around it: not by editing a migration tag, not by deploying one Worker with Wrangler, not by renaming the Worker.
+
+Find out why the checkout is behind before moving anything: a hosted instance taken over without its pin move, a pin rolled back across a migration, an old branch or checkout, or a Worker name that belongs to another deployment. Then move the pin to what those Workers run or past it. The refusal names `pnpm cf-os update --to <commit>` and leaves the commit to you. When the refused Workers' live versions are the hosted flow's and all name one release, it names that release and its commit beside the command: pass that commit only after confirming the checkout's pin is behind it (`git -C cloudflare-os merge-base --is-ancestor HEAD <commit>` exits 0), because `update --to` an older commit rolls the pin back, and a Worker refused for another reason (a wrong Worker name, a class added by hand) can name a release older than the pin. For an instance of the hosted deploy, a fresh takeover command from the deploy flow carries the commit. A rollback that meets this refusal has crossed a migration: repair forward ([upgrade-and-rollback.md](upgrade-and-rollback.md)).
+
+`Whether the Durable Object storage ... could not be checked` from `deploy`, or `Skipped the Durable Object migration check` from `check`, means `cf` had no credentials to read the Workers with. `deploy` refuses on that, since Wrangler uploads over newer storage with only a warning; `check` carries on, having verified nothing of it. Sign `cf` in (`pnpm exec cf auth login`), or set `CLOUDFLARE_API_TOKEN` to a token with Workers Scripts Read, and run it again. A read that fails for any other reason is a refusal in both.
+
+### A takeover of a hosted instance stops
+
+`pnpm cf-os import` and `pnpm cf-os init --take-over` stop with nothing written whenever what they read does not settle which Workers the instance is, or which commit it runs. Each message says what was found; `docs/migrate-from-hosted.md` explains each rule.
+
+| Message | Meaning | Fix |
+| --- | --- | --- |
+| `No hosted instance "<name>" here` | The account has no router or backend Worker under the names tried | The instance name, the account, or an instance deployed under names of its own: pass `--router` and `--backend` |
+| `"<name>" is not the name of the instance ... belong to` | The Workers are another instance's, by what the backend carries | Run it for the instance the message names, with the same `--router` and `--backend` |
+| `is not the router of`, `are not one installation's` | The router and backend given are from two deployments | Correct `--router` and `--backend`; never take over half of each |
+| `the instance moved to ... since this command was made` | The instance was updated after the command was printed | A fresh command from the deploy flow |
+| `could not determine the commit` | No release id on the Workers names a commit, or the ids cannot be ordered | The deploy flow's command, which carries `--commit`. For Workers this checkout already deployed, the commit is its own pin |
+| `The project is not safe to deploy over the instance yet` | The pin is behind the instance's release and could not be moved | Deal with what it names (uncommitted changes, a submodule not checked out), then run it again |
+| `The instance's Workers themselves report ... is not shown to be at or past` | The newest release a Worker reports that names a commit names one the command's `--release` or `--commit` would leave the pin behind, or that cannot be compared | A fresh command from the deploy flow, or the same command without `--release` and `--commit` |
+| `is not on upstream's main, and only commits on main are pinned` | The instance's release was built from a branch, and a takeover pins commits of `main` alone | Update the instance to a release built from `main` through the hosted flow, then run it again |
+| `Whether "<name>" is the name of the instance ... cannot be told` | What the backend carries names more than one instance, or only its gateway names this one while the account has Workers `<name>` and `<name>-backend` too | The instance's own name, and `--router` and `--backend` only for an instance deployed under names of its own; an Access application named the hosted flow's way, whose AUD is the backend's `CF_ACCESS_AUD`, settles it |
+| `<dir> is already a project, so nothing was created` | The deploy flow's command was run again where the project already is | The `pnpm cf-os init --take-over ...` it prints, run inside the project |
+
+After a takeover, push notifications that stopped point at the `pushIdentity` block or the Workshop's `CFOS_INSTALL_PRIVATE_KEY` secret: confirm the block is the one `import` wrote, and that a secret of that name is still listed on the Worker, without reading it. A Workshop deployed under a new name has neither the secret nor the data. Only the hosted flow can set that key. The `/admin` Updates tab disappearing after a takeover is expected.
+
 ## Storage And Missing Data
 
 Treat missing data as a possible wrong binding, not an invitation to create storage.
@@ -212,7 +239,7 @@ The Reporter must have no public route. Its events remain visible to authorized 
 
 ## Partial Deployment
 
-The baseline sequence is three waves: Error Reporter (when enabled), Context, Scheduler, Web Search, Custom Gatekeeper (when enabled) and every optional Gatekeeper together; then the Workshop; then the Router. Re-read `deployWaves()` in `packages/cf-os/src/core/deployment.ts` for the current waves. A failure inside a wave does not cancel that wave's other deploys -- they finish, and the next wave never starts -- so a failed stage can sit beside completed siblings from the same wave.
+The baseline sequence is three waves, four with the PDF renderer: the PDF renderer (when a selected Gatekeeper binds it) alone; Error Reporter (when enabled), Context, Scheduler, Web Search, Custom Gatekeeper (when enabled) and every optional Gatekeeper together; then the Workshop; then the Router. Re-read `deployWaves()` in `packages/cf-os/src/core/deployment.ts` for the current waves. A failure inside a wave does not cancel that wave's other deploys -- they finish, and the next wave never starts -- so a failed stage can sit beside completed siblings from the same wave.
 
 The Router is last because it binds every other Worker, which shapes recovery: a failure before it leaves the previous Router version serving the public URL against a partly-updated set of backends, so the live site can look healthy while the stack is mixed. A failure *of* the Router leaves the site on its previous version with new backends behind it.
 

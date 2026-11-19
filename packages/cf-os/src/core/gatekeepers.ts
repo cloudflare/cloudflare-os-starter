@@ -5,6 +5,14 @@
 import type { DeployInput } from "@gadgets/scripts/release/manifest-lib";
 import type { ProdWranglerConfig } from "./deployment-config.ts";
 
+/**
+ * The service name upstream's configs bind its PDF renderer by (`pdf-renderer`, one of
+ * `INTERNAL_WORKERS` in cloudflare-os/scripts/release/manifest-lib.ts). It is the one Worker outside
+ * the catalog an offered Gatekeeper may bind: the deploy deploys it beside any that does, and points
+ * the binding at it.
+ */
+export const PDF_RENDERER_SERVICE = "pdf-renderer";
+
 /** One Gatekeeper the starter can deploy beside the built-in ones. */
 export interface CatalogGatekeeper {
   /** The hosted install slug: its `gatekeepers` key, `GATEKEEPER_<SLUG>` binding and route. */

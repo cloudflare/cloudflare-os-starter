@@ -1,9 +1,27 @@
-// `cf-os init [--out <path>]`, inside a project
+// `cf-os init [--out <path>] [--take-over <instance> [--router <name>] [--backend <name>]
+//   [--release <id>] [--commit <sha>]]`, inside a project
 //
 // Configures the deployment file by asking: which account, then either a new deployment or the
 // takeover of an instance the hosted deploy created. Every answer has a default read from the
 // account where `cf` can see it (zones, gateways, the signed-in email, the workers.dev subdomain),
 // and every step's logic is core/wizard.ts; this file asks and looks things up.
+//
+// `--take-over <instance>` is the takeover without the two questions that lead to it, with what the
+// hosted deploy flow knows of the instance as flags: the command that flow prints.
+//
+// A takeover, however it was chosen, is let through one gate before it asks anything about the
+// instance (`admitInstance`): the instance's Workers are read and checked to be one instance's, and
+// the project's Cloudflare OS pin is held against the commit the instance's release was built from.
+// A pin behind it would deploy older code over storage the instance has already migrated, so it is
+// moved forward first, confirmed at the terminal, as `cf-os import --out` moves it; a pin that cannot
+// be moved stops the takeover with nothing written. The Gatekeeper catalog is read from the submodule
+// only after that, at the pin the deploy will build.
+//
+// A move changes the submodule under a process that may have read it already: the catalog a new
+// deployment's question read before Esc led to a takeover, or what `cf-os deploy` read before it
+// handed over to this wizard. The module that reads the catalog stays loaded as the old pin had it,
+// and a caller goes on with the configs it read, so such a run stops once the pin has moved, with
+// nothing written, and says what to run again: a fresh process reads everything at the new pin.
 //
 // Once the file is complete it offers to deploy, running `cf-os deploy` itself, so a project goes
 // from clone to running in one command. It offers the `cf` sign-in up front and Wrangler's before
@@ -13,17 +31,21 @@
 // held in memory for `cf-os deploy` to set (gatekeeper-secrets.ts).
 //
 // Until the file is written, Esc goes back a question (back.ts), replaying the reads from a cache;
-// so nothing is created before the last question.
+// so nothing is created before the last question. The pin move is the one thing done before it: it
+// is made once per instance and never replayed, and its question is the terminal's own, which Esc
+// cancels.
 //
 // Interactive only. Without a terminal it refuses, pointing at `import` and `access`, which take
-// every answer as a flag or from the file. Signed out of `cf`, it still runs: the account-aware
-// steps become typed answers, and Access is left for `cf-os access`.
+// every answer as a flag or from the file; with `--take-over`, it names the `import` command that
+// carries the same flags. Signed out of `cf`, it still runs: the account-aware steps become typed
+// answers, and Access is left for `cf-os access`. A takeover reads the account, so it needs the
+// sign-in.
 
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { withBack } from "../back.ts";
-import { cachedReads, INVENTORY_LABEL, LABELS, prefetch } from "../cached-reads.ts";
-import { configPath, displayPath, UsageError, type CommandArgs, type Context } from "../context.ts";
+import { cachedReads, LABELS, prefetch } from "../cached-reads.ts";
+import { configPath, displayPath, UsageError, type CommandArgs, type Context, type TakeoverFlags } from "../context.ts";
 import {
   accessEdits,
   createAccess,
@@ -37,7 +59,15 @@ import { isPlaceholder, placeholderPaths, valueAtPath, type DeploymentEdit } fro
 import { publicOrigin } from "../core/deployment.ts";
 import type { AiGatewayProvider, DeploymentConfig } from "../core/deployment-config.ts";
 import { secretSetup, UNDECLARED_VARS, type GatekeeperCatalog } from "../core/gatekeepers.ts";
-import { baseNameProblem, findInstances, gatekeeperWorkerName, WORKER_NAME, workerNames } from "../core/naming.ts";
+import { decideCommit } from "../core/hosted-release.ts";
+import {
+  baseNameProblem,
+  CUSTOM_NAMES_HINT,
+  findInstances,
+  gatekeeperWorkerName,
+  WORKER_NAME,
+  workerNames,
+} from "../core/naming.ts";
 import {
   adminsProblem,
   CUSTOM_GATEKEEPER_CHOICE,
@@ -51,9 +81,13 @@ import {
   nameCollisions,
   newDeploymentAccessTarget,
   newDeploymentEdits,
+  offeredAdmins,
+  offeredProviders,
   parseAdmins,
+  pinMoveReason,
   PROVIDER_HINTS,
   PROVIDERS,
+  strayPushIdentity,
   subdomainProblem,
   takeoverEdits,
   type RouteChoice,
@@ -65,7 +99,23 @@ import { localBin } from "../local-bin.ts";
 import { type Prompter, waitOn } from "../prompt.ts";
 import { defaultCapture, defaultSpawn, succeeded, type CaptureTool, type SpawnTool, type ToolResult } from "../tools.ts";
 import { accountFlag, resolveAccount, type ResolvedAccount } from "./account.ts";
-import { discoverInstance, fileIsInstance, formatReport, pickInstance } from "./import.ts";
+import {
+  checkOutPath,
+  discoverInstance,
+  fileIsInstance,
+  foreignPushIdentity,
+  formatInstance,
+  formatReport,
+  inspectInstance,
+  instanceRefusal,
+  pickInstance,
+  settlePin,
+  type Inspection,
+  type PinMover,
+  type PinOutcome,
+} from "./import.ts";
+import { importCommand, initCommand, takeOverOf } from "./scaffold.ts";
+import { BRIEF, movePin } from "./update.ts";
 
 const accountIdPattern = /^[a-f\d]{32}$/i;
 
@@ -80,6 +130,19 @@ export const NO_TERMINAL =
   "`customGatekeeper.enabled: false` drops the example custom one; an MCP portal needs " +
   "`gatekeepers.mcpportal.vars.MCP_PORTAL_URL`. Then `pnpm cf-os access` sets up Access.";
 
+/**
+ * Without a terminal, what to run instead of `cf-os init --take-over`: `command`, the `cf-os import`
+ * that carries the same flags and asks nothing.
+ */
+export function noTerminalTakeOver(command: string): string {
+  return "cf-os init --take-over asks questions (which Gatekeepers to deploy, the names of the Workers it adds), " +
+    `and there is no terminal to ask them at. Without one, run:\n  ${command}\n` +
+    "It moves the project's cloudflare-os pin forward to the release the instance runs, staged and not " +
+    "committed, then writes what it found, asking nothing. Fill in what it lists by hand (optional Gatekeepers " +
+    "are entries in `gatekeepers`, and `customGatekeeper.enabled: false` drops the example custom one), then " +
+    "`pnpm cf-os check`.";
+}
+
 /** What init runs besides `cf` lookups, so tests can record it instead. */
 export interface InitDeps {
   /** The sign-ins and `wrangler secret bulk`. */
@@ -93,13 +156,17 @@ export interface InitDeps {
   deploy(ctx: Context, options?: { secrets?: PendingSecrets[] }): Promise<number>;
   /** The optional Gatekeepers the project at `root` offers. */
   catalog(root: string): Promise<GatekeeperCatalog>;
+  /** Moves the project's Cloudflare OS pin forward to the commit a taken-over instance was built from. */
+  pin: PinMover;
 }
 
+/** What `cf-os init` runs against outside a test: the tools themselves, the submodule's catalog and `movePin`. */
 export function defaultDeps(): InitDeps {
   return {
     spawn: defaultSpawn(),
     capture: defaultCapture(),
     catalog: loadCatalog,
+    pin: movePin,
     deploy: async (ctx, options) => {
       const { run: deploy } = await import("./deploy.ts");
       return deploy({ command: "deploy", values: {}, positionals: [] }, ctx, options);
@@ -118,11 +185,147 @@ interface Session {
   client: CloudflareClient | null;
   /** The same reads, drawing nothing: what starts a read ahead of the step that uses it. */
   reads: CloudflareClient | null;
-  /** Whether any read made so far is still in flight. */
-  pending: () => boolean;
   account: ResolvedAccount;
   /** The signed-in email, the default admin. */
   email?: string;
+  /**
+   * The optional Gatekeepers the project offers, read from the submodule when first asked for. A
+   * takeover asks only once its gate is through, so they are the ones of the pin the deploy builds.
+   */
+  catalog(): Promise<GatekeeperCatalog>;
+  /**
+   * Lets `instance` through to a takeover, or says why not and resolves to null ({@link admitInstance}).
+   * Once per instance: a replay after Esc gets the first run's answer, so nothing is read, asked or
+   * moved twice.
+   */
+  admit(instance: string, flags: TakeoverFlags): Promise<Admitted | null>;
+}
+
+/** An instance let through to a takeover: what was read of it, and the project's pin at or past its release. */
+interface Admitted {
+  inspection: Inspection;
+  pin: PinOutcome;
+}
+
+/** `prompter`, each of whose confirmations says `reason` after its question. */
+function explaining(prompter: Prompter, reason: string): Prompter {
+  return { ...prompter, confirm: (message, initial) => prompter.confirm(`${message} ${reason}`, initial) };
+}
+
+/** Who read the project's cloudflare-os checkout in this process before a takeover's gate was reached. */
+type ReadAhead =
+  /** The command that ran this wizard and goes on once it returns: `cf-os deploy` or `cf-os check`. */
+  | "caller"
+  /** This wizard, for a question asked before the takeover was chosen. */
+  | "wizard";
+
+/** What the gate is told of the run it is part of ({@link admitInstance}). */
+interface GateRun {
+  /** The command's own context, not a replaying view of it: what the gate prints and asks happens once. */
+  ctx: Context;
+  prompter: Prompter;
+  /** One run's cache of account reads, and whether a read of it is still in flight. */
+  reads: { quiet: CloudflareClient; pending(): boolean };
+  /** The deployment file as it was read. */
+  file: Record<string, unknown>;
+  /** Moves the pin. */
+  pin: PinMover;
+  /**
+   * The `cf-os init --take-over` command line for `instance` of `accountId` under take-over flags
+   * `flags`, with everything else this run was given: the sign-in and the files it reads and writes.
+   */
+  command(accountId: string, instance: string, flags: TakeoverFlags): string;
+  /** Who has read the checkout so far, which a pin move leaves holding the old pin's; null when nobody has. */
+  readAhead(): ReadAhead | null;
+}
+
+/** What stands for the commit in a command printed for the operator to complete. */
+const COMMIT_PLACEHOLDER = "<sha>";
+
+/**
+ * What to do about a takeover that stopped for want of `--commit`: the command that takes the flag
+ * and, when no Worker of the instance names a release at all, which commit that is for Workers this
+ * project deployed itself. `own` is whether the deployment file is already the instance's.
+ */
+function commitHint(command: string, unnamed: boolean, own: boolean): string {
+  const lines = [`With init, --commit goes with the instance: \`${command}\`.`];
+  if (unnamed) {
+    lines.push(
+      (own
+        ? "The deployment file is already this instance's, so this project has most likely deployed over it: Workers "
+        : "If this project has already deployed over the instance, that is why: Workers ") +
+      "it deploys name no release, and the deploy flow has no command for them. The commit to pass is then the " +
+      "cloudflare-os commit it deployed them from, which is the project's pin unless the pin has moved since: " +
+      "`git -C cloudflare-os rev-parse HEAD` prints the commit checked out, which a pin staged and not yet committed " +
+      "is too.");
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Why a run stops once the gate has moved the pin to `pin` under a process that had read the
+ * checkout at the old one (`readAhead`), and what to run in its place: `command`, for a wizard that
+ * read it itself.
+ */
+function staleAfterMove(pin: string | null, readAhead: ReadAhead, command: string): string {
+  const moved = `The cloudflare-os pin is at ${pin} from here on, staged and not committed`;
+  return readAhead === "caller"
+    ? `${moved}, but the command that ran this wizard read the project before the move, the Gatekeeper catalog and ` +
+      "each Gatekeeper's config among it, and would deploy the new pin's code under the old pin's. So it stops here, " +
+      "with nothing written and nothing deployed. Run the same command again: it reads the project at the new pin, and " +
+      "the takeover goes on from there."
+    : `${moved}, but this run read the Gatekeeper catalog before the move, and what reads it stays loaded as the old pin ` +
+      `had it. So it stops here, with nothing written. Run the takeover again, which reads it at the new pin:\n  ${command}`;
+}
+
+/**
+ * The gate every takeover goes through before it asks anything about instance `instance` of account
+ * `accountId`: null, with why printed, unless the instance is one to take over and the project's pin
+ * is at or past the commit its release was built from.
+ *
+ * It reads what the instance's Workers run, under the router and backend names `flags` give or the
+ * hosted flow's defaults, and refuses Workers that are not one instance's or not the one named
+ * (`instanceRefusal`). It settles which commit the project must not be behind (`decideCommit`), from
+ * the releases the Workers report and `flags`' `--release` and `--commit`. Then it holds the pin
+ * against that commit (`settlePin`): a pin behind is moved forward, the pin alone, staged and
+ * uncommitted, once the person at the terminal confirms it, the question saying from which commit to
+ * which and why. Declined, or not movable, the takeover stops.
+ *
+ * It stops as well when the move was made under a process that had already read the checkout
+ * ({@link GateRun.readAhead}): the pin stays moved, which is the safe side, and a run started afresh
+ * finds it where the instance's release is.
+ */
+async function admitInstance(gate: GateRun, accountId: string, instance: string, flags: TakeoverFlags): Promise<Admitted | null> {
+  const { ctx } = gate;
+  const inspection = await inspectInstance(ctx, gate.reads, accountId, instance, flags);
+  ctx.out.log(`Hosted instance "${instance}" in account ${accountId}:\n`);
+  const refusal = instanceRefusal(instance, inspection);
+  if (refusal) {
+    ctx.out.log(refusal);
+    return null;
+  }
+  ctx.out.log(`${formatInstance(inspection.hosted)}\n`);
+  const decision = decideCommit(inspection.hosted.reports, flags);
+  if (!decision.ok) {
+    // What asks for --commit is answered on init too, where the instance may have been picked from a menu.
+    const asksForCommit = flags.commit === undefined && (decision.reason === "no-commit" || decision.reason === "unorderable");
+    const hint = asksForCommit
+      ? `\n${commitHint(gate.command(accountId, instance, { ...flags, commit: COMMIT_PLACEHOLDER }),
+        inspection.hosted.reports.length === 0, fileIsInstance(gate.file, accountId, instance, inspection.names.router))}`
+      : "";
+    ctx.out.log(`${decision.message}${hint}\nNothing was moved or written.`);
+    return null;
+  }
+  // Asked before the move, which is what makes it stale.
+  const readAhead = gate.readAhead();
+  const asking: Context = { ...ctx, prompter: explaining(gate.prompter, pinMoveReason(instance, decision.release)) };
+  const standing = await settlePin(asking, decision, { write: true, ask: true }, gate.pin);
+  if (!standing.ok) return null;
+  if (standing.moved && readAhead) {
+    ctx.out.log(staleAfterMove(standing.pin, readAhead, gate.command(accountId, instance, flags)));
+    return null;
+  }
+  return { inspection, pin: standing };
 }
 
 /**
@@ -358,12 +561,14 @@ interface Configured {
    * trusted from it.
    */
   originFound: boolean;
+  /** For a takeover: where the project's pin stands to the instance's release, and whether this run moved it. */
+  pin?: PinOutcome;
 }
 
 /** What a new deployment's flow ended in: its edits, or a switch to taking over instance `n`. */
 type NewOutcome = Configured | { takeover: string };
 
-async function newDeployment(session: Session, file: Record<string, unknown>, catalog: GatekeeperCatalog): Promise<NewOutcome> {
+async function newDeployment(session: Session, file: Record<string, unknown>): Promise<NewOutcome> {
   const { prompter, ctx, account } = session;
   const current = valueAtPath(file, ["workers", "router", "name"]);
   let suggested = typeof current === "string" && !isPlaceholder(current) ? current : "cloudflare-os";
@@ -405,6 +610,7 @@ async function newDeployment(session: Session, file: Record<string, unknown>, ca
     })), "default");
   const providers = await askProviders(session, file);
   const listed = gatekeepersIn(file);
+  const catalog = await session.catalog();
   const choice = await askGatekeepers(session, catalog, [
     ...valueAtPath(file, ["customGatekeeper", "enabled"]) === false ? [] : [CUSTOM_GATEKEEPER_CHOICE],
     ...listed,
@@ -416,7 +622,11 @@ async function newDeployment(session: Session, file: Record<string, unknown>, ca
     accountId: account.id, name, route, admins, aiGateway: { name: gateway, providers }, customGatekeeper,
     gatekeepers, removedGatekeepers: deselected(listed, choice, catalog),
   };
-  const edits = [...newDeploymentEdits(answers), ...await askUndeclaredVars(session, file, choice.slugs)];
+  // Another deployment's push identity, left in the file by a takeover, is not this one's to send.
+  // The name was accepted against `workers`, so where they were listed its Workshop Worker is not there.
+  const stray = strayPushIdentity(file, answers, workers ?? null);
+  if (stray.note) ctx.out.log(stray.note);
+  const edits = [...newDeploymentEdits(answers), ...stray.edits, ...await askUndeclaredVars(session, file, choice.slugs)];
   edits.push(...await setUpAccess(session, newDeploymentAccessTarget(answers)));
   return { edits, live: [], originFound: true };
 }
@@ -428,13 +638,15 @@ function gatekeepersIn(file: Record<string, unknown>): string[] {
 }
 
 /**
- * The optional Gatekeepers the account already runs for instance `n`: those `discovered`, plus the
- * file's entries whose Worker exists when the file is the instance's ({@link fileIsInstance}). Where
- * the two differ the operator picks; `passedOver` holds the Worker not picked.
+ * The optional Gatekeepers the account already runs for instance `n`, whose router Worker is
+ * `router`: those `discovered`, plus the file's entries whose Worker exists when the file is the
+ * instance's ({@link fileIsInstance}). Where the two differ the operator picks; `passedOver` holds
+ * the Worker not picked.
  */
 async function liveGatekeepers(
   session: Session,
   n: string,
+  router: string,
   file: Record<string, unknown>,
   workers: CfWorker[],
   catalog: GatekeeperCatalog,
@@ -446,7 +658,7 @@ async function liveGatekeepers(
         workers.some((worker) => worker.name === name)
       ? [{ slug, name }] : [];
   });
-  const instanceFile = fileIsInstance(file, session.account.id, n);
+  const instanceFile = fileIsInstance(file, session.account.id, n, router);
   const fromFile = instanceFile ? running : [];
   const foreign = running.filter(({ name }) => !discovered.some((gatekeeper) => gatekeeper.name === name));
   if (!instanceFile && foreign.length) {
@@ -478,19 +690,26 @@ async function liveGatekeepers(
 }
 
 /**
- * The example custom Gatekeeper's Worker the account runs for instance `n`, if any: the file's name
- * for it when the file is the instance's ({@link fileIsInstance}), else `<n>-gk-custom`.
+ * The example custom Gatekeeper's Worker the account runs for instance `n`, whose router Worker is
+ * `router`, if any: the file's name for it when the file is the instance's ({@link fileIsInstance}),
+ * else `<n>-gk-custom`.
  */
-function liveCustomGatekeeper(file: Record<string, unknown>, accountId: string, n: string, workers: CfWorker[]): string[] {
-  const own = fileIsInstance(file, accountId, n);
+function liveCustomGatekeeper(
+  file: Record<string, unknown>,
+  accountId: string,
+  n: string,
+  router: string,
+  workers: CfWorker[],
+): string[] {
+  const own = fileIsInstance(file, accountId, n, router);
   if (own && valueAtPath(file, ["customGatekeeper", "enabled"]) === false) return [];
-  const name = fileCustomGatekeeper(file, accountId, n) ?? workerNames(n).customGatekeeper;
+  const name = fileCustomGatekeeper(file, accountId, n, router) ?? workerNames(n).customGatekeeper;
   return workers.some((worker) => worker.name === name) ? [name] : [];
 }
 
 /** The file's filled-in custom Gatekeeper Worker name, when the file is the instance's ({@link fileIsInstance}). */
-function fileCustomGatekeeper(file: Record<string, unknown>, accountId: string, n: string): string | undefined {
-  if (!fileIsInstance(file, accountId, n)) return undefined;
+function fileCustomGatekeeper(file: Record<string, unknown>, accountId: string, n: string, router: string): string | undefined {
+  if (!fileIsInstance(file, accountId, n, router)) return undefined;
   const named = valueAtPath(file, ["workers", "customGatekeeper", "name"]);
   return typeof named === "string" && !isPlaceholder(named) ? named : undefined;
 }
@@ -589,12 +808,18 @@ async function askUndeclaredVars(session: Session, file: Record<string, unknown>
   return edits;
 }
 
-/** The model providers to advertise; the file's own choice is the default when it has one. */
-async function askProviders(session: Session, file: Record<string, unknown>): Promise<AiGatewayProvider[]> {
+/**
+ * The model providers to advertise. The default is `found`, the ones a taken-over instance's backend
+ * advertises, where it was read and serves any the starter does; else the file's own choice when it
+ * has one.
+ */
+async function askProviders(session: Session, file: Record<string, unknown>, found?: unknown): Promise<AiGatewayProvider[]> {
   const current = valueAtPath(file, ["aiGateway", "providers"]);
-  const initial = Array.isArray(current) && current.length &&
-      current.every((provider) => PROVIDERS.includes(provider as AiGatewayProvider))
-    ? current as AiGatewayProvider[] : ["cloudflare" as const];
+  const advertised = offeredProviders(found);
+  const initial = advertised.length ? advertised
+    : Array.isArray(current) && current.length &&
+        current.every((provider) => PROVIDERS.includes(provider as AiGatewayProvider))
+      ? current as AiGatewayProvider[] : ["cloudflare" as const];
   return session.prompter.multiselect("Which model providers?",
     PROVIDERS.map((provider) => ({ value: provider, label: provider, hint: PROVIDER_HINTS[provider] })),
     initial);
@@ -640,53 +865,66 @@ async function askNewWorker(
   }
 }
 
+/**
+ * The takeover of a hosted instance: `chosen`, or the one picked from the account's. The instance
+ * goes through the gate first ({@link Session.admit}), which may move the project's pin; then what
+ * it runs is matched against the catalog at that pin, reported, and the rest is asked. Null when
+ * there is nothing to take over, or the gate stopped it; why has been printed.
+ */
 async function takeover(
   session: Session,
   file: Record<string, unknown>,
-  catalog: GatekeeperCatalog,
-  chosen?: string,
+  chosen?: { instance: string; flags: TakeoverFlags },
 ): Promise<Configured | null> {
   const { prompter, ctx, account } = session;
   const client = session.client!;
-  const instance = chosen ?? await pickInstance(ctx, client, account.id, "pnpm cf-os import --account <id>");
+  const instance = chosen?.instance ?? await pickInstance(ctx, client, account.id, "pnpm cf-os import --account <id>");
   if (!instance) return null;
-  // One spinner for the six reads, as in import.ts.
-  const reading = fetchInventory(session.reads!, account.id);
-  const inventory = await (session.pending() ? waitOn(prompter, INVENTORY_LABEL, () => reading) : reading);
-  const discovery = discoverInstance(instance, inventory, catalog);
-  ctx.out.log(`Hosted instance "${instance}" in account ${account.id}:\n\n${formatReport(instance, discovery)}\n`);
+  const admitted = await session.admit(instance, chosen?.flags ?? {});
+  if (!admitted) return null;
+  const { inspection: { names: core, inventory, hosted }, pin } = admitted;
+  // After the gate: the catalog is the submodule's, at the pin the gate left it at.
+  const catalog = await session.catalog();
+  const discovery = discoverInstance(instance, inventory, catalog, { names: core, instance: hosted });
+  const { removals: pushRemovals, note: pushNote } = foreignPushIdentity(file, account.id, instance, discovery, core.router);
+  if (pushNote) discovery.notes.push(pushNote);
+  ctx.out.log(`\n${formatReport(instance, discovery)}\n`);
+  // What the gate let through has both, so this holds only where discovery disagrees with it.
   if (!discovery.matched) {
-    ctx.out.log("Nothing matched; nothing to write. Check the instance name against the Worker list.");
+    ctx.out.log("Nothing matched; nothing to write" +
+      `${pin.moved ? `, though the cloudflare-os pin had moved to ${pin.pin}, staged and not committed, and stays there` : ""}. ` +
+      `Check the instance name against the Worker list. ${CUSTOM_NAMES_HINT}`);
     return null;
   }
 
-  const names = workerNames(instance);
-  const fileAdmins = valueAtPath(file, ["access", "admins"]);
-  const adminDefault = Array.isArray(fileAdmins) && !adminsProblem(fileAdmins.join(","))
-    ? fileAdmins.join(", ") : session.email;
+  const names = workerNames(instance, core);
+  const discovered = (path: string) => discovery.edits.find((edit) => edit.path.join(".") === path)?.value;
+  // The instance's own admins where its backend carries them, then the file's, then whoever is signed in.
+  const adminDefault = offeredAdmins(discovered("access.admins"), valueAtPath(file, ["access", "admins"])) ?? session.email;
   const hasWebsearch = discovery.rows.some((row) => row.path === "workers.websearch.name" && row.found);
   const admins = parseAdmins(await prompter.text("Admin emails, comma-separated (they can open /admin)", {
     initial: adminDefault, validate: adminsProblem,
   }));
   const websearch = hasWebsearch ? undefined : await askNewWorker(session, inventory.workers,
     "Web Search Gatekeeper Worker name (the instance has none; the deploy creates it)", names.websearch);
-  const { found, passedOver } = await liveGatekeepers(session, instance, file, inventory.workers, catalog, discovery.foundGatekeepers);
+  const { found, passedOver } = await liveGatekeepers(session, instance, core.router, file, inventory.workers, catalog,
+    discovery.foundGatekeepers);
   const choice = await askGatekeepers(session, catalog, [CUSTOM_GATEKEEPER_CHOICE, ...found.map(({ slug }) => slug)]);
-  const liveCustom = liveCustomGatekeeper(file, account.id, instance, inventory.workers);
+  const liveCustom = liveCustomGatekeeper(file, account.id, instance, core.router, inventory.workers);
   const unbinds = (name: string) => ctx.out.log(`Warning: leaving out ${name} removes its binding, so it ` +
     "disappears from the app along with every user's connection to it. The Worker keeps running; " +
     `\`CLOUDFLARE_ACCOUNT_ID=${account.id} pnpm exec wrangler delete --name ${name}\` removes it.`);
   [...passedOver, ...found.filter(({ slug }) => !choice.slugs.includes(slug))].forEach(({ name }) => unbinds(name));
   if (!choice.custom) liveCustom.forEach(unbinds);
   // A rerun keeps the custom Gatekeeper on the Worker the file names, which holds its users' connections.
-  const ownCustom = liveCustom.find((name) => name === fileCustomGatekeeper(file, account.id, instance));
+  const ownCustom = liveCustom.find((name) => name === fileCustomGatekeeper(file, account.id, instance, core.router));
   const customWorker = choice.custom
     ? await askNewWorker(session, inventory.workers, "Custom Gatekeeper Worker name",
       ownCustom ?? names.customGatekeeper, ownCustom)
     : undefined;
   if (customWorker) liveCustom.filter((name) => name !== customWorker).forEach(unbinds);
   const errorReporter = await askNewWorker(session, inventory.workers, "Error Reporter Worker name", names.errorReporter);
-  const providers = await askProviders(session, file);
+  const providers = await askProviders(session, file, discovered("aiGateway.providers"));
   const display = choice.custom ? await askDisplay(session, file) : undefined;
   const live = found.filter(({ slug }) => choice.slugs.includes(slug));
   const answers = {
@@ -696,17 +934,20 @@ async function takeover(
     removedGatekeepers: deselected(gatekeepersIn(file), choice, catalog),
   };
   // takeoverEdits records the Gatekeepers chosen, found or not; discovery's are only what it found.
+  const asked = [...takeoverEdits(answers), ...await askUndeclaredVars(session, file, choice.slugs)];
+  // An answer stands in place of the value discovery found for the same path, which was its default.
+  const answered = new Set(asked.map((edit) => edit.path.join(".")));
   const edits = [
-    ...discovery.edits.filter((edit) => edit.path[0] !== "gatekeepers"),
-    ...takeoverEdits(answers),
-    ...await askUndeclaredVars(session, file, choice.slugs),
+    ...discovery.edits.filter((edit) => edit.path[0] !== "gatekeepers" && !answered.has(edit.path.join("."))),
+    ...pushRemovals,
+    ...asked,
   ];
   if (!discovery.edits.some((edit) => edit.path.join(".") === "access.audience")) {
     ctx.out.log("No Access application was found for this instance. After writing, `pnpm cf-os access` " +
       "finds or creates one for its hostname.");
   }
   const originFound = discovery.edits.some((edit) => edit.path.join(".") === "workers.router.route");
-  return { edits, live, originFound };
+  return { edits, live, originFound, pin };
 }
 
 /** An optional Gatekeeper the written file selects and the catalog offers. */
@@ -865,7 +1106,12 @@ export async function run(args: CommandArgs, ctx: Context): Promise<number> {
 
 /**
  * Configures the deployment file, resolving to the exit code. With `offerDeploy`, a complete file
- * ends in the offer to deploy it; `cf-os deploy` turns that off, as it carries on deploying itself.
+ * ends in the offer to deploy it; `cf-os deploy` turns that off, as it carries on deploying itself,
+ * with what it read of the project before it got here. So without `offerDeploy`, a takeover that
+ * moves the pin resolves to 1 once it has, with nothing written: the caller must not carry on, and
+ * is run again ({@link staleAfterMove}).
+ * With `--take-over <instance>` among `args`, it is that instance's takeover, the mode and instance
+ * questions skipped.
  */
 export async function configure(
   args: CommandArgs,
@@ -874,20 +1120,29 @@ export async function configure(
   { offerDeploy = true }: { offerDeploy?: boolean } = {},
 ): Promise<number> {
   if (args.positionals[0]) {
-    throw new UsageError(`You are inside a project already (${ctx.root}), so init configures it. To ` +
-      "create another, run `cf-os init <dir>` from outside this one.");
+    // The hosted deploy flow's command names a directory to create: run inside a project, it is the take-over without one.
+    const asked = takeOverOf(args.values, ctx.flags);
+    throw new UsageError(`You are inside a project already (${ctx.root}), so init configures it. ` +
+      (asked
+        ? `To take ${asked.instance} over from this project, leave the directory out: ` +
+          `\`${initCommand(asked, args.values.out as string | undefined)}\`. `
+        : "") +
+      "To create another, run `cf-os init <dir>` from outside this one.");
   }
   if (args.values.template || args.values.ref) {
     throw new UsageError("--template and --ref only apply when creating a project.");
   }
-  if (!ctx.prompter) {
-    ctx.out.log(NO_TERMINAL);
-    return 1;
-  }
-  const prompter = ctx.prompter;
+  const takeOver = takeOverOf(args.values, ctx.flags);
   const inPath = configPath(ctx);
   const where = displayPath(ctx, inPath);
   const out = args.values.out as string | undefined;
+  if (!ctx.prompter) {
+    ctx.out.log(takeOver ? noTerminalTakeOver(importCommand({ ...takeOver, account: accountFlag(ctx) }, out ?? where)) : NO_TERMINAL);
+    return 1;
+  }
+  const prompter = ctx.prompter;
+  // Before anything is read: by the time the file is written, a takeover may have moved the pin.
+  if (out !== undefined) await checkOutPath(ctx, out);
   const outPath = out ? resolve(ctx.cwd, out) : inPath;
   const file = parseDeployment(await readFile(inPath, "utf8"), where);
 
@@ -908,12 +1163,37 @@ export async function configure(
       prefetch(cache.quiet.listAccounts());
       ({ client, email } = await signedIn(ctx));
     }
+    if (!client && takeOver) {
+      ctx.out.log(`cf is not signed in, and taking over ${takeOver.instance} reads it from your account. Sign in ` +
+        "(`pnpm exec cf auth login`), then run this again. Nothing was moved or written.");
+      return 1;
+    }
     if (!client) {
       ctx.out.log("cf is not signed in, so nothing can be looked up in your account: you will type the " +
         "values, and Access is left for later. To sign in first: `pnpm exec cf auth login`.\n");
     }
 
-    const catalog = await deps.catalog(ctx.root);
+    // Read on first use, and once: a pin move that follows a read stops the run at the gate.
+    let catalogRead: Promise<GatekeeperCatalog> | undefined;
+    const readCatalog = () => catalogRead ??= deps.catalog(ctx.root);
+    const gate: GateRun = {
+      ctx, prompter, reads: cache, file, pin: deps.pin,
+      command: (accountId, instance, flags) => initCommand(
+        { instance, flags, account: accountId, profile: ctx.flags.profile, config: ctx.flags.config }, out),
+      // A caller that deploys read the project before it ran this; the wizard reads only the catalog.
+      readAhead: () => !offerDeploy ? "caller" : catalogRead ? "wizard" : null,
+    };
+    // Each instance's way through the takeover gate, made once however often its questions are replayed.
+    const admissions = new Map<string, Promise<Admitted | null>>();
+    const admit = (accountId: string, instance: string, flags: TakeoverFlags) => {
+      const key = `${accountId} ${instance}`;
+      let admission = admissions.get(key);
+      if (!admission) {
+        admission = admitInstance(gate, accountId, instance, flags);
+        admissions.set(key, admission);
+      }
+      return admission;
+    };
     // Every question up to the write, which Esc goes back through.
     const { account, configured } = await withBack(prompter, ctx.out, async (asker, askOut) => {
       const askCtx: Context = { ...ctx, prompter: asker, out: askOut };
@@ -921,7 +1201,10 @@ export async function configure(
       const reader = client && cache.loud(asker);
       const chosen = await chooseAccount(askCtx, asker, reader, file, where);
       const session: Session = { ctx: askCtx, prompter: asker, client: reader, reads: client && cache.quiet,
-        pending: () => cache.pending(), account: chosen, email };
+        account: chosen, email, catalog: readCatalog, admit: (instance, flags) => admit(chosen.id, instance, flags) };
+
+      // Named on the command line: the takeover itself, with no mode or instance to ask for.
+      if (takeOver) return { account: chosen, configured: await takeover(session, file, takeOver) };
 
       // While the question is open: either answer reads the account's Workers.
       if (session.reads) prefetch(session.reads.listWorkers(chosen.id));
@@ -934,16 +1217,17 @@ export async function configure(
 
       if (mode === "takeover") {
         prefetchTakeover(session);
-        return { account: chosen, configured: await takeover(session, file, catalog) };
+        return { account: chosen, configured: await takeover(session, file) };
       }
       prefetchNew(session);
-      const outcome = await newDeployment(session, file, catalog);
+      const outcome = await newDeployment(session, file);
       return {
         account: chosen,
-        configured: "takeover" in outcome ? await takeover(session, file, catalog, outcome.takeover) : outcome,
+        configured: "takeover" in outcome ? await takeover(session, file, { instance: outcome.takeover, flags: {} }) : outcome,
       };
     });
     if (!configured) return 1;
+    const catalog = await readCatalog();
     const { edits } = configured;
     if (account.isNew && !edits.some((edit) => edit.path[0] === "accountId")) {
       edits.unshift({ path: ["accountId"], value: account.id });
@@ -951,11 +1235,32 @@ export async function configure(
 
     const outWhere = displayPath(ctx, outPath);
     ctx.out.log(`\n${outWhere} values:\n${describeEdits(edits)}`);
-    await updateDeployment(inPath, edits, outPath);
+    // The pin a takeover moved, which stays moved whatever becomes of the write: this takeover's, or
+    // one the questions went back out of, whose move was made all the same.
+    let movedPin = configured.pin?.moved ? configured.pin.pin : null;
+    const abandoned = movedPin === null;
+    for (const admission of abandoned ? admissions.values() : []) {
+      const admitted = await admission.catch(() => null);
+      if (admitted?.pin.moved) movedPin = admitted.pin.pin;
+    }
+    try {
+      await updateDeployment(inPath, edits, outPath);
+    } catch (error) {
+      // The move came first and is not undone: the pin forward is the safe side to be left on.
+      if (movedPin !== null) {
+        ctx.out.log(`\n${outWhere} could not be written, and nothing was. The cloudflare-os pin had moved to ${movedPin}, ` +
+          "staged and not committed, and stays there: run this again once the file can be written.");
+      }
+      throw error;
+    }
     const removed = edits.filter((edit) => edit.value === undefined).length;
     ctx.out.log(`\nWrote ${edits.length - removed} values to ${outWhere}` +
       `${removed ? `, removing ${removed} ${removed === 1 ? "entry" : "entries"}` : ""}, comments intact.`);
     if (outPath === inPath) ctx.out.log(`${outWhere} belongs in your repository: commit it.`);
+    if (movedPin !== null) {
+      ctx.out.log(`The cloudflare-os pin moved to ${movedPin} for ${abandoned ? "the takeover this run began" : "this takeover"}, ` +
+        `staged and not committed: review what it brings (${displayPath(ctx, join(ctx.root, BRIEF))}) and commit it with the file.`);
+    }
 
     const written = parseDeployment(await readFile(outPath, "utf8"), outWhere);
     const config = written as unknown as DeploymentConfig;

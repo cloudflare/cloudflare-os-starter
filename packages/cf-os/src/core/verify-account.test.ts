@@ -2,12 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { cfClient } from "../cf-client.ts";
 import { fakeCf, workerSecretsReply, type FakeReply } from "../fake-cf.ts";
-import { reversing, testCatalog, testCatalogWithGitlab } from "../test-support.ts";
+import {
+  hostedAccountLive,
+  hostedAnnotations,
+  hostedMemoryAccount,
+  reversing,
+  testCatalog,
+  testCatalogWithGitlab,
+  type HostedWorkerOptions,
+} from "../test-support.ts";
 import { CfAuthError, CfUnavailableError, type CloudflareClient } from "./client.ts";
 import type { DeploymentConfig } from "./deployment-config.ts";
 import type { GatekeeperCatalog } from "./gatekeepers.ts";
 import { memoryClient, type MemoryAccount } from "./memory-client.ts";
-import { gatekeeperSecretWarnings, startBounded, verifyAccount } from "./verify-account.ts";
+import {
+  gatekeeperSecretWarnings,
+  startBounded,
+  verifyAccount,
+  verifyMigrations,
+  type DeployedWorker,
+  type MigrationCheck,
+} from "./verify-account.ts";
 
 const ACCOUNT = "0123456789abcdef0123456789abcdef";
 
@@ -414,4 +429,332 @@ test("startBounded's promises may fail before they are awaited, and still throw 
   assert.equal(await reads[0], "a");
   await assert.rejects(reads[1], /^Error: no b$/);
   await assert.rejects(reads[2], /^Error: no c$/);
+});
+
+/** The Workers a deploy uploads over, with the migrations of the configuration this project generates for each. */
+const deployed: DeployedWorker[] = [
+  { name: "acme" },
+  {
+    name: "acme-backend",
+    migrations: [{ tag: "v0", new_sqlite_classes: ["Users", "Overseer"] }, { tag: "v1", new_sqlite_classes: ["Settings"] }],
+  },
+  { name: "acme-gk-context", migrations: [{ tag: "v0", new_sqlite_classes: ["Collections"] }] },
+  // One the hosted instance never had: the deploy creates it.
+  { name: "acme-gk-websearch", migrations: [{ tag: "v1", new_sqlite_classes: ["WebSearch"] }] },
+];
+
+/**
+ * What the hosted instance "acme" runs, its backend and Context Gatekeeper storing the classes
+ * {@link deployed}'s migrations create unless `backend` or `context` say otherwise. No version
+ * reports a migration tag unless one is given, as the API `cf` reads does not.
+ */
+function instance(backend: HostedWorkerOptions = {}, context: HostedWorkerOptions = {}): Record<string, HostedWorkerOptions> {
+  return {
+    "acme-backend": { durableObjects: ["Users", "Overseer", "Settings"], ...backend },
+    "acme-gk-context": { durableObjects: ["Collections"], ...context },
+  };
+}
+
+/** {@link verifyMigrations} of {@link deployed} against the in-memory account of `live`. */
+function migrationCheck(live: Record<string, HostedWorkerOptions>, workers = deployed): Promise<MigrationCheck> {
+  return verifyMigrations(memoryClient(hostedMemoryAccount(live)), ACCOUNT, workers);
+}
+
+/** The refusal of `check`, which must be one. */
+function refusalOf(check: MigrationCheck): string {
+  assert.ok("refusal" in check && check.refusal !== null, `not refused: ${JSON.stringify(check)}`);
+  return check.refusal;
+}
+
+test("passes Workers whose storage is what this project's migrations leave, reading and writing nothing else", async () => {
+  const client = memoryClient(hostedMemoryAccount(instance()));
+  assert.deepEqual(await verifyMigrations(client, ACCOUNT, deployed), { refusal: null });
+  // The namespaces once, each Worker's deployments, and the live version of each one the account has.
+  assert.deepEqual(client.calls.toSorted(), [
+    "getWorkerVersion", "getWorkerVersion", "getWorkerVersion",
+    "listDurableObjectNamespaces",
+    "listWorkerDeployments", "listWorkerDeployments", "listWorkerDeployments", "listWorkerDeployments",
+  ]);
+  assert.deepEqual(client.created, []);
+  // Nothing to deploy over, nothing to read.
+  const idle = memoryClient({});
+  assert.deepEqual(await verifyMigrations(idle, ACCOUNT, []), { refusal: null });
+  assert.deepEqual(idle.calls, []);
+});
+
+test("passes a Worker the account does not have yet, and one with no Durable Objects", async () => {
+  // A fresh account: every Worker is the deploy's to create.
+  assert.deepEqual(await verifyMigrations(memoryClient({}), ACCOUNT, deployed), { refusal: null });
+  // The router stores nothing, on either side.
+  assert.deepEqual(await migrationCheck(instance(), [{ name: "acme" }]), { refusal: null });
+  // Deployed, with migrations in the project, and no storage yet: nothing to be behind.
+  assert.deepEqual(await migrationCheck(instance({ durableObjects: [] })), { refusal: null });
+});
+
+test("passes a live migration tag that is one of the configuration's, the last or an earlier one", async () => {
+  // At the project's last tag: the release the project pins. At an earlier one: the deploy migrates it forward.
+  for (const migrationTag of ["v1", "v0"]) {
+    assert.deepEqual(await migrationCheck(instance({ migrationTag })), { refusal: null }, migrationTag);
+  }
+  // The tag decides where the API reports one: a class this project does not create is not looked at.
+  assert.deepEqual(await migrationCheck(instance({ migrationTag: "v1", durableObjects: ["Users", "Renamed"] })), { refusal: null });
+});
+
+test("refuses a Worker whose live migration tag is none of the configuration's, naming it, the tag and the fix", async () => {
+  const refusal = refusalOf(await migrationCheck(instance({ migrationTag: "v2" })));
+  assert.equal(refusal,
+    "This project's pinned cloudflare-os is behind the Durable Object storage of Workers it would deploy over:\n" +
+    "  - Worker acme-backend's live Durable Object migration tag is v2, which is not among the tags of this project's " +
+    "configuration for it (v0, v1).\n" +
+    "Deploying would put older code over storage a newer release has already migrated, which cannot be undone, so " +
+    "nothing was built or deployed. Move the pin to what those Workers run, or past it, first: " +
+    "`pnpm cf-os update --to <commit>`, with the cloudflare-os commit those Workers were deployed from or a newer one " +
+    "(their live versions, which the hosted flow uploaded, name release r004945-6c8d301, built from commit 6c8d301: pass " +
+    "it only where this project's pin is behind that commit, as `update --to` an older commit moves the pin back); " +
+    "or take the instance over again with a fresh command from the hosted deploy flow, which moves the pin forward " +
+    "only (docs/migrate-from-hosted.md).");
+  // A tag the project has, on a Worker whose configuration has no migrations at all, is still not one of its tags.
+  const bare = refusalOf(await migrationCheck(instance({ migrationTag: "v1" }), [{ name: "acme-backend" }]));
+  assert.match(bare, /Worker acme-backend's live Durable Object migration tag is v1, .* \(it has no migrations\)\./);
+});
+
+test("refuses a Worker storing a class no migration of the configuration creates, where the API reports no tag", async () => {
+  const refusal = refusalOf(await migrationCheck(instance({ durableObjects: ["Users", "Overseer", "Settings", "AddedLater"] })));
+  assert.match(refusal, /\n {2}- Worker acme-backend stores Durable Objects of a class no migration in this project's configuration for it creates \(AddedLater\)\.\n/);
+  assert.match(refusal, /nothing was built or deployed/);
+  // The widest gap: a Worker with storage, under a configuration with no migrations at all.
+  const bare = refusalOf(await migrationCheck(instance(), [{ name: "acme-gk-context" }]));
+  assert.match(bare, /Worker acme-gk-context stores Durable Objects of a class .* \(Collections\)\./);
+});
+
+/** The fix a refusal names when it cannot say which commit the refused Workers run. */
+const GENERIC_FIX = /first: `pnpm cf-os update --to <commit>`, with the cloudflare-os commit those Workers were deployed from or a newer one; or take/;
+
+/**
+ * The fix a refusal names when the refused Workers' live versions name release `id`, built from
+ * `sha7`: the same command, the commit still the operator's to supply, and the release beside it
+ * with the one case it is the commit to pass in.
+ */
+const namedFix = (id: string, sha7: string) => new RegExp("first: `pnpm cf-os update --to <commit>`, with the cloudflare-os commit " +
+  "those Workers were deployed from or a newer one \\(their live versions, which the hosted flow uploaded, name release " +
+  `${id}, built from commit ${sha7}: pass it only where this project's pin is behind that commit, as \`update --to\` an ` +
+  "older commit moves the pin back\\); or take");
+
+/** A command line that moves the pin to a commit it names: what no refusal may hand over ready to run. */
+const READY_TO_RUN = /update --to [0-9a-f]{7,40}\b/;
+
+test("names every Worker that is ahead, in the order they deploy, and the commit of the release they all name", async () => {
+  const later: HostedWorkerOptions = { release: "r005100-abcdef1" };
+  const refusal = refusalOf(await migrationCheck({
+    ...instance({ ...later, migrationTag: "v9" }, { ...later, durableObjects: ["Collections", "Shares"] }),
+    // Passes, so it is no evidence of what the refused Workers run, though its release is the newest in the account.
+    acme: { release: "r005200-1234abc" },
+  }));
+  assert.match(refusal, /:\n {2}- Worker acme-backend's live Durable Object migration tag is v9, .*\n {2}- Worker acme-gk-context stores .* \(Shares\)\.\nDeploying would/);
+  assert.match(refusal, namedFix("r005100-abcdef1", "abcdef1"));
+  assert.doesNotMatch(refusal, /6c8d301|1234abc/);
+  assert.doesNotMatch(refusal, READY_TO_RUN);
+});
+
+test("names no commit unless every refused Worker's own live version names that release", async () => {
+  // The backend was deployed from a newer checkout, so its version names no release; the Workers
+  // beside it are still the hosted flow's, at a release that is not what the backend runs.
+  const fromCheckout: HostedWorkerOptions = { annotations: { "workers/triggered_by": "upload" }, releaseVar: false };
+  const mixed = refusalOf(await migrationCheck(
+    instance({ ...fromCheckout, durableObjects: ["Users", "Overseer", "Settings", "AddedLater"] })));
+  assert.match(mixed, /Worker acme-backend stores Durable Objects of a class .* \(AddedLater\)\./);
+  assert.match(mixed, GENERIC_FIX);
+  assert.doesNotMatch(mixed, /6c8d301|r004945/);
+
+  // Two refused Workers at two releases: the commit of the newer is not shown to be what the older's storage is at.
+  const apart = refusalOf(await migrationCheck(
+    instance({ migrationTag: "v9" }, { release: "r005100-abcdef1", durableObjects: ["Collections", "Shares"] })));
+  assert.match(apart, GENERIC_FIX);
+  assert.doesNotMatch(apart, /6c8d301|abcdef1/);
+
+  // A refused Worker part-way through a rollout names both releases, and the newer is the one to reach.
+  const account = hostedMemoryAccount(instance({ migrationTag: "v9" }));
+  const [first] = account.versions?.["acme-backend"] ?? [];
+  const second = {
+    ...first,
+    id: "0c0ffee0-0000-4000-8000-000000000002",
+    annotations: hostedAnnotations("r005100-abcdef1"),
+    bindings: [{ name: "CLOUDFLARE_OS_RELEASE_ID", type: "plain_text", text: "r005100-abcdef1" }],
+  };
+  const rollout = refusalOf(await verifyMigrations(memoryClient({
+    ...account,
+    versions: { ...account.versions, "acme-backend": [first, second] },
+    deployments: {
+      ...account.deployments,
+      "acme-backend": [{ id: "rollout", versions: [{ version_id: first.id, percentage: 90 }, { version_id: second.id, percentage: 10 }] }],
+    },
+  }), ACCOUNT, deployed));
+  assert.match(rollout, namedFix("r005100-abcdef1", "abcdef1"));
+});
+
+test("never hands over a pin move ready to run, and names no release a version made by hand carries", async () => {
+  // Deployed by hand over the hosted flow's upload, keeping its variables: the release variable is
+  // left over from that upload, and the class is one the hand deploy added. A project pinned past
+  // r004945 is refused all the same, and `update --to 6c8d301` would roll its pin back.
+  const byHand = refusalOf(await migrationCheck(
+    instance({ handEdited: true, durableObjects: ["Users", "Overseer", "Settings", "HandMade"] })));
+  assert.match(byHand, /Worker acme-backend stores Durable Objects of a class .* \(HandMade\)\./);
+  assert.match(byHand, GENERIC_FIX);
+  assert.doesNotMatch(byHand, /6c8d301|r004945/);
+  const tagged = refusalOf(await migrationCheck(instance({ handEdited: true, migrationTag: "hand-1" })));
+  assert.match(tagged, GENERIC_FIX);
+  assert.doesNotMatch(tagged, /6c8d301|r004945/);
+
+  // A Worker of another kind under the name, still the hosted flow's upload: its release is named,
+  // as what it runs, and the commit is left out of the command.
+  const misnamed = refusalOf(await migrationCheck({ acme: { release: "r000100-aaaaaaa", durableObjects: ["Users", "Overseer"] } },
+    [{ name: "acme" }]));
+  assert.match(misnamed, namedFix("r000100-aaaaaaa", "aaaaaaa"));
+  for (const refusal of [byHand, tagged, misnamed]) {
+    assert.doesNotMatch(refusal, READY_TO_RUN);
+    assert.match(refusal, /a fresh command from the hosted deploy flow, which moves the pin forward only/);
+  }
+});
+
+test("leaves the commit to the operator when no Worker names a release that carries one", async () => {
+  // Deployed from a project like this one: no version is the hosted flow's, so none names a release.
+  const own: HostedWorkerOptions = { annotations: { "workers/triggered_by": "upload" }, releaseVar: false };
+  const taken = await migrationCheck({
+    acme: own,
+    ...instance({ ...own, migrationTag: "v9" }, own),
+    "acme-gk-scheduler": own,
+    "acme-gk-github": own,
+  }, deployed);
+  assert.match(refusalOf(taken), GENERIC_FIX);
+  // A hand-built release: an id with no commit in it.
+  const handBuilt: HostedWorkerOptions = { release: "dev-k3x9" };
+  const staging = await migrationCheck({
+    acme: handBuilt,
+    ...instance({ ...handBuilt, migrationTag: "v9" }, handBuilt),
+    "acme-gk-scheduler": handBuilt,
+    "acme-gk-github": handBuilt,
+  });
+  assert.match(refusalOf(staging), GENERIC_FIX);
+});
+
+/** A read the token is not permitted to make: what a client method rejects with for the lack of a permission. */
+function notPermitted(): Promise<never> {
+  return Promise.reject(new CfAuthError("[10000] Authentication error"));
+}
+
+test("skips the migration check without credentials, and refuses when a read fails for any other reason", async () => {
+  const signedOut = await verifyMigrations(memoryClient({ signedOut: true }), ACCOUNT, deployed);
+  assert.deepEqual(signedOut, { skipped: "No authentication token found." });
+  const unavailable = {
+    ...memoryClient(hostedMemoryAccount(instance())),
+    listDurableObjectNamespaces: () => Promise.reject(new CfUnavailableError("could not run cf: ENOENT")),
+  } satisfies CloudflareClient;
+  assert.deepEqual(await verifyMigrations(unavailable, ACCOUNT, deployed), { skipped: "could not run cf: ENOENT" });
+  // A token that lists namespaces and may not read a Worker's deployments: the classes show no gap,
+  // the tags were not read, and that is no pass.
+  const partial = {
+    ...memoryClient(hostedMemoryAccount(instance({ migrationTag: "v9" }))),
+    listWorkerDeployments: notPermitted,
+  } satisfies CloudflareClient;
+  assert.deepEqual(await verifyMigrations(partial, ACCOUNT, deployed), { skipped: "[10000] Authentication error" });
+  // And the other way about: the tags are among the project's, the classes were not read.
+  const tagsOnly = {
+    ...memoryClient(hostedMemoryAccount(instance({ migrationTag: "v1", durableObjects: ["Users", "AddedLater"] }))),
+    listDurableObjectNamespaces: notPermitted,
+  } satisfies CloudflareClient;
+  assert.deepEqual(await verifyMigrations(tagsOnly, ACCOUNT, deployed), { skipped: "[10000] Authentication error" });
+
+  // Any other failure leaves the question open, and an open question is a refusal.
+  for (const method of ["listDurableObjectNamespaces", "listWorkerDeployments", "getWorkerVersion"] as const) {
+    const failing = memoryClient({ ...hostedMemoryAccount(instance()), failing: { [method]: "[10013] internal error" } });
+    assert.equal(refusalOf(await verifyMigrations(failing, ACCOUNT, deployed)),
+      "What the account's Workers run could not be read, so whether their Durable Object storage is ahead of this " +
+      "project's pinned cloudflare-os is not known:\n  - [10013] internal error\n" +
+      "Deploying older code over storage a newer release has migrated cannot be undone, so nothing was built or " +
+      "deployed. Run this again once the read works.", method);
+  }
+});
+
+test("judges what it could read when credentials stop the other read, and refuses a gap it shows", async () => {
+  // The namespaces were read and show a class this project does not create; no Worker could be read.
+  const classes = {
+    ...memoryClient(hostedMemoryAccount(instance({ durableObjects: ["Users", "Overseer", "Settings", "AddedLater"] }))),
+    listWorkerDeployments: notPermitted,
+  } satisfies CloudflareClient;
+  const stored = refusalOf(await verifyMigrations(classes, ACCOUNT, deployed));
+  assert.match(stored, /^This project's pinned cloudflare-os is behind .*:\n {2}- Worker acme-backend stores Durable Objects of a class .* \(AddedLater\)\.\nDeploying would/);
+  // No Worker was read, so none names a release.
+  assert.match(stored, GENERIC_FIX);
+  // A Worker under a configuration with no migrations is held to the same, unread or not.
+  const bare = refusalOf(await verifyMigrations(classes, ACCOUNT, [{ name: "acme-gk-context" }]));
+  assert.match(bare, /Worker acme-gk-context stores Durable Objects of a class .* \(Collections\)\./);
+
+  // The Workers were read and one reports a tag this project does not have; the namespaces could not be.
+  const tags = {
+    ...memoryClient(hostedMemoryAccount(instance({ migrationTag: "v9" }))),
+    listDurableObjectNamespaces: notPermitted,
+  } satisfies CloudflareClient;
+  const tagged = refusalOf(await verifyMigrations(tags, ACCOUNT, deployed));
+  assert.match(tagged, /\n {2}- Worker acme-backend's live Durable Object migration tag is v9, /);
+  assert.match(tagged, namedFix("r004945-6c8d301", "6c8d301"));
+
+  // A read that failed for another reason is a refusal, whichever read credentials stopped beside it.
+  for (const [unpermitted, failing] of [
+    ["listDurableObjectNamespaces", "listWorkerDeployments"],
+    ["listWorkerDeployments", "listDurableObjectNamespaces"],
+  ] as const) {
+    const client = {
+      ...memoryClient({ ...hostedMemoryAccount(instance()), failing: { [failing]: "[10013] internal error" } }),
+      [unpermitted]: notPermitted,
+    } satisfies CloudflareClient;
+    assert.match(refusalOf(await verifyMigrations(client, ACCOUNT, deployed)),
+      /^What the account's Workers run could not be read, .*:\n {2}- \[10013\] internal error\n/, failing);
+  }
+});
+
+/** {@link verifyMigrations} of {@link deployed} against `replies`, the calls settling as `delay` says. */
+function verifyFakeMigrations(replies: Record<string, FakeReply>, delay?: (args: string[]) => number) {
+  const cf = fakeCf(replies, { delay });
+  return { result: verifyMigrations(cfClient({ spawn: cf.spawn }), ACCOUNT, deployed), calls: cf.calls };
+}
+
+/**
+ * A `delay` for `fakeCf` under which the first call waits longest and each later one less, never
+ * below nothing: `reversing`, for more calls than it has steps for.
+ */
+function lateFirst(): (args: string[]) => number {
+  let started = 0;
+  return () => Math.max(0, 150 - 10 * started++);
+}
+
+test("reads the Workers at once, and gives the same verdict whichever read finishes first", async () => {
+  const cases: Record<string, FakeReply>[] = [
+    hostedAccountLive(instance()),
+    hostedAccountLive(instance({ migrationTag: "v9" }, { durableObjects: ["Collections", "Shares"] })),
+    // The namespaces are not permitted, and a Worker's deployments fail outright: the failure that is not credentials decides.
+    { ...hostedAccountLive(instance()), "durable-objects namespaces list": { fail: "[10000] Authentication error" }, "workers deployments list": { fail: "[10013] internal error" } },
+    { ...hostedAccountLive(instance()), "workers deployments list": { fail: "[10013] internal error" } },
+    // Neither read is permitted: the namespaces' is the reason given.
+    { ...hostedAccountLive(instance()), "durable-objects namespaces list": { fail: "[10000] Authentication error" }, "workers deployments list": { fail: "[10000] Authentication error" } },
+    // The Workers are not permitted, and the namespaces show a class this project does not create.
+    { ...hostedAccountLive(instance({}, { durableObjects: ["Collections", "Shares"] })), "workers deployments list": { fail: "[10000] Authentication error" } },
+  ];
+  for (const replies of cases) {
+    const reversed = verifyFakeMigrations(replies, lateFirst());
+    // The namespaces and the deployments of all four Workers, started before any settled.
+    assert.deepEqual(reversed.calls.map(({ args }) => args.slice(0, 3).join(" ")).toSorted(), [
+      "durable-objects namespaces list",
+      "workers deployments list", "workers deployments list", "workers deployments list", "workers deployments list",
+    ]);
+    assert.deepEqual(await reversed.result, await verifyFakeMigrations(replies).result);
+  }
+  assert.deepEqual(await verifyFakeMigrations(cases[0], lateFirst()).result, { refusal: null });
+  const ahead = refusalOf(await verifyFakeMigrations(cases[1], lateFirst()).result);
+  assert.match(ahead, /Worker acme-backend's live Durable Object migration tag is v9[\s\S]*Worker acme-gk-context stores/);
+  assert.match(refusalOf(await verifyFakeMigrations(cases[2], lateFirst()).result), /could not be read[\s\S]*cf workers deployments list --script-name acme: .*10013/);
+  const unread = await verifyFakeMigrations(cases[4], lateFirst()).result;
+  assert.ok("skipped" in unread && unread.skipped.startsWith("cf durable-objects namespaces list"));
+  assert.match(refusalOf(await verifyFakeMigrations(cases[5], lateFirst()).result), /^This project's pinned cloudflare-os is behind [\s\S]*Worker acme-gk-context stores .* \(Shares\)\./);
+  // Of the Workers whose read failed, the first in deploy order is the one named.
+  assert.match(refusalOf(await verifyFakeMigrations(cases[3], lateFirst()).result), /could not be read[\s\S]*cf workers deployments list --script-name acme: .*10013/);
 });

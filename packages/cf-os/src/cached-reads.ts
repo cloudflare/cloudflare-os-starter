@@ -13,6 +13,9 @@ export const LABELS: { [K in keyof CloudflareClient]: (...args: Parameters<Cloud
   listAccounts: () => "Listing your accounts",
   listWorkers: () => "Listing the account's Workers",
   listWorkerSecrets: (_accountId, worker) => `Reading ${worker}'s secrets`,
+  listWorkerDeployments: (_accountId, worker) => `Reading ${worker}'s deployments`,
+  getWorkerVersion: (_accountId, worker) => `Reading the version ${worker} runs`,
+  listDurableObjectNamespaces: () => "Listing the account's Durable Object namespaces",
   workersDevSubdomain: () => "Reading the workers.dev subdomain",
   listKvNamespaces: () => "Listing the account's KV namespaces",
   listR2Buckets: () => "Listing the account's R2 buckets",
@@ -30,6 +33,9 @@ export const LABELS: { [K in keyof CloudflareClient]: (...args: Parameters<Cloud
 
 /** What the spinner says while a step waits on `fetchInventory`'s six reads (core/discovery.ts). */
 export const INVENTORY_LABEL = "Reading the account's Workers, storage, AI Gateways and Access";
+
+/** What the spinner says while a step waits on `readInstance`'s reads of each Worker (core/hosted-release.ts). */
+export const INSTANCE_LABEL = "Reading what the instance's Workers run";
 
 /** One read {@link cachedReads} holds: its promise, and whether it has settled. */
 interface CachedRead {

@@ -6,6 +6,7 @@
 
 - **Default: the starter's pin.** The starter has already adapted `packages/cf-os` and its shared code to that pin. The work is mostly merge conflicts in files the operator owns (`deployment.jsonc`, branding, docs they edited), plus the operator's own Gatekeepers, such as `packages/custom-gatekeeper`, which the starter cannot adapt for them.
 - **`--upstream`: upstream's `main`, staged and not committed,** on top of the starter merge, which is committed. The starter has not seen this pin yet, so everything below may apply to `packages/cf-os` itself as well. Follow [upgrade-and-rollback.md](upgrade-and-rollback.md) before committing the pin.
+- **A takeover of a hosted instance: the pin alone, forward only.** `cf-os init --take-over` and `cf-os import --out` move the pin to the commit the instance's release was built from, staged and not committed, without merging the starter, and write the same brief. The starter has not been adapted to that pin by this move, so everything below may apply to `packages/cf-os` itself; `npx cf-os@latest update` merges the starter once the pin is committed. Never answer a problem at the new pin by moving the pin back: the instance already runs that code, and deploying older code over its storage cannot be undone (`docs/migrate-from-hosted.md`).
 - **Not a starter project: the pin alone.** A repository with its own config generation, build and deploy scripts that pins Cloudflare OS as a submodule, wherever it keeps it. There is no starter merge, only upstream's `main`, staged and not committed. The generic sections below apply as written. Sections marked *(starter)* describe the starter's own machinery (`generateConfigs()`, `PACKAGE_DIRS`, the new-Gatekeeper list, `buildCommands()`): map each onto this repository's equivalent. Follow [upgrade-and-rollback.md](upgrade-and-rollback.md) the same way before committing the pin.
 
 ## Most Updates Need Nothing Beyond The Merge: Prove It
@@ -18,6 +19,11 @@ Check the upstream range for each of the following. When none of them touches th
 - A new preinstalled Gatekeeper or Worker.
 - Build tooling changes.
 - Renamed paths, packages or variables.
+- A new Workshop storage-schema version (a `version.put(` in `packages/workshop-backend/src/storage-schema/overseer-migrations.ts`). It needs nothing here, but once deployed the Workshop cannot roll back to the old pin, and the summary has to say so.
+
+## The `cf-os api` Commands *(starter)*
+
+`cf-os api` runs the pin's own CLI, `cloudflare-os/packages/api-cli`, so its commands move with the pin and nothing in this repository is regenerated: the pin generates its command table itself, in the submodule and uncommitted, the first time `cf-os api` runs after the move. A method removed or renamed upstream breaks whatever calls its command: when the pin moves, the brief names `git -C cloudflare-os diff --stat <old> <new> -- packages/workshop-shared/src/api.ts`, the API the commands come from; if that lists changes, grep the docs, the operator skill and any scripts for the commands of the methods that changed. On a pin from before the CLI moved upstream (a rollback, say), `cf-os api` fails naming `cf-os update`.
 
 ## Gatekeeper Contract Changes
 
@@ -62,6 +68,8 @@ The naming row also makes its slug a built-in one, so a deployment that had sele
 
 A selected Gatekeeper the new pin excludes fails `check` on `gatekeepers.<slug>` with the reason. Report it to the operator, and do not work around it in `deployment.jsonc`.
 
+Upstream's internal Workers (`INTERNAL_WORKERS` in `cloudflare-os/scripts/release/manifest-lib.ts`) ship with every hosted instance and serve no route. The starter deploys one, the PDF renderer, and only beside a selected Gatekeeper that binds it (`deploysPdfRenderer()`). A binding to any other Worker, a new internal one included, still excludes the Gatekeeper that declares it. Deploying a new internal Worker takes the same pieces as the renderer: a `PACKAGE_DIRS` entry, its config in `generateConfigs()`, the binding pointed at its name, a build step, a wave before the Workers that bind it, a hosted naming row (`N-<package>`), and the catalog letting the binding through.
+
 A `gatekeeper-*` package without a `wrangler.jsonc` is a library, not a Worker.
 
 ## Build Tooling *(starter)*
@@ -77,6 +85,6 @@ Grep this repository for every path, package name and environment variable the u
 - Pin only commits on upstream's `main`, ideally with its CI green. If upstream `main` is broken (a bad lockfile, say), take the commit that fixes it. `update --to <commit>` pins a given commit on `main`, and refuses one that is not.
 - Several updates in a row, to pick up an upstream fix, are normal. A repository far behind can go in steps the same way, with `--to` an intermediate commit, so each migration stays small.
 - To preview an upstream branch or pull request in a merge request's preview deploy, `update --to <branch|pull/N> --preview` stages it. Commit it on the merge request's branch only, and move the pin to the merged commit on `main` before merging. If the branch left `main` before the current pin, the brief lists what the preview leaves out: rebase the upstream branch rather than undo this repository's changes.
-- Rolling back is `update --to <older commit>`: the brief lists the commits that leave and points at [upgrade-and-rollback.md](upgrade-and-rollback.md)'s Rollback Matrix.
+- Rolling back is `update --to <older commit>`: the brief lists the commits that leave and points at [upgrade-and-rollback.md](upgrade-and-rollback.md)'s Rollback Matrix. `pnpm cf-os check` and `deploy` refuse a rolled-back pin whose configuration lacks a Durable Object migration the account's Workers already ran.
 - Keep fixes in their own commits after the merge commit, so the update itself stays reviewable.
 - Finish with `pnpm lint` and `pnpm cf-os check`, or, outside a starter project, the repository's own lint, tests and build. Deploy only once the operator approves.

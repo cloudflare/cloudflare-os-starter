@@ -1,22 +1,34 @@
 // `cf-os check` and `cf-os deploy`
 //
 // Both validate the deployment file, generate every Worker's `wrangler.prod.jsonc`
-// (core/deployment.ts), confirm against the account that what the file names exists
+// (core/deployment.ts), confirm against the account that what the file names exists and that no
+// Worker about to be deployed over has Durable Object storage migrated past this project's pin
 // (core/verify-account.ts), warn about any optional Gatekeeper's secrets not set yet, and build.
 // `check` runs the test suites first and dry-runs each deploy; `deploy` deploys for real, with no
 // confirmation. The generated configs are removed afterwards either way.
+//
+// Without `cf` credentials the account is not read. The Access and storage checks are then skipped
+// with a line, in both commands. The migration check is skipped with a line by `check`, which
+// uploads nothing, and is a refusal in `deploy`: nothing after it would stop older code going over
+// storage a newer release migrated, since wrangler uploads with a warning when the live migration
+// tag is not in the config, and that cannot be undone.
 //
 // The builds run concurrently (run-tasks.ts), each command's output printed as one block when it
 // finishes, and the first failure cancels the rest: the deploy is doomed either way, so there is no
 // point waiting out the others. Every build has to pass before anything deploys, so a type error
 // cannot leave new Gatekeepers in front of an old Workshop. The Workers then deploy in the waves
-// `deployWaves` gives -- every Gatekeeper and the Error Reporter together, then the Workshop, then
-// the router -- because a service binding has to name a Worker that already exists. A failed
+// `deployWaves` gives -- the PDF renderer when a Gatekeeper binds it, every Gatekeeper and the Error
+// Reporter together, then the Workshop, then the router -- because a service binding has to name a
+// Worker that already exists. A failed
 // deploy cancels nothing: a half-cancelled upload is worse than a slow one, so its siblings finish,
 // and only the next wave is held back. With the router last, any failure leaves the previous router
 // serving.
 //
 // Secrets `cf-os init` asked for come in memory and are set once every Worker exists (gatekeeper-secrets.ts).
+// They are the only secrets this command writes, each on its own Gatekeeper Worker. Every other
+// secret a Worker has stays as it is: nothing here sets or deletes one (a Gatekeeper's are listed by
+// name, to warn of one missing), and `wrangler deploy` keeps the secrets of the Worker it uploads
+// over. The push identity's signing key on the Workshop rides on exactly that (core/deployment.ts).
 //
 // Wrangler deploys, not `cf deploy`: `cf deploy` takes no `--config` and works one project per
 // directory, so it cannot deploy a set of Workers from generated configs.
@@ -31,7 +43,7 @@ import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { prefetch } from "../cached-reads.ts";
 import { configPath, displayPath, type CommandArgs, type Context } from "../context.ts";
 import type { CloudflareClient } from "../core/client.ts";
-import type { BaseConfigs, BuildCommand, DeploymentConfig } from "../core/deployment-config.ts";
+import type { BaseConfigs, BuildCommand, DeploymentConfig, GeneratedConfigs } from "../core/deployment-config.ts";
 import {
   aiGatewayPlan,
   buildCommands,
@@ -54,7 +66,7 @@ import {
 } from "../core/deployment.ts";
 import { placeholderPaths } from "../core/edits.ts";
 import { undeclaredVarWarnings, type GatekeeperCatalog } from "../core/gatekeepers.ts";
-import { gatekeeperSecretWarnings, prose, verifyAccount } from "../core/verify-account.ts";
+import { gatekeeperSecretWarnings, prose, verifyAccount, verifyMigrations } from "../core/verify-account.ts";
 import { parseDeployment } from "../deployment-file.ts";
 import { loadCatalog } from "../gatekeeper-catalog.ts";
 import { waitOn } from "../prompt.ts";
@@ -168,7 +180,7 @@ async function deployAll(
   catalog: GatekeeperCatalog,
   check: boolean,
 ): Promise<void> {
-  const waves = check ? [deployOrder(config)] : deployWaves(config);
+  const waves = check ? [deployOrder(config, catalog)] : deployWaves(config, catalog);
   for (const [index, wave] of waves.entries()) {
     ctx.out.log(`\n${check ? "Dry-running the deploys of" : "Deploying"} ${wave.map((id) => workerName(config, id)).join(", ")}.`);
     const deploy = (id: WorkerId) => deployWorker(ctx, workerDir(id, catalog), check ? ["--dry-run"] : []);
@@ -246,34 +258,72 @@ async function warnMissingSecrets(ctx: Context, warnings: Promise<string[]>, pen
 }
 
 /**
- * Fails on anything the deployment file names that the account does not have. Before the build, so
- * a wrong AUD tag or KV ID costs seconds rather than a full build, and well before anything deploys.
- * Then warns about missing Gatekeeper secrets, which fail nothing.
+ * What `cf-os deploy` fails with when the migration check could not be made for the lack of
+ * credentials, or of a `cf` to use them, `reason` being why. `reason` is the client's own account
+ * of what is in the way, with the sign-in when that is it, so the fix is not said a second time:
+ * only what this one check needs of a token, which is less than the client's list.
+ */
+function uncheckedMigrations(reason: string): string {
+  return "Whether the Durable Object storage of the Workers this deploys over is ahead of this project's pinned " +
+    `cloudflare-os could not be checked:\n  - ${reason}\n` +
+    "Deploying older code over storage a newer release has migrated cannot be undone, and wrangler does not refuse it, " +
+    "so nothing was built or deployed. Run this again once `cf` can read the account; of a token, this check needs " +
+    "Workers Scripts Read alone.";
+}
+
+/**
+ * Fails on anything the deployment file names that the account does not have, and on any Worker of
+ * `generated` whose Durable Object storage in the account is ahead of this project's pin
+ * (`verifyMigrations`). Before the build, so a wrong AUD tag or KV ID costs seconds rather than a
+ * full build, and before anything deploys: a deploy over storage a newer release migrated cannot be
+ * taken back. Then warns about missing Gatekeeper secrets, which fail nothing.
+ *
+ * The two checks read the account side by side and are judged apart: a token that reads Workers but
+ * not Access still has its Workers checked, and each check that could not be made says so. For the
+ * Access and storage checks that is all. For the migration check it is all only when `check` is set
+ * and nothing is uploaded: a deploy that could not make it fails ({@link uncheckedMigrations}).
  */
 async function checkAccount(
   ctx: Context,
   config: DeploymentConfig,
+  generated: GeneratedConfigs,
   where: string,
   catalog: GatekeeperCatalog,
   pending: PendingSecrets[],
+  check: boolean,
 ): Promise<void> {
   const client = await ctx.client();
   // Read beside the account check, though printed only once it passes.
   const warnings = secretWarnings(ctx, client, config, catalog, pending);
   prefetch(warnings);
-  const result = await waitOn(ctx.prompter, "Checking the account against the deployment file",
-    () => verifyAccount(client, config, publicOrigin(config)));
-  if ("skipped" in result) {
-    ctx.out.log(`\nSkipped Cloudflare-side checks: ${result.skipped}`);
-    return;
+  const deployed = generatedOutputs(generated)
+    .map(([id, { migrations }]) => ({ name: workerName(config, id), ...(migrations ? { migrations } : {}) }));
+  const migrationsRead = verifyMigrations(client, config.accountId, deployed);
+  prefetch(migrationsRead);
+  const [result, migrations] = await waitOn(ctx.prompter, "Checking the account against the deployment file",
+    async () => [await verifyAccount(client, config, publicOrigin(config)), await migrationsRead] as const);
+  if ("skipped" in result) ctx.out.log(`\nSkipped Cloudflare-side checks: ${result.skipped}`);
+  if ("skipped" in migrations && check) {
+    ctx.out.log(
+      `\nSkipped the Durable Object migration check: ${migrations.skipped}\n` +
+      "Whether the account's Workers run a newer cloudflare-os than this project pins was not checked; deploying an " +
+      "older one over their storage cannot be undone, and `pnpm cf-os deploy` refuses until it can make this check.");
   }
-  if (result.problems.length) {
-    throw new Error(
-      `${where} does not match the account:\n` +
-      result.problems.map((problem) => `  - ${problem}`).join("\n"));
+  const failures = [
+    ..."problems" in result && result.problems.length
+      ? [`${where} does not match the account:\n` + result.problems.map((problem) => `  - ${problem}`).join("\n")]
+      : [],
+    ..."refusal" in migrations && migrations.refusal ? [migrations.refusal] : [],
+    ..."skipped" in migrations && !check ? [uncheckedMigrations(migrations.skipped)] : [],
+  ];
+  if (failures.length) throw new Error(failures.join("\n"));
+  if (!("skipped" in result)) {
+    ctx.out.log("\nCloudflare-side checks passed: Access application, team domain and storage IDs match.");
   }
-  ctx.out.log("\nCloudflare-side checks passed: Access application, team domain and storage IDs match.");
-  await warnMissingSecrets(ctx, warnings, pending);
+  if (!("skipped" in migrations)) {
+    ctx.out.log("\nDurable Object migrations checked: no Worker this deploys over shows storage ahead of the pinned cloudflare-os.");
+  }
+  if (!("skipped" in result)) await warnMissingSecrets(ctx, warnings, pending);
 }
 
 /**
@@ -305,6 +355,21 @@ export interface DeployDeps {
   deploy(ctx: Context, config: DeploymentConfig, catalog: GatekeeperCatalog, check: boolean): Promise<void>;
   /** `wrangler secret bulk`, for the secrets `init` asked for. */
   spawn: SpawnTool;
+  /**
+   * The wizard an unconfigured project is handed to at a terminal, resolving to its exit code:
+   * {@link configureProject} unless a test stands in for it. Anything but 0 stops the run there, with
+   * nothing built or deployed: a takeover that moved the pin under what this run had read among them.
+   */
+  configure?(ctx: Context): Promise<number>;
+}
+
+/**
+ * `cf-os init` in-process, without its offer to deploy: this run deploys itself, with what it read
+ * of the project before the wizard ran. Loaded on first use, as most runs never need it.
+ */
+async function configureProject(ctx: Context): Promise<number> {
+  const init = await import("./init.ts");
+  return init.configure({ command: "init", values: {}, positionals: [] }, ctx, init.defaultDeps(), { offerDeploy: false });
 }
 
 function defaultDeps(): DeployDeps {
@@ -381,9 +446,7 @@ async function buildAndDeploy(
     if (!((error as Error).cause instanceof PlaceholderError && ctx.prompter)) throw error;
     ctx.out.log((error as Error).message);
     if (!await ctx.prompter.confirm(`${where} still has placeholders. Run \`cf-os init\` now?`)) throw error;
-    const init = await import("./init.ts");
-    const code = await init.configure({ command: "init", values: {}, positionals: [] }, ctx,
-      init.defaultDeps(), { offerDeploy: false });
+    const code = await (deps.configure ?? configureProject)(ctx);
     if (code !== 0) return code;
     // Still placeholders (Access left for later, say): init has just listed them and the fix.
     if (placeholderPaths(parseDeployment(await readFile(path, "utf8"), where)).length) return 1;
@@ -398,7 +461,7 @@ async function buildAndDeploy(
   const generated = generateConfigs(config, await readBaseConfigs(root), catalog);
   reportAiGateway(ctx, config);
   for (const warning of undeclaredVarWarnings(config.gatekeepers ?? {})) ctx.out.log(`\n${warning}`);
-  await checkAccount(ctx, config, where, catalog, secrets);
+  await checkAccount(ctx, config, generated, where, catalog, secrets, check);
 
   const generatedPath = (id: WorkerId) => join(root, workerDir(id, catalog), GENERATED_NAME);
   // Every package's, not only those generated this time: a Worker turned off since (the Error

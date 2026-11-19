@@ -14,6 +14,8 @@ Never advance the `cloudflare-os` submodule to a moving branch or an assumed lat
 
 `npx cf-os@latest update --upstream` selects upstream `main`'s exact SHA as the target, checks it out and stages it without committing. In a starter project it first merges the starter's `main`, committed, as a plain `update` does, and stages the pin on top: run plain `npx cf-os@latest update` and commit it first to keep the `--upstream` change a gitlink-only review. The selection is step 2's only: the rest of this gate, and the compatibility review below, still apply before the pin is committed. The brief it writes (`.cf-os/update.md`) records the old and new SHAs and the commit range for steps 1 and 3. [updating.md](updating.md) lists what an upstream range usually needs in this repository.
 
+A takeover of a hosted instance (`cf-os init --take-over`, `cf-os import --out`) selects the target differently: the commit the instance's release was built from, and it moves the pin only forward to it. The instance already runs that code, so the gate's review still applies before the deploy but must not be answered by pinning something older: hold the deploy, not the pin. See `docs/migrate-from-hosted.md`.
+
 If using a mirror, prove the exact commit exists without changing the active checkout first. Use a temporary clone or fetch the exact full SHA from the approved mirror where supported, inspect the commit object, and compare it to the intended source. Do not alter `.gitmodules` or check out a nearby branch head as a test.
 
 ## Compatibility Review
@@ -98,6 +100,7 @@ Worker version rollback does not restore Access policies, DNS, bindings, secrets
 - Prefer restoring the complete known-good wrapper configuration and pinned submodule, then redeploying a compatible stack when contracts or bindings changed.
 - Use targeted Worker version rollback only when code and current bindings/storage remain compatible.
 - Never delete or downgrade storage as an automatic rollback step.
+- `pnpm cf-os check` and `pnpm cf-os deploy` refuse to deploy over a Worker whose live Durable Object migration tag is not among the tags of the checkout's configuration for it. A rollback of the pin that meets this refusal has crossed a migration; the refusal is the constraint, not an obstacle to remove.
 - A partially completed first deployment needs safe completion or separately approved teardown, not a fictional rollback.
 - If migration or data changes make rollback unsafe, contain exposure and execute the reviewed forward-repair plan.
 - Repeat the complete Access, binding, storage, Gatekeeper, AI, Reporter, and observability verification after any recovery.

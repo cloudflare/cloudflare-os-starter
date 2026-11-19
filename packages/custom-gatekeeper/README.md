@@ -18,9 +18,9 @@ Put API tokens and OAuth credentials in Wrangler secrets, never `wrangler.jsonc`
 
 ## Observer policy
 
-`CustomVerifier.verify()` accepts every observer because the example returns the same low-stakes deployment text to every authenticated user. That is not a safe default for account-specific, tenant-specific, or confidential data.
+The example's one read reports `subresources: []`, and `CustomGatekeeper.verifyObserverAccess()` allows every observer, because it returns the same low-stakes deployment text to every authenticated user. That is not a safe default for account-specific, tenant-specific, or confidential data.
 
-A real integration must decide which observers may retain data and implement verification at that data boundary. Use upstream's [`write-gatekeeper` skill](https://github.com/cloudflare/cloudflare-os/blob/main/.agents/skills/write-gatekeeper/SKILL.md) for observer design, OAuth, URL-scoped resources, writes and simulation, hooks, and configurator UI.
+A real integration must report, on every read, the resources whose access rules govern what it returns, and check each observer against them in `verifyObserverAccess()`. `getHistoricalSubresources()` returns `[]` and `addObserver()`/`removeObserver()` stay no-ops, as upstream's contract for new Gatekeepers asks; a type-check does not catch a missing `getHistoricalSubresources()`. Use upstream's [`write-gatekeeper` skill](https://github.com/cloudflare/cloudflare-os/blob/main/.agents/skills/write-gatekeeper/SKILL.md) for observer design, OAuth, URL-scoped resources, writes and simulation, hooks, and configurator UI.
 
 ## Check
 

@@ -2,15 +2,23 @@
 // scratch project directories. Test support only; not part of the build.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parse, type ParseError } from "jsonc-parser";
+import { API_CLI_ENTRY, API_GENERATOR } from "./commands/api.ts";
+import { INSTALL_MARKER } from "./commands/install.ts";
 import type { Context, GlobalFlags, Output } from "./context.ts";
 import type { CloudflareClient } from "./core/client.ts";
 import type { ProdWranglerConfig } from "./core/deployment-config.ts";
 import type { GatekeeperCatalog } from "./core/gatekeepers.ts";
 import type { FakeReply } from "./fake-cf.ts";
+import type { CfWorkerBinding, CfWorkerDeployment, CfWorkerVersion } from "./core/client.ts";
+import type { MemoryAccount } from "./core/memory-client.ts";
+import { migrationClasses } from "./core/hosted-release.ts";
+import { durableObjectNamespacesReply, workerLiveReplies } from "./fake-cf.ts";
+import type { PinMove } from "./commands/update.ts";
 import { Back, Cancelled, type Choice, type Prompter } from "./prompt.ts";
 
 /** Accept whatever the prompt offers as its default. */
@@ -168,6 +176,56 @@ export function scratchProject(t: { after: (fn: () => void) => void }, text: str
 }
 
 /**
+ * A scratch project as `cf-os api` needs it: the submodule installed for its lockfile, and at the
+ * pinned CLI's entry a stand-in that writes its arguments, cwd and the two variables `cf-os api`
+ * sets to `report`, then exits `STUB_EXIT`; with `STUB_WAIT`, it writes `<root>/ready` instead and
+ * waits for a SIGTERM, exiting 7. At the pin's generator, another writes its arguments, and whether
+ * the CLI had yet to run, to `generation`, then exits `STUB_GENERATE_EXIT`.
+ */
+export function apiCliProject(
+  t: { after: (fn: () => void) => void },
+  text = TEMPLATE,
+): { root: string; report: string; generation: string } {
+  const root = scratchProject(t, text);
+  const submodule = join(root, "cloudflare-os");
+  writeFileSync(join(submodule, "package.json"), `${JSON.stringify({ type: "module" })}\n`);
+  writeFileSync(join(submodule, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  mkdirSync(dirname(join(submodule, INSTALL_MARKER)), { recursive: true });
+  writeFileSync(join(submodule, INSTALL_MARKER), JSON.stringify({
+    lockfileSha256: createHash("sha256").update(readFileSync(join(submodule, "pnpm-lock.yaml"))).digest("hex"),
+  }));
+  const entry = join(root, API_CLI_ENTRY);
+  mkdirSync(dirname(entry), { recursive: true });
+  writeFileSync(entry, `
+    import { writeFileSync } from "node:fs";
+    const root = new URL("../../../../", import.meta.url);
+    const pick = (name) => Object.hasOwn(process.env, name) ? process.env[name] : "(unset)";
+    writeFileSync(new URL("report.json", root), JSON.stringify({
+      argv: process.argv.slice(2), cwd: process.cwd(),
+      CFOS_API_URL: pick("CFOS_API_URL"), CFOS_API_URL_UNAVAILABLE: pick("CFOS_API_URL_UNAVAILABLE"),
+    }));
+    if (process.env.STUB_WAIT) {
+      process.on("SIGTERM", () => process.exit(7));
+      writeFileSync(new URL("ready", root), "");
+      setInterval(() => {}, 1000);
+    } else {
+      process.exitCode = Number(process.env.STUB_EXIT ?? 0);
+    }
+  `);
+  const generator = join(root, API_GENERATOR);
+  mkdirSync(dirname(generator), { recursive: true });
+  writeFileSync(generator, `
+    import { existsSync, writeFileSync } from "node:fs";
+    const root = new URL("../../../../", import.meta.url);
+    writeFileSync(new URL("generation.json", root), JSON.stringify({
+      argv: process.argv.slice(2), beforeCli: !existsSync(new URL("report.json", root)),
+    }));
+    process.exitCode = Number(process.env.STUB_GENERATE_EXIT ?? 0);
+  `);
+  return { root, report: join(root, "report.json"), generation: join(root, "generation.json") };
+}
+
+/**
  * A fresh `deployment.jsonc`, comments cut down. Inline rather than read from the repository's: that file is
  * the operator's own once they fill it in, and `pnpm cf-os check` runs these tests against it.
  */
@@ -303,4 +361,288 @@ export function testCatalogWithGoogle(): GatekeeperCatalog {
   const catalog = testCatalog();
   catalog.offered.push(offeredGatekeeper("google", "gatekeeper-google", "@gadgets/google-gatekeeper", false, true));
   return catalog;
+}
+
+/** The release the hosted fixtures run: the one the deploy flow's take-over command names. */
+export const HOSTED_RELEASE = "r004945-6c8d301";
+
+/** The cloudflare-os commit {@link HOSTED_RELEASE} was built from. */
+export const HOSTED_COMMIT = "6c8d301dcfef4e8fdff41a3db5fe3f8bb82f8e2d";
+
+/** The installation fingerprint every version tag of the hosted fixtures ends with. */
+export const HOSTED_FINGERPRINT = "1a2b3c4d";
+
+/**
+ * What one Worker runs, as the account holds it: its deployments, live first, their versions, and
+ * the Durable Object classes it has a namespace for.
+ */
+export interface WorkerLive {
+  deployments: CfWorkerDeployment[];
+  versions: CfWorkerVersion[];
+  durableObjects: string[];
+}
+
+/** How {@link hostedWorkerLive} builds one Worker of a hosted instance. */
+export interface HostedWorkerOptions {
+  /** The release its live version was uploaded from. Default {@link HOSTED_RELEASE}. */
+  release?: string;
+  /** The hosted flow's label for the upload: `core`, or `gk-<slug>` for an optional Gatekeeper. */
+  operation?: string;
+  /** The version's annotations, in place of the hosted flow's tag and message. */
+  annotations?: Record<string, string>;
+  /** Whether it carries the CLOUDFLARE_OS_RELEASE_ID variable. Default true. */
+  releaseVar?: boolean;
+  /** Plain variables beside CLOUDFLARE_OS_RELEASE_ID. One set to `undefined` is left out. */
+  vars?: Record<string, string | undefined>;
+  /** JSON variables. One set to `undefined` is left out. */
+  json?: Record<string, unknown>;
+  /** Service bindings: the Worker each points at, by binding name. One set to `undefined` is left out. */
+  services?: Record<string, string | undefined>;
+  /** Secret bindings, which a version lists by name and type alone. */
+  secrets?: string[];
+  /**
+   * The Durable Object migration tag the API reports with the live version. Unset, it reports none,
+   * as the version endpoint `cf` reads is not documented to: a suite that sets it covers an API
+   * that does.
+   */
+  migrationTag?: string;
+  /**
+   * The Durable Object classes the Worker has a namespace for. Unset, a Worker of the fixture
+   * instance has the ones the pinned upstream's migrations create ({@link pinnedDurableObjects}),
+   * as an instance on the project's own release would, and any other Worker has none.
+   */
+  durableObjects?: string[];
+  /**
+   * Changed by hand: the live version is one the dashboard made over the hosted flow's, keeping its
+   * variables and bindings but none of its annotations.
+   */
+  handEdited?: boolean;
+}
+
+/** A version ID for Worker `name`'s `nth` version: a UUID, the same on every run. */
+export function fixtureVersionId(name: string, nth = 1): string {
+  const hex = createHash("sha256").update(`${name}#${nth}`).digest("hex");
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20, 32)].join("-");
+}
+
+/** The annotations the hosted flow puts on a version it uploads from `release`, for `operation`. */
+export function hostedAnnotations(release: string, operation = "core"): Record<string, string> {
+  const run = /^r0*(\d+)-/.exec(release)?.[1] ?? release;
+  return {
+    "workers/tag": `gd:${run}:${HOSTED_FINGERPRINT}`,
+    "workers/message": `Cloudflare OS ${operation} from release ${release} (upload 5e0b7c12)`,
+    "workers/triggered_by": "upload",
+  };
+}
+
+/** The upstream package each Worker of the fixture instance "acme" that has Durable Objects is built from. */
+const HOSTED_PACKAGES: Record<string, string> = {
+  "acme-backend": "workshop-backend",
+  "acme-gk-context": "gatekeeper-context",
+  "acme-gk-scheduler": "gatekeeper-scheduler",
+  "acme-gk-github": "gatekeeper-github",
+};
+
+/**
+ * The Durable Object classes fixture Worker `name` stores objects of when its instance runs the
+ * release the project is pinned to: the ones the migrations in its upstream package's
+ * `wrangler.jsonc` create. None for a Worker the fixture instance does not have.
+ */
+export function pinnedDurableObjects(name: string): string[] {
+  if (!Object.hasOwn(HOSTED_PACKAGES, name)) return [];
+  const config = upstreamJsonc<ProdWranglerConfig>(`cloudflare-os/packages/${HOSTED_PACKAGES[name]}/wrangler.jsonc`);
+  return [...migrationClasses(config.migrations ?? [])].toSorted();
+}
+
+/**
+ * What Worker `name` of a hosted instance runs: one deployment sending all traffic to one version
+ * the hosted flow uploaded, with the annotations, variables and bindings it sets. `handEdited` puts a
+ * dashboard-made version live over it instead.
+ */
+export function hostedWorkerLive(name: string, options: HostedWorkerOptions = {}): WorkerLive {
+  const release = options.release ?? HOSTED_RELEASE;
+  const bindings: CfWorkerBinding[] = [
+    ...(options.releaseVar === false ? [] : [{ name: "CLOUDFLARE_OS_RELEASE_ID", type: "plain_text", text: release }]),
+    ...Object.entries(options.vars ?? {})
+      .flatMap(([key, text]) => text === undefined ? [] : [{ name: key, type: "plain_text", text }]),
+    ...Object.entries(options.json ?? {})
+      .flatMap(([key, json]) => json === undefined ? [] : [{ name: key, type: "json", json }]),
+    ...Object.entries(options.services ?? {})
+      .flatMap(([key, service]) => service === undefined ? [] : [{ name: key, type: "service", service }]),
+    ...(options.secrets ?? []).map((key) => ({ name: key, type: "secret_text" })),
+  ];
+  const uploaded: CfWorkerVersion = {
+    id: fixtureVersionId(name),
+    number: 1,
+    created_on: "2026-10-01T09:00:00.000Z",
+    source: "api",
+    annotations: options.annotations ?? hostedAnnotations(release, options.operation),
+    bindings,
+    migration_tag: options.migrationTag ?? null,
+  };
+  const edited: CfWorkerVersion = {
+    ...uploaded,
+    id: fixtureVersionId(name, 2),
+    number: 2,
+    created_on: "2026-10-20T14:30:00.000Z",
+    source: "dash",
+    annotations: { "workers/triggered_by": "upload" },
+  };
+  const live = options.handEdited ? edited : uploaded;
+  return {
+    deployments: [{
+      id: fixtureVersionId(`${name} deployment`, live.number),
+      created_on: live.created_on,
+      source: live.source,
+      annotations: { "workers/triggered_by": "deployment" },
+      versions: [{ version_id: live.id, percentage: 100 }],
+    }],
+    versions: options.handEdited ? [edited, uploaded] : [uploaded],
+    durableObjects: options.durableObjects ?? pinnedDurableObjects(name),
+  };
+}
+
+/**
+ * What every Worker of {@link hostedAccount}'s instance "acme" runs, by Worker name: the router,
+ * bound to its backend, the backend with everything the hosted flow sets on it (admins, providers, the public origin, its
+ * Gatekeeper bindings, the push identity and the install description), and its three Gatekeepers.
+ * No version reports a migration tag, and each Worker stores the Durable Object classes the pinned
+ * upstream gives it. `overrides` change one Worker's options; `null` leaves that Worker with nothing
+ * to read.
+ */
+export function hostedInstanceLive(overrides: Record<string, HostedWorkerOptions | null> = {}): Record<string, WorkerLive> {
+  const backendRelease = overrides["acme-backend"]?.release ?? HOSTED_RELEASE;
+  const defaults: Record<string, HostedWorkerOptions> = {
+    acme: { services: { WORKSHOP_BACKEND: "acme-backend" } },
+    "acme-backend": {
+      vars: {
+        PUBLIC_BASE_URL: "https://acme.acme-sub.workers.dev",
+        CF_AI_GATEWAY_PROVIDERS: "cloudflare,anthropic",
+        NOTIFICATION_SERVICE_URL: "https://push.example.com",
+        NOTIFICATION_WEB_PUSH_PUBLIC_KEY: "BFixtureWebPushPublicKey",
+        CFOS_INSTALL_ID: "install-acme",
+        CFOS_INSTALL_KEY_ID: "key-1",
+      },
+      json: {
+        ADMINS: ["admin@example.com"],
+        CLOUDFLARE_OS_DEPLOYMENT: {
+          releaseId: backendRelease,
+          versionTag: hostedAnnotations(backendRelease)["workers/tag"],
+          versionTagSuffix: `:${HOSTED_FINGERPRINT}`,
+          updateUrl: "https://deploy.example.com/update/acme",
+          updateCheckUrl: "https://deploy.example.com/check",
+        },
+      },
+      services: {
+        GATEKEEPER_CONTEXT: "acme-gk-context",
+        GATEKEEPER_SCHEDULER: "acme-gk-scheduler",
+        GATEKEEPER_GITHUB: "acme-gk-github",
+      },
+      secrets: ["CFOS_INSTALL_PRIVATE_KEY"],
+    },
+    "acme-gk-context": {},
+    "acme-gk-scheduler": {},
+    "acme-gk-github": { operation: "gk-github", secrets: ["CLIENT_ID", "CLIENT_SECRET"] },
+  };
+  const live: Record<string, WorkerLive> = {};
+  for (const name of new Set([...Object.keys(defaults), ...Object.keys(overrides)])) {
+    const override = overrides[name];
+    if (override === null) continue;
+    const base = defaults[name] ?? {};
+    live[name] = hostedWorkerLive(name, {
+      ...base,
+      ...override,
+      vars: { ...base.vars, ...override?.vars },
+      json: { ...base.json, ...override?.json },
+      services: { ...base.services, ...override?.services },
+    });
+  }
+  return live;
+}
+
+/** {@link hostedAccount} with what each of its instance's Workers runs ({@link hostedInstanceLive}), as `cf` would print it. */
+export function hostedAccountLive(overrides: Record<string, HostedWorkerOptions | null> = {}): Record<string, FakeReply> {
+  const live = hostedInstanceLive(overrides);
+  return {
+    ...hostedAccount(),
+    ...workerLiveReplies(live),
+    "durable-objects namespaces list": durableObjectNamespacesReply(liveDurableObjects(live)),
+  };
+}
+
+/** The Durable Object classes each Worker of `live` has a namespace for, by Worker name. */
+function liveDurableObjects(live: Record<string, WorkerLive>): Record<string, string[]> {
+  return Object.fromEntries(Object.entries(live).map(([name, { durableObjects }]) => [name, durableObjects]));
+}
+
+/** {@link hostedAccountLive}'s account for the in-memory client. */
+export function hostedMemoryAccount(overrides: Record<string, HostedWorkerOptions | null> = {}): MemoryAccount {
+  const live = hostedInstanceLive(overrides);
+  return {
+    organization: { auth_domain: "acme-team.cloudflareaccess.com" },
+    workers: [
+      { name: "acme", subdomain: { enabled: true, url: "https://acme.acme-sub.workers.dev" } },
+      { name: "acme-backend" },
+      { name: "acme-gk-context" },
+      { name: "acme-gk-scheduler" },
+      { name: "acme-gk-github" },
+      { name: "unrelated" },
+    ],
+    kvNamespaces: [
+      { id: "kv-blueprints", title: "acme-blueprints" },
+      { id: "kv-avatars", title: "acme-avatars" },
+      { id: "kv-context", title: "acme-context-collections" },
+    ],
+    buckets: ["acme-blueprint-content"],
+    gateways: [{ id: "default" }, { id: "acme-ai" }],
+    accessApps: [
+      { name: `Cloudflare OS acme ${HOSTED_FINGERPRINT}`, aud: "aud-acme", domain: "acme.acme-sub.workers.dev" },
+    ],
+    deployments: Object.fromEntries(Object.entries(live).map(([name, { deployments }]) => [name, deployments])),
+    versions: Object.fromEntries(Object.entries(live).map(([name, { versions }]) => [name, versions])),
+    durableObjectNamespaces: Object.entries(liveDurableObjects(live)).flatMap(([script, classes]) =>
+      classes.map((name) => ({ id: `namespace-${script}-${name}`, script, class: name }))),
+  };
+}
+
+/** One call a {@link recordingPinMove} stand-in took. */
+export interface PinMoveCall {
+  /** The commit asked for. */
+  to: string;
+  /** Whether it was a comparison only. */
+  dryRun: boolean;
+  /** The project root it was asked to move the pin of. */
+  root: string;
+  /** Whether it was handed a prompter, and so could ask before moving. */
+  asks: boolean;
+  /** The other commits the pin was to be held against, when any were given. */
+  atLeast?: string[];
+}
+
+/**
+ * A stand-in for `movePin` (commands/update.ts), which a take-over holds the project's pin against
+ * the instance's release with: it records each call, runs `then` (a place to look at the project
+ * as it is when the pin is moved), and answers `outcome`, or by default that the pin is the commit
+ * asked for. Nothing runs git, so nothing reaches a repository or upstream.
+ */
+export function recordingPinMove(
+  outcome?: PinMove | ((call: PinMoveCall) => PinMove),
+  then?: (call: PinMoveCall) => void,
+): {
+  move: (to: string, ctx: Context, options?: { dryRun?: boolean; atLeast?: readonly string[] }) => Promise<PinMove>;
+  calls: PinMoveCall[];
+} {
+  const calls: PinMoveCall[] = [];
+  return {
+    calls,
+    move: async (to, ctx, { dryRun = false, atLeast = [] } = {}) => {
+      const call: PinMoveCall = {
+        to, dryRun, root: ctx.root, asks: ctx.prompter !== null, ...atLeast.length ? { atLeast: [...atLeast] } : {},
+      };
+      calls.push(call);
+      then?.(call);
+      if (typeof outcome === "function") return outcome(call);
+      return outcome ?? { status: "current", path: "cloudflare-os", from: to, to, past: false };
+    },
+  };
 }

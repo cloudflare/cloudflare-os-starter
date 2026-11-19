@@ -12,18 +12,22 @@ import {
   generatedOutputs,
   PACKAGE_DIRS,
   PlaceholderError,
+  pushIdentityVars,
   validateConfig,
   validateGatekeepers,
   workerDir,
   workerName,
   type WorkerId,
 } from "./deployment.ts";
+import { validatePushIdentity } from "./deployment-config.ts";
 import type {
   BaseConfigs,
   DeploymentConfig,
   GeneratedConfigs,
   ProdWranglerConfig,
 } from "./deployment-config.ts";
+import type { GatekeeperCatalog } from "./gatekeepers.ts";
+import { PUSH_IDENTITY_SECRET, PUSH_IDENTITY_VARS } from "./hosted-release.ts";
 import { testCatalog, testCatalogWithGoogle } from "../test-support.ts";
 
 const validConfig: DeploymentConfig = {
@@ -714,12 +718,16 @@ const withOptional = variant((c) => {
   };
 });
 
+/** {@link validConfig} with Google added, whose Gatekeeper binds upstream's PDF renderer. */
+const withGoogle = variant((c) => { c.gatekeepers = { google: { name: "acme-cloudflare-os-google" } }; });
+const googleCatalog = testCatalogWithGoogle();
+
 test("deploys the Gatekeepers together, then the Workshop, then the router", () => {
-  assert.deepEqual(deployWaves(validConfig),
+  assert.deepEqual(deployWaves(validConfig, catalog),
     [["errorReporter", "context", "scheduler", "websearch", "customGatekeeper"], ["workshop"], ["router"]]);
-  assert.deepEqual(deployWaves(variant((config) => { config.errorReporting.enabled = false; })),
+  assert.deepEqual(deployWaves(variant((config) => { config.errorReporting.enabled = false; }), catalog),
     [["context", "scheduler", "websearch", "customGatekeeper"], ["workshop"], ["router"]]);
-  assert.deepEqual(deployWaves(withOptional), [
+  assert.deepEqual(deployWaves(withOptional, catalog), [
     ["errorReporter", "context", "scheduler", "websearch", "gatekeepers.github", "gatekeepers.mcpportal"],
     ["workshop"],
     ["router"],
@@ -729,9 +737,13 @@ test("deploys the Gatekeepers together, then the Workshop, then the router", () 
 test("deploys every Worker after each one it binds", async () => {
   // Derived from the generated service bindings, so a binding added upstream fails here rather than
   // at a deploy the Workers API rejects for naming a script that does not exist yet.
-  for (const config of [validConfig, variant((c) => { c.errorReporting.enabled = false; }), withOptional]) {
+  const cases: [DeploymentConfig, GatekeeperCatalog][] = [
+    [validConfig, catalog], [variant((c) => { c.errorReporting.enabled = false; }), catalog], [withOptional, catalog],
+    [withGoogle, googleCatalog],
+  ];
+  for (const [config, catalog] of cases) {
     const generated = new Map(generatedOutputs(generateConfigs(config, await baseConfigs(), catalog)));
-    const waves = deployWaves(config);
+    const waves = deployWaves(config, catalog);
     // Exactly the generated configs deploy, each from its own package.
     assert.deepEqual(new Set(waves.flat()), new Set(generated.keys()));
     const waveOf = new Map(waves.flatMap((wave, index) => wave.map((id) => [workerName(config, id), index] as const)));
@@ -748,13 +760,69 @@ test("deploys every Worker after each one it binds", async () => {
 });
 
 test("deploys every Worker before the router that binds them", () => {
-  assert.deepEqual(deployOrder(validConfig), deployWaves(validConfig).flat());
-  assert.deepEqual(deployOrder(validConfig),
+  assert.deepEqual(deployOrder(validConfig, catalog), deployWaves(validConfig, catalog).flat());
+  assert.deepEqual(deployOrder(validConfig, catalog),
     ["errorReporter", "context", "scheduler", "websearch", "customGatekeeper", "workshop", "router"]);
-  assert.deepEqual(deployOrder(variant((config) => { config.errorReporting.enabled = false; })),
+  assert.deepEqual(deployOrder(variant((config) => { config.errorReporting.enabled = false; }), catalog),
     ["context", "scheduler", "websearch", "customGatekeeper", "workshop", "router"]);
-  // Every package the deploy reads a base config from is deployed, and nothing else.
-  assert.deepEqual(new Set(deployOrder(validConfig)), new Set(Object.keys(PACKAGE_DIRS)));
+  // Every package the deploy reads a base config from is deployed, the PDF renderer only beside a
+  // Gatekeeper that binds it, and nothing else.
+  assert.deepEqual(new Set(deployOrder(validConfig, catalog)),
+    new Set(Object.keys(PACKAGE_DIRS).filter((key) => key !== "pdfRenderer")));
+  assert.deepEqual(new Set(deployOrder(withGoogle, googleCatalog)),
+    new Set([...Object.keys(PACKAGE_DIRS), "gatekeepers.google"]));
+});
+
+test("deploys upstream's PDF renderer first, and binds Google to it", async () => {
+  const bases = await baseConfigs();
+  const generated = generateConfigs(withGoogle, bases, googleCatalog);
+  const renderer = generated.pdfRenderer!;
+  // Named as the hosted deploy names an instance's, behind the router like every other Worker.
+  assert.equal(renderer.name, "acme-cloudflare-os-pdf-renderer");
+  assert.equal(workerName(withGoogle, "pdfRenderer"), renderer.name);
+  assert.equal(renderer.workers_dev, false);
+  assert.equal(renderer.preview_urls, false);
+  assert.equal(renderer.routes, undefined);
+  // Upstream's CPU limit and its compiled-WebAssembly rule carry over.
+  assert.deepEqual(renderer.limits, { cpu_ms: 300_000 });
+  assert.ok(renderer.rules!.some((rule) => (rule as { type: string }).type === "CompiledWasm"));
+  assert.deepEqual(generated.gatekeepers.google.services,
+    [{ binding: "PDF_RENDERER", service: "acme-cloudflare-os-pdf-renderer", entrypoint: "PdfRenderer" }]);
+  assert.deepEqual(generated.gatekeepers.google.limits, { subrequests: 100_000 });
+  assert.deepEqual(deployWaves(withGoogle, googleCatalog)[0], ["pdfRenderer"]);
+  assert.ok(buildCommands(withGoogle, googleCatalog).flat()
+    .some(({ args }) => args.join(" ") === "--dir cloudflare-os exec vp run -F @gadgets/pdf-renderer --no-cache build"));
+
+  // A name of its own goes to the Worker and to the binding.
+  const named = variant((c) => { Object.assign(c, structuredClone(withGoogle)); c.workers.pdfRenderer = { name: "acme-pdf" }; });
+  const own = generateConfigs(named, bases, googleCatalog);
+  assert.equal(own.pdfRenderer!.name, "acme-pdf");
+  assert.equal(own.gatekeepers.google.services![0].service, "acme-pdf");
+
+  // Without a Gatekeeper that binds it, none: no config, no build, no wave.
+  assert.equal(generateConfigs(withOptional, bases, catalog).pdfRenderer, undefined);
+  assert.ok(!buildCommands(withOptional, catalog).flat().some(({ args }) => args.includes("@gadgets/pdf-renderer")));
+  assert.ok(!deployOrder(withOptional, catalog).includes("pdfRenderer"));
+
+  // Its name is checked only where it is deployed: a 51-character router name makes a 64-character
+  // renderer name, which fails a deployment with Google and nothing else.
+  type Change = Parameters<typeof variant>[0];
+  const longRouter: Change = (c) => { c.workers.router.name = "a".repeat(51); };
+  const withGoogleAnd = (change: Change) =>
+    variant((c) => { Object.assign(c, structuredClone(withGoogle)); change(c); });
+  assert.doesNotThrow(() => generateConfigs(variant(longRouter), bases, catalog));
+  assert.throws(() => generateConfigs(withGoogleAnd(longRouter), bases, googleCatalog),
+    /workers\.pdfRenderer\.name: a{51}-pdf-renderer is not a Worker name[\s\S]*set workers\.pdfRenderer\.name to a shorter one/);
+  assert.equal(generateConfigs(withGoogleAnd((c) => { longRouter(c); c.workers.pdfRenderer = { name: "acme-pdf" }; }),
+    bases, googleCatalog).pdfRenderer!.name, "acme-pdf");
+  // A name another Worker has, likewise.
+  const shared: Change = (c) => { c.workers.pdfRenderer = { name: c.workers.context.name }; };
+  assert.doesNotThrow(() => generateConfigs(variant(shared), bases, catalog));
+  assert.throws(() => generateConfigs(withGoogleAnd(shared), bases, googleCatalog),
+    /names must be unique: acme-cloudflare-os-context is used twice/);
+  // A block that is not a name is refused either way.
+  assert.throws(() => validateConfig(variant((c) => { c.workers.pdfRenderer = {} as { name: string }; })),
+    /workers.pdfRenderer must be an object with a name/);
 });
 
 test("locates and names every Worker by its id", () => {
@@ -781,7 +849,7 @@ test("with the custom Gatekeeper off, deploys nothing of it", async () => {
   assert.equal(generated.router.services!.some((service) => service.binding === "GATEKEEPER_CUSTOM"), false);
   assert.equal(generated.workshop.services!.some((service) => service.binding === "GATEKEEPER_CUSTOM"), false);
   assert.equal(buildCommands(off, catalog).flat().some(({ args }) => args.includes("custom-gatekeeper")), false);
-  assert.equal(deployOrder(off).includes("customGatekeeper"), false);
+  assert.equal(deployOrder(off, catalog).includes("customGatekeeper"), false);
 
   // Nor does it need a Worker name at all, or display text.
   const bare = variant((c) => {
@@ -804,7 +872,7 @@ test("with customGatekeeper.enabled absent, deploys the custom Gatekeeper as whe
   const bases = await baseConfigs();
   assert.deepEqual(generateConfigs(absent, bases, catalog), generateConfigs(enabled, bases, catalog));
   assert.deepEqual(buildCommands(absent, catalog), buildCommands(enabled, catalog));
-  assert.deepEqual(deployWaves(absent), deployWaves(enabled));
+  assert.deepEqual(deployWaves(absent, catalog), deployWaves(enabled, catalog));
   assert.equal(generateConfigs(absent, bases, catalog).customGatekeeper!.name, "acme-cloudflare-os-custom");
   // And still requires everything it did.
   assert.throws(() => validateConfig(variant((c) => { delete c.customGatekeeper.message; })),
@@ -968,4 +1036,150 @@ test("needs no catalog when no optional Gatekeeper is selected", () => {
   const unavailable = { offered: [], excluded: [], unavailable: "no submodule" };
   assert.doesNotThrow(() => validateGatekeepers(validConfig, unavailable));
   assert.doesNotThrow(() => validateGatekeepers(variant((c) => { c.gatekeepers = {}; }), unavailable));
+});
+
+/** A push identity as a take-over writes one into the file. */
+const pushIdentity = {
+  serviceUrl: "https://push.example.com",
+  installId: "install-acme",
+  keyId: "key-1",
+  webPushPublicKey: "BFixtureWebPushPublicKey",
+};
+
+/** {@link validConfig} with `pushIdentity` set to `block`, whatever it is. */
+function withPush(block: unknown): DeploymentConfig {
+  return variant((c) => { c.pushIdentity = block; });
+}
+
+test("sends the push identity on the Workshop, under the names the pinned backend reads", async () => {
+  const bases = await baseConfigs();
+  const generated = generateConfigs(withPush(pushIdentity), bases, catalog);
+  const sent = {
+    NOTIFICATION_SERVICE_URL: "https://push.example.com",
+    CFOS_INSTALL_ID: "install-acme",
+    CFOS_INSTALL_KEY_ID: "key-1",
+    NOTIFICATION_WEB_PUSH_PUBLIC_KEY: "BFixtureWebPushPublicKey",
+  };
+  assert.deepEqual(pushIdentityVars(pushIdentity), sent);
+  for (const [name, value] of Object.entries(sent)) assert.equal(generated.workshop.vars?.[name], value, name);
+  // The variables and nothing else: every other key of every config is what it is without the block.
+  const without = generateConfigs(validConfig, bases, catalog);
+  const vars = { ...generated.workshop.vars };
+  for (const name of Object.keys(sent)) delete vars[name];
+  assert.deepEqual({ ...generated, workshop: { ...generated.workshop, vars } }, without);
+  // On the Workshop alone: no other Worker reads them.
+  for (const [id, config] of generatedOutputs(generated)) {
+    if (id === "workshop") continue;
+    assert.doesNotMatch(JSON.stringify(config), /NOTIFICATION_|CFOS_INSTALL/, id);
+  }
+  // The names are the ones the pinned backend declares, and the notification client reads.
+  const declared = await readFile(join(PACKAGE_DIRS.workshop, "src", "env.d.ts"), "utf8");
+  for (const name of [...Object.values(PUSH_IDENTITY_VARS), PUSH_IDENTITY_SECRET]) {
+    assert.match(declared, new RegExp(`^\\s*${name}\\?: string;`, "m"), `${name} is not in the pinned backend's env.d.ts`);
+  }
+  assert.deepEqual(Object.values(PUSH_IDENTITY_VARS).toSorted(), Object.keys(sent).toSorted());
+});
+
+test("sends no browser-push key when the identity has none", async () => {
+  for (const webPushPublicKey of [null, undefined]) {
+    const generated = generateConfigs(withPush({ ...pushIdentity, webPushPublicKey }), await baseConfigs(), catalog);
+    const vars = generated.workshop.vars ?? {};
+    assert.equal(vars.NOTIFICATION_SERVICE_URL, "https://push.example.com");
+    assert.equal(vars.CFOS_INSTALL_ID, "install-acme");
+    assert.equal(vars.CFOS_INSTALL_KEY_ID, "key-1");
+    assert.equal(Object.hasOwn(vars, "NOTIFICATION_WEB_PUSH_PUBLIC_KEY"), false);
+  }
+});
+
+test("never names the push identity's signing key in a generated config, with the identity or without", async () => {
+  const bases = await baseConfigs();
+  const optional = variant((c) => {
+    c.pushIdentity = pushIdentity;
+    c.gatekeepers = { github: { name: "acme-cloudflare-os-github" } };
+    // The one configuration that declares a secret at all, so the declaration is seen not to grow.
+    c.aiGateway.providers = ["google"];
+  });
+  for (const config of [validConfig, withPush(null), withPush(pushIdentity), optional]) {
+    const generated = generateConfigs(config, bases, catalog);
+    // Not a variable, not a declared secret, not any other binding: a deploy that does not name a
+    // secret leaves it bound, and one that named it as a variable would put the variable in its place.
+    assert.doesNotMatch(JSON.stringify(generatedOutputs(generated)), /CFOS_INSTALL_PRIVATE_KEY|PRIVATE_KEY/i);
+  }
+  assert.deepEqual(generateConfigs(optional, bases, catalog).workshop.secrets, { required: ["CF_AI_GATEWAY_API_TOKEN"] });
+  assert.equal(PUSH_IDENTITY_SECRET, "CFOS_INSTALL_PRIVATE_KEY");
+});
+
+test("without a push identity, generates what it generates for a file that never had the key", async () => {
+  const bases = await baseConfigs();
+  const never = generateConfigs(validConfig, bases, catalog);
+  assert.equal(Object.hasOwn(validConfig, "pushIdentity"), false);
+  assert.deepEqual(generateConfigs(withPush(null), bases, catalog), never);
+  assert.deepEqual(Object.keys(never.workshop.vars ?? {}).toSorted(), [
+    "ADMINS",
+    "CF_ACCESS_AUD",
+    "CF_ACCESS_ISS",
+    "CF_AI_GATEWAY",
+    "CF_AI_GATEWAY_ACCOUNT_ID",
+    "CF_AI_GATEWAY_PROVIDERS",
+    "PUBLIC_BASE_URL",
+  ]);
+  assert.doesNotMatch(JSON.stringify(generatedOutputs(never)), /NOTIFICATION_|CFOS_INSTALL/);
+});
+
+test("accepts a push identity as a take-over writes it, and none at all", () => {
+  for (const block of [
+    undefined,
+    null,
+    pushIdentity,
+    { ...pushIdentity, webPushPublicKey: null },
+    { serviceUrl: pushIdentity.serviceUrl, installId: pushIdentity.installId, keyId: pushIdentity.keyId },
+    // Taken as the hosted flow set it: the backend reads the scheme and host, and ignores the rest.
+    { ...pushIdentity, serviceUrl: "https://push.example.com/" },
+  ]) {
+    assert.doesNotThrow(() => validatePushIdentity(block), JSON.stringify(block));
+    assert.doesNotThrow(() => validateConfig(withPush(block)), JSON.stringify(block));
+  }
+});
+
+/** Asserts `validateConfig` refuses `pushIdentity` block `block` with `message`. */
+function rejectsPush(block: unknown, message: RegExp): void {
+  assert.throws(() => validateConfig(withPush(block)), message, JSON.stringify(block));
+}
+
+test("rejects a malformed push identity, naming the path", () => {
+  for (const block of ["install-acme", 1, true, [pushIdentity], []]) {
+    rejectsPush(block, /^Error: pushIdentity must be null or an object with serviceUrl, installId, keyId and webPushPublicKey\.$/);
+  }
+  // A service address the backend would refuse to send to, or cannot read.
+  for (const serviceUrl of ["http://push.example.com", "push.example.com", "", " https://push.example.com", undefined, null, 7]) {
+    rejectsPush({ ...pushIdentity, serviceUrl }, /^Error: pushIdentity\.serviceUrl must be the notification service's address, an https: URL .* It becomes NOTIFICATION_SERVICE_URL/);
+  }
+  // Whitespace anywhere in it, which the block's other values may not have either: the variable is sent as written.
+  for (const serviceUrl of ["https://push.example.com/a b", "https://push.example.com/\nX", "https://push.example.com\t", "https://push.example.com "]) {
+    rejectsPush({ ...pushIdentity, serviceUrl }, /^Error: pushIdentity\.serviceUrl must be the notification service's address, an https: URL without whitespace such as https:\/\/push\.example\.com\. It becomes NOTIFICATION_SERVICE_URL/);
+  }
+  // All or nothing: the backend sends no push without every one of the three.
+  for (const value of [undefined, null, "", "key 1", "key-1\n", 7]) {
+    rejectsPush({ ...pushIdentity, installId: value }, /^Error: pushIdentity\.installId must be a non-empty string without whitespace\. It becomes CFOS_INSTALL_ID; .* set pushIdentity to null/);
+    rejectsPush({ ...pushIdentity, keyId: value }, /^Error: pushIdentity\.keyId must be a non-empty string without whitespace\. It becomes CFOS_INSTALL_KEY_ID; /);
+  }
+  for (const webPushPublicKey of ["", "B Fixture", 7, false, {}]) {
+    rejectsPush({ ...pushIdentity, webPushPublicKey }, /^Error: pushIdentity\.webPushPublicKey must be null or a non-empty string without whitespace\. .* becomes NOTIFICATION_WEB_PUSH_PUBLIC_KEY\.$/);
+  }
+  // Still the template's: an unconfigured file, not a wrong one.
+  assert.throws(() => validateConfig(withPush({ ...pushIdentity, installId: "<INSTALL_ID>" })), PlaceholderError);
+});
+
+test("refuses the signing key in the file, without repeating it", () => {
+  const key = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg-not-a-real-key";
+  for (const name of ["privateKey", "CFOS_INSTALL_PRIVATE_KEY", "secret", "extra"]) {
+    assert.throws(() => validateConfig(withPush({ ...pushIdentity, [name]: key })), (error: Error) => {
+      assert.equal(error.message,
+        `pushIdentity: only serviceUrl, installId, keyId and webPushPublicKey are allowed, not ${name}. The key that ` +
+        "signs with the identity is never in this file: it stays the secret CFOS_INSTALL_PRIVATE_KEY on the Workshop " +
+        "Worker, where a deploy leaves it.");
+      assert.ok(!error.message.includes(key));
+      return true;
+    });
+  }
 });

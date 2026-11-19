@@ -37,12 +37,13 @@ The custom logo appears in the app chrome, sign-in screens, and browser tab on e
 | `errorReporting` | Private explicit-issue destination | Console Reporter enabled state, environment, and release metadata |
 | `resources` | Blueprint/avatar KV and blueprint-content R2 | `null` to provision or explicit IDs/names to reuse |
 | `observability` | Worker telemetry | Structured logs, invocation logs, traces, and sampling; see the [observability guide](observability.md) |
+| `pushIdentity` | The push-notification identity of an instance taken over from the hosted deploy | `null` for none. Otherwise the block `pnpm cf-os import` copies from the instance's backend, which every deploy sends again; its signing key is never in the file. See [Migrating from the hosted deploy](migrate-from-hosted.md#8-what-changes-and-what-you-lose) |
 
 Secrets are never valid values in this file. Install them interactively with Wrangler against the Worker that consumes them.
 
 ### Workers and routing
 
-The deployment is up to seven Workers of its own, plus one per [optional Gatekeeper](#optional-gatekeepers). Keep their names unique: service bindings use these names, so update and deploy them together.
+The deployment is up to seven Workers of its own, plus one per [optional Gatekeeper](#optional-gatekeepers) and, for one that needs it, upstream's PDF renderer. Keep their names unique: service bindings use these names, so update and deploy them together.
 
 | Worker | Role |
 | --- | --- |
@@ -53,6 +54,7 @@ The deployment is up to seven Workers of its own, plus one per [optional Gatekee
 | `websearch` | The Web Search Gatekeeper, which lets agents search the public web. |
 | `customGatekeeper` | This repository's example integration. Not deployed when `customGatekeeper.enabled` is `false`. |
 | `errorReporter` | The private explicit-issue destination. |
+| `pdfRenderer` | Upstream's PDF renderer, which draws a scanned PDF's pages for Google's Gatekeeper to transcribe. Deployed only while a selected optional Gatekeeper binds it, before that Gatekeeper, and only then held to the rules for a name. `init` names it `<router name>-pdf-renderer`, as the hosted deploy names an instance's, which is also its name when the entry is absent. It holds no data, so renaming it only replaces it. |
 
 Context, Scheduler and Web Search are *ambient*: upstream's release marks all three `PREINSTALL`, so the hosted flow installs them on every instance and this starter deploys them for the same reason. None takes configuration beyond its name. Web Search runs on its own Workers AI binding and searches through the Workshop's gateway, `aiGateway.name`, so its searches share that gateway's provider keys, limits and logs: the deploy sets it as the Worker's `CF_AI_GATEWAY`, as upstream's deploy service does. With `aiGateway.enabled: false`, or a gateway in another account, which the binding cannot reach, it searches through the account's `default` gateway instead, which Cloudflare creates on first use.
 
@@ -79,7 +81,7 @@ On a custom domain the hostname is yours and has nothing to do with any Worker n
 
 ### Optional Gatekeepers
 
-Upstream ships more Gatekeepers than the ones this starter always deploys: GitHub, Google, Slack and others. `pnpm cf-os init` offers the ones the hosted deploy offers, each package once, from a catalog built from the pinned submodule; one the starter cannot deploy from a name alone (Email, or any with KV, R2, service or Artifacts bindings) is never offered, and selecting it fails `pnpm cf-os check` with the reason.
+Upstream ships more Gatekeepers than the ones this starter always deploys: GitHub, Google, Slack and others. `pnpm cf-os init` offers the ones the hosted deploy offers, each package once, from a catalog built from the pinned submodule; one the starter cannot deploy from a name alone (Email, or any with KV, R2, service or Artifacts bindings) is never offered, and selecting it fails `pnpm cf-os check` with the reason. The one service binding allowed is to upstream's PDF renderer, which Google's binds: selecting Google deploys the renderer as well (`workers.pdfRenderer`, under [Workers and routing](#workers-and-routing)).
 
 Each one is an entry under `gatekeepers`, keyed by its slug:
 
@@ -195,6 +197,7 @@ The binding stays bound whatever you configure here: as well as carrying gateway
 | --- | --- |
 | `enabled: true`, `providers: ["cloudflare"]` | Workers AI models over the binding. No token, no keys of your own. The default. |
 | Add `anthropic` or `openai` | Their models appear too. Keys live on the gateway ([Unified Billing or BYOK](https://developers.cloudflare.com/ai-gateway/get-started/#provider-authentication)), not in this repository. Still no token. |
+| Turn on **AI Gateway Auto Router** under Providers in `/admin` | One more model, **Auto**, which lets the Gateway's [Auto Router](https://developers.cloudflare.com/ai-gateway/features/auto-router/) choose among the other providers that are on. It is not one of `providers`. |
 | Add `google` | Needs `CF_AI_GATEWAY_API_TOKEN`. pi's Google adapter refuses a custom fetch, so Google inference cannot ride the binding. |
 | `accountId` set to another account | Needs `CF_AI_GATEWAY_API_TOKEN`. The binding only reaches gateways in the Worker's own account, so the generated config sets `CF_AI_GATEWAY_USE_BINDING: "false"` and the HTTPS transport takes over. |
 | `enabled: false` | No deployment-managed catalog. Each user supplies their own model API keys — and a Workshop [migrated from the hosted deploy](migrate-from-hosted.md) will show an empty model picker. |
@@ -246,8 +249,8 @@ Moving the submodule past the starter's pin is a review of its own. `npx cf-os@l
 2. Update the submodule to the intended upstream commit.
 3. Review the Wrangler base-config changes for the Workshop, router and the three ambient Gatekeepers (Context, Scheduler, Web Search), along with the Gatekeeper contracts. `pnpm lint` catches one class of drift for you: `packages/cf-os/src/core/deployment-config.ts` reuses upstream's `WranglerConfig`, so a changed key there is a type error, not a silently dropped one. A new upstream Gatekeeper arrives as [optional](#optional-gatekeepers); to deploy it everywhere, as the hosted topology does, it needs a Worker and bindings in `packages/cf-os/src/core/deployment.ts` and a row in the naming table in `core/naming.ts`.
 4. Compare three entries of `cloudflare-os/pnpm-workspace.yaml`'s `catalog:` with this repository's: `capnweb`, `typescript` and `@cloudflare/workers-types`. Only those three have to match. The packages here `link:` to the submodule's rather than sharing a workspace with them. So the submodule's dependencies come from its own lockfile, and this catalog does not govern them. Types still cross the link, though. Each install has its own `capnweb` copy whatever the version, and today only its types cross. Keeping the ranges in step keeps those types compatible, and keeps the two copies from diverging if runtime code ever crosses too.
-5. Run `pnpm install`, then `pnpm lint` and `pnpm cf-os check`. The root `postinstall` (`cf-os install`) reinstalls the submodule's workspace from its lockfile. `optimisticRepeatInstall: false` makes it run even when this repository's own lockfile has not changed, which is what a gitlink bump looks like from here. If the hook was skipped (`--ignore-scripts`), `pnpm cf-os install --check` and every build, test and deploy entry point stop and tell you to run `pnpm cf-os install`.
-6. Deploy and verify Access, administrator access, storage, configured AI, Context, Scheduler, Web Search, custom observations, a connection through each optional Gatekeeper, and the Error Reporter query surface.
-7. If needed, restore the previous gitlink and redeploy, or use [Workers rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/) when bindings remain compatible. Neither works across a Durable Object migration: once a pin that adds a `migrations` tag to a Worker's `wrangler.jsonc` has deployed, that Worker can only be repaired forward. Check for new tags in step 3, the Workshop's especially, before deploying.
+5. Run `pnpm install`, then `pnpm lint` and `pnpm cf-os check`. [`cf-os api`](../packages/cf-os/README.md#driving-an-instance-cf-os-api) runs the pin's own CLI, so its commands move with the gitlink and nothing here is regenerated: the pin generates them the first time `cf-os api` runs after the move. A method removed or renamed upstream (`git -C cloudflare-os diff --stat <old> <new> -- packages/workshop-shared/src/api.ts`) breaks whatever calls its command. The root `postinstall` (`cf-os install`) reinstalls the submodule's workspace from its lockfile. `optimisticRepeatInstall: false` makes it run even when this repository's own lockfile has not changed, which is what a gitlink bump looks like from here. If the hook was skipped (`--ignore-scripts`), `pnpm cf-os install --check` and every build, test and deploy entry point stop and tell you to run `pnpm cf-os install`.
+6. Deploy and verify Access, administrator access, storage, configured AI, Context, Scheduler, Web Search, custom observations, a connection through each optional Gatekeeper, and the Error Reporter query surface. `pnpm cf-os api whoami` and `pnpm cf-os api list-workspaces` check the live API from the terminal, signed in through Access as an administrator (on a deployment the CLI is for administrators only).
+7. If needed, restore the previous gitlink and redeploy, or use [Workers rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/) when bindings remain compatible. Neither works across a Durable Object migration: once a pin that adds a `migrations` tag to a Worker's `wrangler.jsonc` has deployed, that Worker can only be repaired forward. The same goes for the Workshop's own storage schema, which no tag reveals: its Overseer migrates each workspace on first open, and the previous code misreads the new shape. Each step is a `version.put(` in `cloudflare-os/packages/workshop-backend/src/storage-schema/overseer-migrations.ts`. Check for new tags and schema versions in step 3, the Workshop's especially, before deploying.
 
 Do not update the submodule blindly. The deploy derives from upstream configs so incompatible base changes remain visible during review and checks.
