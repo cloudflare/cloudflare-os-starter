@@ -58,7 +58,7 @@ import { fetchInventory, type FoundGatekeeper } from "../core/discovery.ts";
 import { isPlaceholder, placeholderPaths, valueAtPath, type DeploymentEdit } from "../core/edits.ts";
 import { publicOrigin } from "../core/deployment.ts";
 import type { AiGatewayProvider, DeploymentConfig } from "../core/deployment-config.ts";
-import { secretSetup, UNDECLARED_VARS, type GatekeeperCatalog } from "../core/gatekeepers.ts";
+import { bindsPdfRenderer, secretSetup, UNDECLARED_VARS, type GatekeeperCatalog } from "../core/gatekeepers.ts";
 import { decideCommit } from "../core/hosted-release.ts";
 import {
   baseNameProblem,
@@ -618,10 +618,11 @@ async function newDeployment(session: Session, file: Record<string, unknown>): P
   ]);
   const customGatekeeper = choice.custom ? await askDisplay(session, file) : null;
   const gatekeepers = await nameGatekeepers(session, workers, name, choice.slugs);
+  const pdfRenderer = await nameRenderer(session, workers, name, choice.slugs, catalog);
 
   const answers = {
     accountId: account.id, name, route, admins, aiGateway: { name: gateway, providers }, customGatekeeper,
-    gatekeepers, removedGatekeepers: deselected(listed, choice, catalog),
+    gatekeepers, removedGatekeepers: deselected(listed, choice, catalog), ...pdfRenderer && { pdfRenderer },
   };
   // Another deployment's push identity, left in the file by a takeover, is not this one's to send.
   // The name was accepted against `workers`, so where they were listed its Workshop Worker is not there.
@@ -781,6 +782,29 @@ async function nameGatekeepers(
       : name;
   }
   return names;
+}
+
+/**
+ * The PDF renderer's Worker name for a new deployment `n`, asked for only when one of the Gatekeepers
+ * `slugs` binds the renderer and the account already has a Worker named `<n>-pdf-renderer`, which
+ * the deploy would overwrite. Undefined means the derived name.
+ */
+async function nameRenderer(
+  session: Session,
+  workers: CfWorker[] | null | undefined,
+  n: string,
+  slugs: string[],
+  catalog: GatekeeperCatalog,
+): Promise<string | undefined> {
+  const binds = slugs.some((slug) => {
+    const entry = catalog.offered.find((candidate) => candidate.slug === slug);
+    return entry !== undefined && bindsPdfRenderer(entry);
+  });
+  const derived = workerNames(n).pdfRenderer;
+  if (!binds || !workers?.some((worker) => worker.name === derived)) return undefined;
+  session.ctx.out.log(`A Gatekeeper chosen binds the PDF renderer, which would be deployed as ${derived}, a Worker ` +
+    "the account already has.");
+  return askNewWorker(session, workers, "PDF renderer Worker name", derived);
 }
 
 /**

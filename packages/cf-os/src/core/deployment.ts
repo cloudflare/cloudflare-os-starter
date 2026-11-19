@@ -13,7 +13,7 @@ import type {
   ProdWranglerConfig,
   RouterRoute,
 } from "./deployment-config.ts";
-import { PDF_RENDERER_SERVICE, type CatalogGatekeeper, type GatekeeperCatalog } from "./gatekeepers.ts";
+import { bindsPdfRenderer, PDF_RENDERER_SERVICE, type CatalogGatekeeper, type GatekeeperCatalog } from "./gatekeepers.ts";
 import { PUSH_IDENTITY_VARS, type PushIdentity } from "./hosted-release.ts";
 import { BUILT_IN_GATEKEEPER_SLUGS, WORKER_NAME } from "./naming.ts";
 
@@ -86,8 +86,7 @@ export function pdfRendererName(config: DeploymentConfig): string {
  * Gatekeeper that uses it, so a deployment without one has no Worker nothing calls.
  */
 export function deploysPdfRenderer(config: DeploymentConfig, catalog: GatekeeperCatalog): boolean {
-  return gatekeeperSlugs(config).some((slug) => offeredGatekeeper(catalog, slug).config.services
-    ?.some((service) => service.service === PDF_RENDERER_SERVICE));
+  return gatekeeperSlugs(config).some((slug) => bindsPdfRenderer(offeredGatekeeper(catalog, slug)));
 }
 
 /**

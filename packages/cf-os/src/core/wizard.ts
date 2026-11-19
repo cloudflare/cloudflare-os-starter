@@ -12,11 +12,14 @@ import { gatekeeperWorkerName, WORKER_NAME, workerNames, type WorkerKey } from "
 
 /**
  * The derived names of `n` that already belong to a Worker in the account: the starter's own, and
- * `<n>-gk-<slug>` for each of the optional Gatekeepers `slugs`.
+ * `<n>-gk-<slug>` for each of the optional Gatekeepers `slugs`. Not the PDF renderer's, which is
+ * deployed only beside a Gatekeeper that binds it: a Worker by that name is no reason to rename a
+ * deployment without one, and init asks about it once one is chosen.
  */
 export function nameCollisions(n: string, workers: CfWorker[], slugs: readonly string[] = []): string[] {
   const existing = new Set(workers.map((worker) => worker.name));
-  return [...Object.values(workerNames(n)), ...slugs.map((slug) => gatekeeperWorkerName(n, slug))]
+  const { pdfRenderer: _renderer, ...always } = workerNames(n);
+  return [...Object.values(always), ...slugs.map((slug) => gatekeeperWorkerName(n, slug))]
     .filter((name) => existing.has(name));
 }
 
@@ -136,6 +139,11 @@ export interface NewDeploymentAnswers extends GatekeeperAnswers {
   aiGateway: { name: string; providers: AiGatewayProvider[] };
   /** The example custom Gatekeeper's display text, or null when it is not deployed. */
   customGatekeeper: { name: string; message: string } | null;
+  /**
+   * The PDF renderer's Worker name, where it is not `<name>-pdf-renderer`: asked for when a chosen
+   * Gatekeeper binds the renderer and the account already has a Worker by the derived name.
+   */
+  pdfRenderer?: string;
 }
 
 /**
@@ -192,7 +200,7 @@ export function newDeploymentEdits(answers: NewDeploymentAnswers): DeploymentEdi
       path: ["publicBaseUrl"],
       value: "customDomain" in route ? null : `https://${routerHost(answers.name, route)}`,
     },
-    ...(Object.entries(names) as [WorkerKey, string][])
+    ...(Object.entries({ ...names, pdfRenderer: answers.pdfRenderer ?? names.pdfRenderer }) as [WorkerKey, string][])
       // The PDF renderer's too, deployed or not: left out, a name a take-over wrote would stay, and
       // the new deployment would deploy over that deployment's renderer and bind Google to it.
       .filter(([key]) => key !== "customGatekeeper" || custom)

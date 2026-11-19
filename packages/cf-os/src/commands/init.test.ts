@@ -29,6 +29,7 @@ import {
   scriptedPrompter,
   TEMPLATE,
   testCatalog,
+  testCatalogWithGoogle,
   testContext,
   type PinMoveCall,
   type Step,
@@ -270,6 +271,34 @@ test("configures a new deployment on a custom domain, steering around a taken ho
   assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE, "--out wrote in place");
   const create = calls.find((call) => call.args.includes("create"))!;
   assert.equal(JSON.parse(flag(create.args, "--body")!).domain, "cf-os.example.com");
+});
+
+test("a new deployment asks about a taken PDF renderer name only once a chosen Gatekeeper binds the renderer", async (t) => {
+  const replies = account({ "workers list": [{ name: "ops-pdf-renderer" }] });
+  const start: Step[] = [
+    ["What are you setting up?", "new"],
+    ["Base name", "ops"],
+    ["Where will people reach it?", "custom"],
+    ["Which zone?", "zone-1"],
+    ["Hostname", "ops.example.com"],
+  ];
+  const end: Step[] = [["No Access application covers ops.example.com", "create"], ["Deploy now?", false]];
+  // Without Google the renderer is never deployed, so the name is no reason to rename: ops is taken as typed.
+  const without = await init(t, [...start, ...REST, ...end], replies, { catalog: testCatalogWithGoogle() });
+  assert.equal(without.code, 0);
+  assert.equal(valueAtPath(without.written(), ["workers", "router", "name"]), "ops");
+  assert.doesNotMatch(without.stderr(), /Already in the account/);
+  assert.ok(!without.prompter.asked.some(({ message }) => message === "PDF renderer Worker name"));
+
+  // With Google, the renderer would go over the account's Worker of that name: asked, and the answer written.
+  const rest = REST.map((step): Step => step[0] === "Which Gatekeepers?" ? ["Which Gatekeepers?", ["custom", "google"]] : step);
+  const withGoogle = await init(t, [...start, ...rest, ["PDF renderer Worker name", "ops-pdf"], ...end], replies,
+    { catalog: testCatalogWithGoogle() });
+  assert.equal(withGoogle.code, 0);
+  assert.equal(withGoogle.prompter.asked.find(({ message }) => message === "PDF renderer Worker name")!.initial, "ops-pdf-renderer");
+  assert.match(withGoogle.stderr(), /binds the PDF renderer, which would be deployed as ops-pdf-renderer, a Worker the account already has/);
+  assert.equal(valueAtPath(withGoogle.written(), ["workers", "pdfRenderer", "name"]), "ops-pdf");
+  assert.deepEqual(valueAtPath(withGoogle.written(), ["gatekeepers"]), { google: { name: "ops-gk-google" } });
 });
 
 test("a new deployment does not send the push identity a takeover left in the file", async (t) => {
