@@ -1802,6 +1802,19 @@ test("--take-over is the takeover of that instance, without asking what is being
   assert.match(log, /\nWrote 26 values to init\.jsonc, comments intact\./);
 });
 
+test("--take-over names the instance's PDF renderer, not the one another deployment's file names", async (t) => {
+  // beta's file names beta's renderer, and acme has none: `import --out` resets it the same way.
+  const template = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"beta"').replace('"<CLOUDFLARE_ACCOUNT_ID>"', `"${FAKE_ACCOUNT}"`)
+    .replace('"workers": {', '"workers": { "pdfRenderer": { "name": "beta-pdf-renderer" },');
+  assert.ok(template.includes("beta-pdf-renderer"));
+  const { code, written, stderr } = await init(t, TAKEOVER, liveAccount(), { ...takingOver(), template });
+  assert.equal(code, 0);
+  assert.equal(valueAtPath(written(), ["workers", "pdfRenderer", "name"]), "acme-pdf-renderer");
+  assert.match(stderr(), new RegExp(`The file is beta's, not acme's in account ${FAKE_ACCOUNT}, so the PDF renderer name it ` +
+    "gives, workers\\.pdfRenderer\\.name \\(beta-pdf-renderer\\), may be that deployment's\\. workers\\.pdfRenderer\\.name " +
+    "goes to acme-pdf-renderer instead"));
+});
+
 test("--take-over confirms the pin move, saying from which commit to which and why, before anything is read from the submodule or written", async (t) => {
   const seen: { config: string; out: boolean }[] = [];
   const { code, root, prompter, written, stderr, moves, events } = await init(t, [[MOVE_QUESTION, true], ...TAKEOVER], liveAccount(), {

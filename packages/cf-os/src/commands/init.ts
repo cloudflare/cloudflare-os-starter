@@ -104,6 +104,7 @@ import {
   discoverInstance,
   fileIsInstance,
   foreignPushIdentity,
+  foreignRenderer,
   formatInstance,
   formatReport,
   inspectInstance,
@@ -888,6 +889,9 @@ async function takeover(
   const discovery = discoverInstance(instance, inventory, catalog, { names: core, instance: hosted });
   const { removals: pushRemovals, note: pushNote } = foreignPushIdentity(file, account.id, instance, discovery, core.router);
   if (pushNote) discovery.notes.push(pushNote);
+  // Another deployment's renderer name, which a deploy with Google would deploy over, as `--out` resets it.
+  const { reset: rendererReset, note: rendererNote } = foreignRenderer(file, account.id, instance, core.router, discovery);
+  if (rendererNote) discovery.notes.push(rendererNote);
   ctx.out.log(`\n${formatReport(instance, discovery)}\n`);
   // What the gate let through has both, so this holds only where discovery disagrees with it.
   if (!discovery.matched) {
@@ -940,6 +944,8 @@ async function takeover(
   const edits = [
     ...discovery.edits.filter((edit) => edit.path[0] !== "gatekeepers" && !answered.has(edit.path.join("."))),
     ...pushRemovals,
+    // Before the answers, which win over it.
+    ...rendererReset ? [rendererReset] : [],
     ...asked,
   ];
   if (!discovery.edits.some((edit) => edit.path.join(".") === "access.audience")) {

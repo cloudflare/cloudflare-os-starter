@@ -149,14 +149,62 @@ const UNDISCOVERED_WORKERS = [
 /** Where the PDF renderer's name goes: optional, so `--out` sets another deployment's to the instance's, not to a placeholder. */
 const RENDERER_PATH = ["workers", "pdfRenderer", "name"];
 
+/** Whose the file is, for a note on names it gives that may be another deployment's. */
+function foreignFile(router: string, accountId: string, n: string, instanceRouter: string): string {
+  // An instance under a router name of its own can share its name with another deployment's router.
+  return router === n && instanceRouter !== n
+    ? `The file is the deployment's whose router is ${router}, not ${n}'s in account ${accountId}, whose router is ${instanceRouter}`
+    : `The file is ${router}'s, not ${n}'s in account ${accountId}`;
+}
+
+/** The router name the file gives, when it is not the instance's ({@link fileIsInstance}). */
+function foreignRouter(file: Record<string, unknown>, accountId: string, n: string, instanceRouter: string): string | undefined {
+  const router = valueAtPath(file, ["workers", "router", "name"]);
+  return typeof router !== "string" || isPlaceholder(router) || fileIsInstance(file, accountId, n, instanceRouter)
+    ? undefined : router;
+}
+
+/**
+ * The edit setting the PDF renderer's name to the one the hosted deploy gives instance `n`'s, with a
+ * note, when the file names a router but is not the instance's ({@link fileIsInstance}), names
+ * another renderer, and `discovery` found the instance none: the name is then another deployment's,
+ * which a deploy with Google would deploy over. Not a placeholder, which would stop a deployment
+ * that never deploys one.
+ */
+export function foreignRenderer(
+  file: Record<string, unknown>,
+  accountId: string,
+  n: string,
+  instanceRouter = n,
+  discovery?: Discovery,
+): { reset?: DeploymentEdit; note?: string } {
+  const router = foreignRouter(file, accountId, n, instanceRouter);
+  const renderer = valueAtPath(file, RENDERER_PATH);
+  const instanceRenderer = workerNames(n).pdfRenderer;
+  if (router === undefined || typeof renderer !== "string" || renderer === instanceRenderer || discovery === undefined ||
+      discovered(discovery, RENDERER_PATH.join("."))) {
+    return {};
+  }
+  return {
+    reset: { path: RENDERER_PATH, value: instanceRenderer },
+    note: `${foreignFile(router, accountId, n, instanceRouter)}, so the PDF renderer name it gives, ` +
+      `${RENDERER_PATH.join(".")} (${renderer}), may be that deployment's. ${rendererMove(n, instanceRenderer)}`,
+  };
+}
+
+/** What becomes of a renderer name {@link foreignRenderer} resets. */
+function rendererMove(n: string, instanceRenderer: string): string {
+  return `${RENDERER_PATH.join(".")} goes to ${instanceRenderer} instead, the name the hosted deploy gives ` +
+    `${n}'s: a placeholder would stop a deployment that deploys no PDF renderer.`;
+}
+
 /**
  * The edits setting Worker names back to placeholders when the file names a router but is not the
  * instance's ({@link fileIsInstance}): the custom Gatekeeper's and the Error Reporter's, which
  * discovery never writes, and each built-in Gatekeeper's `discovery` found the instance none of
  * (without `discovery`, the built-in ones are left alone: nothing says which it wrote). The PDF
- * renderer's, when `discovery` found the instance none, goes to the name the hosted deploy gives the
- * instance's instead: a placeholder would stop a deployment that never deploys one. `--out` would
- * otherwise keep another deployment's names in a file that reads as this instance's.
+ * renderer's goes to the name the hosted deploy gives the instance's ({@link foreignRenderer}).
+ * `--out` would otherwise keep another deployment's names in a file that reads as this instance's.
  */
 export function foreignWorkers(
   file: Record<string, unknown>,
@@ -165,33 +213,23 @@ export function foreignWorkers(
   instanceRouter = n,
   discovery?: Discovery,
 ): { resets: DeploymentEdit[]; note?: string } {
-  const router = valueAtPath(file, ["workers", "router", "name"]);
-  if (typeof router !== "string" || isPlaceholder(router) || fileIsInstance(file, accountId, n, instanceRouter)) {
-    return { resets: [] };
-  }
+  const router = foreignRouter(file, accountId, n, instanceRouter);
+  if (router === undefined) return { resets: [] };
   const named = UNDISCOVERED_WORKERS.flatMap(({ path, placeholder, builtIn }) => {
     const name = valueAtPath(file, path);
     // A built-in Gatekeeper's name stands where discovery writes the instance's own over it.
     const kept = builtIn && (discovery === undefined || discovered(discovery, path.join(".")));
     return typeof name === "string" && !isPlaceholder(name) && !kept ? [{ path, placeholder, name }] : [];
   });
-  const renderer = valueAtPath(file, RENDERER_PATH);
-  const instanceRenderer = workerNames(n).pdfRenderer;
-  const rendererReset = typeof renderer === "string" && renderer !== instanceRenderer && discovery !== undefined &&
-      !discovered(discovery, RENDERER_PATH.join("."))
-    ? { path: RENDERER_PATH, value: instanceRenderer } : undefined;
+  const { reset: rendererReset } = foreignRenderer(file, accountId, n, instanceRouter, discovery);
   if (!named.length && !rendererReset) return { resets: [] };
-  const listed = [...named, ...rendererReset ? [{ path: RENDERER_PATH, name: renderer as string }] : []];
+  const listed = [...named, ...rendererReset ? [{ path: RENDERER_PATH, name: valueAtPath(file, RENDERER_PATH) as string }] : []];
   return {
     resets: [...named.map(({ path, placeholder }) => ({ path, value: placeholder })), ...rendererReset ? [rendererReset] : []],
-    // An instance under a router name of its own can share its name with another deployment's router.
-    note: (router === n && instanceRouter !== n
-      ? `The file is the deployment's whose router is ${router}, not ${n}'s in account ${accountId}, whose router is ${instanceRouter}`
-      : `The file is ${router}'s, not ${n}'s in account ${accountId}`) + ", so the Worker names it gives the rest may be " +
+    note: `${foreignFile(router, accountId, n, instanceRouter)}, so the Worker names it gives the rest may be ` +
       `that deployment's: ${listed.map(({ path, name }) => `${path.join(".")} (${name})`).join(", ")}.` +
       (named.length ? " --out sets them back to placeholders, and `pnpm cf-os init` asks for this deployment's." : "") +
-      (rendererReset ? ` ${RENDERER_PATH.join(".")} goes to ${instanceRenderer} instead, the name the hosted deploy gives ` +
-        `${n}'s: a placeholder would stop a deployment that deploys no PDF renderer.` : ""),
+      (rendererReset ? ` ${rendererMove(n, rendererReset.value as string)}` : ""),
   };
 }
 

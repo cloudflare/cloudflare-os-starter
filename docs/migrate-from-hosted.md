@@ -594,6 +594,9 @@ An instance on a release with Google's scanned-PDF reading also runs `N-pdf-rend
 hosted flow deploys with every instance. The lookup writes its name as `workers.pdfRenderer.name`,
 and with Google carried over the deploy updates it in place. Without Google the starter deploys no
 renderer: the instance's keeps running unbound, holding no data, and can be deleted the same way.
+An instance without one, taken over in a file another deployment's renderer name is in, gets
+`N-pdf-renderer` in its place, from `init --take-over` and `import --out` alike: the other name is
+that deployment's Worker, which a deploy with Google would deploy over.
 
 ## 9. Verify
 
