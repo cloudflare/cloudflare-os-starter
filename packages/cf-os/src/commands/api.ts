@@ -81,6 +81,13 @@ export async function defaultInstance(ctx: Context): Promise<DefaultInstance> {
   // A publicBaseUrl the router does not answer on, left behind by a route changed since, is one
   // deploy refuses: calling it would reach another deployment, or nothing.
   if (typeof config.publicBaseUrl === "string") {
+    // With no route to hold it to, the check below would be of its shape alone.
+    if (!route?.customDomain && route?.workersDev !== true) {
+      return {
+        unavailable: `${where}'s workers.router.route names neither a customDomain nor workersDev: true, so whether ` +
+          `publicBaseUrl (${config.publicBaseUrl}) is the router's cannot be told: fix the route, or pass --url <origin>.`,
+      };
+    }
     try {
       validatePublicBaseUrl(config, route ?? {});
     } catch (error) {

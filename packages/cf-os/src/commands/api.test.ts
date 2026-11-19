@@ -44,6 +44,11 @@ test("without one, the reason is a complete message naming --url", async (t) => 
       /^stale\.jsonc: publicBaseUrl \(https:\/\/old\.example\.com\) does not match workers\.router\.route\.customDomain \(new\.example\.com\)\. .*: fix publicBaseUrl, or pass --url <origin>\.$/],
     ["renamed.jsonc", deployment("https://old-os.acme.workers.dev", null),
       /^renamed\.jsonc: publicBaseUrl \(https:\/\/old-os\.acme\.workers\.dev\) names Worker "old-os", but the router is "acme-os"\. .*[^.]: fix publicBaseUrl, or pass --url <origin>\.$/],
+    // No route at all to hold it to: an origin of the right shape is not enough.
+    ["routeless.jsonc", JSON.stringify({ publicBaseUrl: "https://old.example.com", workers: { router: { name: "acme-os", route: {} } } }),
+      /^routeless\.jsonc's workers\.router\.route names neither a customDomain nor workersDev: true, so whether publicBaseUrl \(https:\/\/old\.example\.com\) is the router's cannot be told: fix the route, or pass --url <origin>\.$/],
+    ["unrouted.jsonc", JSON.stringify({ publicBaseUrl: "https://old.example.com", workers: { router: { name: "acme-os" } } }),
+      /^unrouted\.jsonc's workers\.router\.route names neither/],
     ["slash.jsonc", deployment("https://os.example.com/"),
       /^slash\.jsonc: publicBaseUrl must be an HTTPS origin only, with no path and no trailing slash: fix publicBaseUrl/],
     ["number.jsonc", JSON.stringify({ publicBaseUrl: 42 }),
