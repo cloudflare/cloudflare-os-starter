@@ -26,6 +26,7 @@ import type {
   GeneratedConfigs,
   ProdWranglerConfig,
 } from "./deployment-config.ts";
+import type { GatekeeperCatalog } from "./gatekeepers.ts";
 import { PUSH_IDENTITY_SECRET, PUSH_IDENTITY_VARS } from "./hosted-release.ts";
 import { testCatalog, testCatalogWithGoogle } from "../test-support.ts";
 
@@ -717,12 +718,16 @@ const withOptional = variant((c) => {
   };
 });
 
+/** {@link validConfig} with Google added, whose Gatekeeper binds upstream's PDF renderer. */
+const withGoogle = variant((c) => { c.gatekeepers = { google: { name: "acme-cloudflare-os-google" } }; });
+const googleCatalog = testCatalogWithGoogle();
+
 test("deploys the Gatekeepers together, then the Workshop, then the router", () => {
-  assert.deepEqual(deployWaves(validConfig),
+  assert.deepEqual(deployWaves(validConfig, catalog),
     [["errorReporter", "context", "scheduler", "websearch", "customGatekeeper"], ["workshop"], ["router"]]);
-  assert.deepEqual(deployWaves(variant((config) => { config.errorReporting.enabled = false; })),
+  assert.deepEqual(deployWaves(variant((config) => { config.errorReporting.enabled = false; }), catalog),
     [["context", "scheduler", "websearch", "customGatekeeper"], ["workshop"], ["router"]]);
-  assert.deepEqual(deployWaves(withOptional), [
+  assert.deepEqual(deployWaves(withOptional, catalog), [
     ["errorReporter", "context", "scheduler", "websearch", "gatekeepers.github", "gatekeepers.mcpportal"],
     ["workshop"],
     ["router"],
@@ -732,9 +737,13 @@ test("deploys the Gatekeepers together, then the Workshop, then the router", () 
 test("deploys every Worker after each one it binds", async () => {
   // Derived from the generated service bindings, so a binding added upstream fails here rather than
   // at a deploy the Workers API rejects for naming a script that does not exist yet.
-  for (const config of [validConfig, variant((c) => { c.errorReporting.enabled = false; }), withOptional]) {
+  const cases: [DeploymentConfig, GatekeeperCatalog][] = [
+    [validConfig, catalog], [variant((c) => { c.errorReporting.enabled = false; }), catalog], [withOptional, catalog],
+    [withGoogle, googleCatalog],
+  ];
+  for (const [config, catalog] of cases) {
     const generated = new Map(generatedOutputs(generateConfigs(config, await baseConfigs(), catalog)));
-    const waves = deployWaves(config);
+    const waves = deployWaves(config, catalog);
     // Exactly the generated configs deploy, each from its own package.
     assert.deepEqual(new Set(waves.flat()), new Set(generated.keys()));
     const waveOf = new Map(waves.flatMap((wave, index) => wave.map((id) => [workerName(config, id), index] as const)));
@@ -751,13 +760,55 @@ test("deploys every Worker after each one it binds", async () => {
 });
 
 test("deploys every Worker before the router that binds them", () => {
-  assert.deepEqual(deployOrder(validConfig), deployWaves(validConfig).flat());
-  assert.deepEqual(deployOrder(validConfig),
+  assert.deepEqual(deployOrder(validConfig, catalog), deployWaves(validConfig, catalog).flat());
+  assert.deepEqual(deployOrder(validConfig, catalog),
     ["errorReporter", "context", "scheduler", "websearch", "customGatekeeper", "workshop", "router"]);
-  assert.deepEqual(deployOrder(variant((config) => { config.errorReporting.enabled = false; })),
+  assert.deepEqual(deployOrder(variant((config) => { config.errorReporting.enabled = false; }), catalog),
     ["context", "scheduler", "websearch", "customGatekeeper", "workshop", "router"]);
-  // Every package the deploy reads a base config from is deployed, and nothing else.
-  assert.deepEqual(new Set(deployOrder(validConfig)), new Set(Object.keys(PACKAGE_DIRS)));
+  // Every package the deploy reads a base config from is deployed, the PDF renderer only beside a
+  // Gatekeeper that binds it, and nothing else.
+  assert.deepEqual(new Set(deployOrder(validConfig, catalog)),
+    new Set(Object.keys(PACKAGE_DIRS).filter((key) => key !== "pdfRenderer")));
+  assert.deepEqual(new Set(deployOrder(withGoogle, googleCatalog)),
+    new Set([...Object.keys(PACKAGE_DIRS), "gatekeepers.google"]));
+});
+
+test("deploys upstream's PDF renderer first, and binds Google to it", async () => {
+  const bases = await baseConfigs();
+  const generated = generateConfigs(withGoogle, bases, googleCatalog);
+  const renderer = generated.pdfRenderer!;
+  // Named as the hosted deploy names an instance's, behind the router like every other Worker.
+  assert.equal(renderer.name, "acme-cloudflare-os-pdf-renderer");
+  assert.equal(workerName(withGoogle, "pdfRenderer"), renderer.name);
+  assert.equal(renderer.workers_dev, false);
+  assert.equal(renderer.preview_urls, false);
+  assert.equal(renderer.routes, undefined);
+  // Upstream's CPU limit and its compiled-WebAssembly rule carry over.
+  assert.deepEqual(renderer.limits, { cpu_ms: 300_000 });
+  assert.ok(renderer.rules!.some((rule) => (rule as { type: string }).type === "CompiledWasm"));
+  assert.deepEqual(generated.gatekeepers.google.services,
+    [{ binding: "PDF_RENDERER", service: "acme-cloudflare-os-pdf-renderer", entrypoint: "PdfRenderer" }]);
+  assert.deepEqual(generated.gatekeepers.google.limits, { subrequests: 100_000 });
+  assert.deepEqual(deployWaves(withGoogle, googleCatalog)[0], ["pdfRenderer"]);
+  assert.ok(buildCommands(withGoogle, googleCatalog).flat()
+    .some(({ args }) => args.join(" ") === "--dir cloudflare-os exec vp run -F @gadgets/pdf-renderer --no-cache build"));
+
+  // A name of its own goes to the Worker and to the binding.
+  const named = variant((c) => { Object.assign(c, structuredClone(withGoogle)); c.workers.pdfRenderer = { name: "acme-pdf" }; });
+  const own = generateConfigs(named, bases, googleCatalog);
+  assert.equal(own.pdfRenderer!.name, "acme-pdf");
+  assert.equal(own.gatekeepers.google.services![0].service, "acme-pdf");
+
+  // Without a Gatekeeper that binds it, none: no config, no build, no wave.
+  assert.equal(generateConfigs(withOptional, bases, catalog).pdfRenderer, undefined);
+  assert.ok(!buildCommands(withOptional, catalog).flat().some(({ args }) => args.includes("@gadgets/pdf-renderer")));
+  assert.ok(!deployOrder(withOptional, catalog).includes("pdfRenderer"));
+
+  // Its name is one of the deployment's, deployed or not.
+  assert.throws(() => validateConfig(variant((c) => { c.workers.pdfRenderer = { name: c.workers.context.name }; })),
+    /names must be unique: acme-cloudflare-os-context is used twice/);
+  assert.throws(() => validateConfig(variant((c) => { c.workers.pdfRenderer = {} as { name: string }; })),
+    /workers.pdfRenderer must be an object with a name/);
 });
 
 test("locates and names every Worker by its id", () => {
@@ -784,7 +835,7 @@ test("with the custom Gatekeeper off, deploys nothing of it", async () => {
   assert.equal(generated.router.services!.some((service) => service.binding === "GATEKEEPER_CUSTOM"), false);
   assert.equal(generated.workshop.services!.some((service) => service.binding === "GATEKEEPER_CUSTOM"), false);
   assert.equal(buildCommands(off, catalog).flat().some(({ args }) => args.includes("custom-gatekeeper")), false);
-  assert.equal(deployOrder(off).includes("customGatekeeper"), false);
+  assert.equal(deployOrder(off, catalog).includes("customGatekeeper"), false);
 
   // Nor does it need a Worker name at all, or display text.
   const bare = variant((c) => {
@@ -807,7 +858,7 @@ test("with customGatekeeper.enabled absent, deploys the custom Gatekeeper as whe
   const bases = await baseConfigs();
   assert.deepEqual(generateConfigs(absent, bases, catalog), generateConfigs(enabled, bases, catalog));
   assert.deepEqual(buildCommands(absent, catalog), buildCommands(enabled, catalog));
-  assert.deepEqual(deployWaves(absent), deployWaves(enabled));
+  assert.deepEqual(deployWaves(absent, catalog), deployWaves(enabled, catalog));
   assert.equal(generateConfigs(absent, bases, catalog).customGatekeeper!.name, "acme-cloudflare-os-custom");
   // And still requires everything it did.
   assert.throws(() => validateConfig(variant((c) => { delete c.customGatekeeper.message; })),

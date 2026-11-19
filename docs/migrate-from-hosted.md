@@ -585,6 +585,13 @@ one you leave out at the Gatekeeper question. Delete an orphaned Worker with
 `CLOUDFLARE_ACCOUNT_ID=<account-id> pnpm exec wrangler delete --name <worker>` once nobody needs
 it.
 
+### The PDF renderer
+
+An instance on a release with Google's scanned-PDF reading also runs `N-pdf-renderer`, which the
+hosted flow deploys with every instance. The lookup writes its name as `workers.pdfRenderer.name`,
+and with Google carried over the deploy updates it in place. Without Google the starter deploys no
+renderer: the instance's keeps running unbound, holding no data, and can be deleted the same way.
+
 ## 9. Verify
 
 Beyond the [standard checks](../README.md#4-verify-the-deployment):

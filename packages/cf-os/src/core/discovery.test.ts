@@ -73,12 +73,23 @@ test("fills in exactly what it found", async () => {
 test("reports what it did not find instead of guessing, and the Gatekeepers that lose a binding", async () => {
   const discovery = discover("acme", await inventory());
   const missing = discovery.rows.filter((row) => row.found === null);
-  assert.deepEqual(missing.map((row) => row.path), ["workers.websearch.name"]);
+  assert.deepEqual(missing.map((row) => row.path), ["workers.websearch.name", "workers.pdfRenderer.name"]);
   assert.match(missing[0].note!, /deployed before Web Search/);
+  assert.match(missing[1].note!, /the deploy creates it when a selected Gatekeeper binds it/);
   assert.deepEqual(discovery.orphanedGatekeepers.map((gatekeeper) => gatekeeper.name), ["acme-gk-github"]);
   assert.ok(!discovery.edits.some((edit) => edit.path.join(".") === "workers.websearch.name"));
   // Suggestions are not hosted resources: never looked for, never reported missing.
   assert.ok(!discovery.rows.some((row) => /customGatekeeper|errorReporter/.test(row.path)));
+});
+
+test("writes the PDF renderer the hosted deploy named after the instance, under any router name", async () => {
+  const account = hostedAccount();
+  account.workers.push({ name: "acme-pdf-renderer" });
+  const discovery = discover("acme", await inventory(account));
+  assert.ok(discovery.edits.some((edit) => edit.path.join(".") === "workers.pdfRenderer.name" && edit.value === "acme-pdf-renderer"));
+  // The hosted deploy names it after the instance, never after a router renamed by the operator.
+  const renamed = discover("acme", await inventory(account), [], [], { names: { router: "acme-os" } });
+  assert.ok(renamed.edits.some((edit) => edit.path.join(".") === "workers.pdfRenderer.name" && edit.value === "acme-pdf-renderer"));
 });
 
 test("does not count a starter-deployed custom Gatekeeper as orphaned", async () => {
@@ -260,7 +271,8 @@ test("with the instance read, writes what its backend carries: admins, providers
   assert.match(discovery.notes.join("\n"), /CLOUDFLARE_OS_DEPLOYMENT variable[\s\S]*is not carried over/);
   assert.ok(!discovery.edits.some((edit) => JSON.stringify(edit).includes("CLOUDFLARE_OS_DEPLOYMENT") || JSON.stringify(edit).includes("PRIVATE_KEY")));
   assert.deepEqual(discovery.rows.filter((row) => row.found === null).map((row) => [row.path, row.expected]),
-    [["workers.websearch.name", "the backend's GATEKEEPER_WEBSEARCH service binding"]]);
+    [["workers.websearch.name", "the backend's GATEKEEPER_WEBSEARCH service binding"],
+      ["workers.pdfRenderer.name", "acme-pdf-renderer"]]);
 });
 
 test("with the instance read, the origin is the backend's PUBLIC_BASE_URL, whatever else names a hostname", async () => {
@@ -292,7 +304,7 @@ test("with the instance read, values the backend does not carry are missing, nev
   const paths = discovery.edits.map((edit) => edit.path.join("."));
   for (const path of ["access.admins", "aiGateway.providers", "pushIdentity"]) assert.ok(!paths.includes(path), path);
   assert.deepEqual(discovery.rows.filter((row) => row.found === null).map((row) => row.path),
-    ["workers.websearch.name", "access.admins", "aiGateway.providers", "pushIdentity"]);
+    ["workers.websearch.name", "workers.pdfRenderer.name", "access.admins", "aiGateway.providers", "pushIdentity"]);
   // A provider the starter does not serve is written as read, and said, so nothing is dropped unseen.
   const odd = await discoverRead(hostedMemoryAccount({ "acme-backend": { vars: { CF_AI_GATEWAY_PROVIDERS: "cloudflare, mistral" } } }));
   assert.deepEqual((editsAsFragment(odd.edits).aiGateway as { providers: string[] }).providers, ["cloudflare", "mistral"]);

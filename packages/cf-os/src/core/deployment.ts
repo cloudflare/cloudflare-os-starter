@@ -13,7 +13,7 @@ import type {
   ProdWranglerConfig,
   RouterRoute,
 } from "./deployment-config.ts";
-import type { CatalogGatekeeper, GatekeeperCatalog } from "./gatekeepers.ts";
+import { PDF_RENDERER_SERVICE, type CatalogGatekeeper, type GatekeeperCatalog } from "./gatekeepers.ts";
 import { PUSH_IDENTITY_VARS, type PushIdentity } from "./hosted-release.ts";
 import { BUILT_IN_GATEKEEPER_SLUGS } from "./naming.ts";
 
@@ -30,6 +30,7 @@ export const PACKAGE_DIRS = {
   websearch: "cloudflare-os/packages/gatekeeper-websearch",
   customGatekeeper: "packages/custom-gatekeeper",
   errorReporter: "packages/error-reporter",
+  pdfRenderer: "cloudflare-os/packages/pdf-renderer",
 } as const;
 
 /** A key of {@link PACKAGE_DIRS}: one of the starter's own Workers. */
@@ -67,7 +68,26 @@ export function workerDir(id: WorkerId, catalog: GatekeeperCatalog): string {
 /** Worker `id`'s name in `config`. */
 export function workerName(config: DeploymentConfig, id: WorkerId): string {
   const slug = slugOf(id);
-  return slug === undefined ? config.workers[id as PackageKey]!.name : config.gatekeepers![slug].name;
+  if (slug !== undefined) return config.gatekeepers![slug].name;
+  return id === "pdfRenderer" ? pdfRendererName(config) : config.workers[id as PackageKey]!.name;
+}
+
+/**
+ * The PDF renderer's Worker name: `workers.pdfRenderer.name`, else `<router name>-pdf-renderer`,
+ * which is what the hosted deploy calls an instance's (`N-<package>`, never overridden there).
+ */
+export function pdfRendererName(config: DeploymentConfig): string {
+  return config.workers.pdfRenderer?.name ?? `${config.workers.router.name}-${PDF_RENDERER_SERVICE}`;
+}
+
+/**
+ * Whether an optional Gatekeeper `config` selects binds upstream's PDF renderer, which is then
+ * deployed too. The hosted deploy ships it to every instance; here it is deployed only for a
+ * Gatekeeper that uses it, so a deployment without one has no Worker nothing calls.
+ */
+export function deploysPdfRenderer(config: DeploymentConfig, catalog: GatekeeperCatalog): boolean {
+  return gatekeeperSlugs(config).some((slug) => offeredGatekeeper(catalog, slug).config.services
+    ?.some((service) => service.service === PDF_RENDERER_SERVICE));
 }
 
 /** Every generated config, by the Worker it is for. */
@@ -314,18 +334,27 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     throw new Error("customGatekeeper.enabled must be a boolean.");
   }
   validateGatekeeperEntries(config);
+  const renderer: unknown = config.workers.pdfRenderer;
+  if (renderer !== undefined &&
+      (!renderer || typeof renderer !== "object" || typeof (renderer as { name?: unknown }).name !== "string")) {
+    throw new Error("workers.pdfRenderer must be an object with a name, or absent to name it <router name>-pdf-renderer.");
+  }
+  // The renderer's name whether or not it is deployed: a selection can add it without this file
+  // changing anywhere else.
   const workerNames = [
     ...Object.entries(config.workers)
       .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
       .filter(([key]) => key !== "customGatekeeper" || customGatekeeper)
+      .filter(([key]) => key !== "pdfRenderer")
       .map(([, worker]) => worker!.name),
+    pdfRendererName(config),
     ...Object.values(config.gatekeepers ?? {}).map((entry) => entry.name),
   ];
   const duplicate = workerNames.find((name, index) => workerNames.indexOf(name) !== index);
   if (duplicate !== undefined) {
     throw new Error(
-      "Router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, Error Reporter and " +
-      `optional Gatekeeper names must be unique: ${duplicate} is used twice.`);
+      "Router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, Error Reporter, PDF " +
+      `renderer and optional Gatekeeper names must be unique: ${duplicate} is used twice.`);
   }
   if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
@@ -660,6 +689,9 @@ export function generateConfigs(
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
+  const pdfRenderer = deploysPdfRenderer(config, catalog)
+    ? structuredClone(bases.pdfRenderer)
+    : undefined;
   const origin = publicOrigin(config);
   const optional = Object.entries(config.gatekeepers ?? {});
 
@@ -814,6 +846,10 @@ export function generateConfigs(
     setCommon(errorReporter, config, config.workers.errorReporter!.name);
   }
 
+  // Nothing but the common block: it takes no vars and holds nothing. Upstream's CPU limit, which
+  // a long scan's pages need, and the rule that loads PDFium as compiled WebAssembly carry over.
+  if (pdfRenderer) setCommon(pdfRenderer, config, pdfRendererName(config));
+
   // Base config as upstream ships it -- migrations, rules, build command -- plus the common block,
   // the operator's vars, and `BASE_URL`, which upstream's optional Gatekeepers build their OAuth
   // redirect and every absolute link from, and throw without. The value is the one the hosted
@@ -824,6 +860,11 @@ export function generateConfigs(
   for (const [slug, entry] of optional) {
     const generated = structuredClone(offeredGatekeeper(catalog, slug).config);
     setCommon(generated, config, entry.name);
+    // The only service binding the catalog lets through: to this deployment's PDF renderer.
+    if (generated.services) {
+      generated.services = generated.services.map((service) => service.service === PDF_RENDERER_SERVICE
+        ? { ...service, service: pdfRendererName(config) } : service);
+    }
     generated.vars = {
       ...generated.vars,
       ...(generated.ai && gateway && !gateway.crossAccount ? { CF_AI_GATEWAY: config.aiGateway.name } : {}),
@@ -837,6 +878,7 @@ export function generateConfigs(
     router, workshop, context, scheduler, websearch,
     ...(customGatekeeper && { customGatekeeper }),
     ...(errorReporter && { errorReporter }),
+    ...(pdfRenderer && { pdfRenderer }),
     gatekeepers,
   };
 }
@@ -894,6 +936,8 @@ export function buildCommands(config: DeploymentConfig, catalog: GatekeeperCatal
     [{ args: submoduleBuild("@gadgets/gatekeeper-websearch") }],
     ...(customGatekeeperEnabled(config) ? [[{ args: ownBuild("custom-gatekeeper") }]] : []),
     ...(config.errorReporting.enabled ? [[{ args: ownBuild("error-reporter") }]] : []),
+    // Its `build` task type-checks; wrangler's build command runs capnweb-validate at deploy time.
+    ...(deploysPdfRenderer(config, catalog) ? [[{ args: submoduleBuild("@gadgets/pdf-renderer") }]] : []),
     // One step each. Every optional Gatekeeper's `build` task depends on `build:configurator`, the
     // codegen (cloudflare-os/scripts/gatekeeper-configurator-vite-config.ts), and the outer
     // `--no-cache` reaches that dependency too -- measured: both run with "cache disabled". Their
@@ -910,13 +954,14 @@ export function buildCommands(config: DeploymentConfig, catalog: GatekeeperCatal
 /**
  * The Workers in deploy waves: those inside one wave can deploy concurrently, and each wave starts
  * only once the one before has deployed. A service binding must name a Worker that already exists
- * -- the Workers API rejects one to a script that does not -- so the Workshop, which binds every
- * Gatekeeper and the Error Reporter, follows all of them, and the router, which binds the Workshop
- * and every Gatekeeper, goes last. A failure before the router leaves the previous router version
- * serving.
+ * -- the Workers API rejects one to a script that does not -- so the PDF renderer, when deployed,
+ * comes before the Gatekeepers that bind it, the Workshop, which binds every Gatekeeper and the
+ * Error Reporter, follows all of them, and the router, which binds the Workshop and every
+ * Gatekeeper, goes last. A failure before the router leaves the previous router version serving.
  */
-export function deployWaves(config: DeploymentConfig): WorkerId[][] {
+export function deployWaves(config: DeploymentConfig, catalog: GatekeeperCatalog): WorkerId[][] {
   return [
+    ...(deploysPdfRenderer(config, catalog) ? [["pdfRenderer" as const]] : []),
     [
       ...(config.errorReporting.enabled ? ["errorReporter" as const] : []),
       "context", "scheduler", "websearch",
@@ -929,6 +974,6 @@ export function deployWaves(config: DeploymentConfig): WorkerId[][] {
 }
 
 /** {@link deployWaves}, flattened: one order the Workers can deploy in, one at a time. */
-export function deployOrder(config: DeploymentConfig): WorkerId[] {
-  return deployWaves(config).flat();
+export function deployOrder(config: DeploymentConfig, catalog: GatekeeperCatalog): WorkerId[] {
+  return deployWaves(config, catalog).flat();
 }

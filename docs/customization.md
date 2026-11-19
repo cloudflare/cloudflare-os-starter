@@ -43,7 +43,7 @@ Secrets are never valid values in this file. Install them interactively with Wra
 
 ### Workers and routing
 
-The deployment is up to seven Workers of its own, plus one per [optional Gatekeeper](#optional-gatekeepers). Keep their names unique: service bindings use these names, so update and deploy them together.
+The deployment is up to seven Workers of its own, plus one per [optional Gatekeeper](#optional-gatekeepers) and, for one that needs it, upstream's PDF renderer. Keep their names unique: service bindings use these names, so update and deploy them together.
 
 | Worker | Role |
 | --- | --- |
@@ -54,6 +54,7 @@ The deployment is up to seven Workers of its own, plus one per [optional Gatekee
 | `websearch` | The Web Search Gatekeeper, which lets agents search the public web. |
 | `customGatekeeper` | This repository's example integration. Not deployed when `customGatekeeper.enabled` is `false`. |
 | `errorReporter` | The private explicit-issue destination. |
+| `pdfRenderer` | Upstream's PDF renderer, which draws a scanned PDF's pages for Google's Gatekeeper to transcribe. Deployed only while a selected optional Gatekeeper binds it, before that Gatekeeper. Optional: without it, the Worker is `<router name>-pdf-renderer`, as the hosted deploy names an instance's. It holds no data, so renaming it only replaces it. |
 
 Context, Scheduler and Web Search are *ambient*: upstream's release marks all three `PREINSTALL`, so the hosted flow installs them on every instance and this starter deploys them for the same reason. None takes configuration beyond its name. Web Search runs on its own Workers AI binding and searches through the Workshop's gateway, `aiGateway.name`, so its searches share that gateway's provider keys, limits and logs: the deploy sets it as the Worker's `CF_AI_GATEWAY`, as upstream's deploy service does. With `aiGateway.enabled: false`, or a gateway in another account, which the binding cannot reach, it searches through the account's `default` gateway instead, which Cloudflare creates on first use.
 
@@ -80,7 +81,7 @@ On a custom domain the hostname is yours and has nothing to do with any Worker n
 
 ### Optional Gatekeepers
 
-Upstream ships more Gatekeepers than the ones this starter always deploys: GitHub, Google, Slack and others. `pnpm cf-os init` offers the ones the hosted deploy offers, each package once, from a catalog built from the pinned submodule; one the starter cannot deploy from a name alone (Email, or any with KV, R2, service or Artifacts bindings) is never offered, and selecting it fails `pnpm cf-os check` with the reason.
+Upstream ships more Gatekeepers than the ones this starter always deploys: GitHub, Google, Slack and others. `pnpm cf-os init` offers the ones the hosted deploy offers, each package once, from a catalog built from the pinned submodule; one the starter cannot deploy from a name alone (Email, or any with KV, R2, service or Artifacts bindings) is never offered, and selecting it fails `pnpm cf-os check` with the reason. The one service binding allowed is to upstream's PDF renderer, which Google's binds: selecting Google deploys the renderer as well (`workers.pdfRenderer`, under [Workers and routing](#workers-and-routing)).
 
 Each one is an entry under `gatekeepers`, keyed by its slug:
 

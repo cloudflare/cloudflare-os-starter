@@ -68,6 +68,8 @@ The naming row also makes its slug a built-in one, so a deployment that had sele
 
 A selected Gatekeeper the new pin excludes fails `check` on `gatekeepers.<slug>` with the reason. Report it to the operator, and do not work around it in `deployment.jsonc`.
 
+Upstream's internal Workers (`INTERNAL_WORKERS` in `cloudflare-os/scripts/release/manifest-lib.ts`) ship with every hosted instance and serve no route. The starter deploys one, the PDF renderer, and only beside a selected Gatekeeper that binds it (`deploysPdfRenderer()`). A binding to any other Worker, a new internal one included, still excludes the Gatekeeper that declares it. Deploying a new internal Worker takes the same pieces as the renderer: a `PACKAGE_DIRS` entry, its config in `generateConfigs()`, the binding pointed at its name, a build step, a wave before the Workers that bind it, a hosted naming row (`N-<package>`), and the catalog letting the binding through.
+
 A `gatekeeper-*` package without a `wrangler.jsonc` is a library, not a Worker.
 
 ## Build Tooling *(starter)*

@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import type { ProdWranglerConfig } from "./core/deployment-config.ts";
-import type { CatalogGatekeeper, ExcludedGatekeeper, GatekeeperCatalog } from "./core/gatekeepers.ts";
+import { PDF_RENDERER_SERVICE, type CatalogGatekeeper, type ExcludedGatekeeper, type GatekeeperCatalog } from "./core/gatekeepers.ts";
 import { BUILT_IN_GATEKEEPER_SLUGS } from "./core/naming.ts";
 
 /** Why a package's own config rules it out, or undefined when nothing does. */
@@ -21,7 +21,10 @@ function unsupported(config: ProdWranglerConfig): string | undefined {
   // state; deployment.jsonc has no place for them.
   if (config.kv_namespaces?.length) return "it declares KV namespaces, which the starter would provision empty";
   if (config.r2_buckets?.length) return "it declares R2 buckets, which the starter would provision empty";
-  if (config.services?.length) return "it declares service bindings to other Workers";
+  // Upstream's PDF renderer is the exception: the deploy deploys it too (`deploysPdfRenderer`).
+  if (config.services?.some((service) => service.service !== PDF_RENDERER_SERVICE)) {
+    return "it declares service bindings to other Workers";
+  }
   if (config.artifacts) return "it declares an Artifacts binding";
   return undefined;
 }

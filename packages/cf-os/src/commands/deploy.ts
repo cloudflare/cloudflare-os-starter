@@ -17,8 +17,9 @@
 // finishes, and the first failure cancels the rest: the deploy is doomed either way, so there is no
 // point waiting out the others. Every build has to pass before anything deploys, so a type error
 // cannot leave new Gatekeepers in front of an old Workshop. The Workers then deploy in the waves
-// `deployWaves` gives -- every Gatekeeper and the Error Reporter together, then the Workshop, then
-// the router -- because a service binding has to name a Worker that already exists. A failed
+// `deployWaves` gives -- the PDF renderer when a Gatekeeper binds it, every Gatekeeper and the Error
+// Reporter together, then the Workshop, then the router -- because a service binding has to name a
+// Worker that already exists. A failed
 // deploy cancels nothing: a half-cancelled upload is worse than a slow one, so its siblings finish,
 // and only the next wave is held back. With the router last, any failure leaves the previous router
 // serving.
@@ -179,7 +180,7 @@ async function deployAll(
   catalog: GatekeeperCatalog,
   check: boolean,
 ): Promise<void> {
-  const waves = check ? [deployOrder(config)] : deployWaves(config);
+  const waves = check ? [deployOrder(config, catalog)] : deployWaves(config, catalog);
   for (const [index, wave] of waves.entries()) {
     ctx.out.log(`\n${check ? "Dry-running the deploys of" : "Deploying"} ${wave.map((id) => workerName(config, id)).join(", ")}.`);
     const deploy = (id: WorkerId) => deployWorker(ctx, workerDir(id, catalog), check ? ["--dry-run"] : []);

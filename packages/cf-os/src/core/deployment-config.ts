@@ -125,6 +125,12 @@ export interface DeploymentConfig {
     customGatekeeper?: { name: string };
     /** Only required when `errorReporting.enabled`. */
     errorReporter?: { name: string };
+    /**
+     * Upstream's PDF renderer, deployed only when a selected optional Gatekeeper binds it (Google,
+     * to transcribe scanned PDFs). It has no route and no storage. Absent, it is named
+     * `<router name>-pdf-renderer`, as the hosted deploy names an instance's.
+     */
+    pdfRenderer?: { name: string };
   };
   /**
    * Optional upstream Gatekeepers, keyed by the hosted deploy's install slug (`github`,
@@ -286,6 +292,8 @@ export interface GeneratedConfigs {
   customGatekeeper?: ProdWranglerConfig;
   /** Absent when `errorReporting.enabled` is false. */
   errorReporter?: ProdWranglerConfig;
+  /** Present only when a selected optional Gatekeeper binds the PDF renderer. */
+  pdfRenderer?: ProdWranglerConfig;
   /** One per `gatekeepers` entry, by slug. */
   gatekeepers: Record<string, ProdWranglerConfig>;
 }
@@ -299,6 +307,7 @@ export interface BaseConfigs {
   websearch: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
   errorReporter: ProdWranglerConfig;
+  pdfRenderer: ProdWranglerConfig;
 }
 
 /** One build step a check or deploy runs before deploying. See `buildCommands`. */

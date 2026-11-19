@@ -177,7 +177,7 @@ Ask once for any decisions not established by existing approved configuration:
 
 1. Evaluation or production, target account, exact hostname, and zone for a custom domain. On a `workers.dev` route, also the exact `publicBaseUrl` origin, which the operator has to supply because nothing in the checkout can derive it.
 2. Access application, intended users, identity provider requirements, administrators, and denied test identity.
-3. Stable names for the Router, Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, Error Reporter, and each optional Gatekeeper (`<router>-gk-<slug>` by default, as the hosted flow names them). Only the Router's name appears in the public URL; the Workshop's is the identity every Durable Object belongs to, and Context and Scheduler own Durable Objects of their own — collections and schedules — so renaming either strands its data. An optional Gatekeeper's Durable Objects hold its users' connections, so the same holds for it.
+3. Stable names for the Router, Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, Error Reporter, and each optional Gatekeeper (`<router>-gk-<slug>` by default, as the hosted flow names them). The PDF renderer, deployed for Google, is `<router>-pdf-renderer` unless `workers.pdfRenderer.name` says otherwise; it holds no data. Only the Router's name appears in the public URL; the Workshop's is the identity every Durable Object belongs to, and Context and Scheduler own Durable Objects of their own — collections and schedules — so renaming either strands its data. An optional Gatekeeper's Durable Objects hold its users' connections, so the same holds for it.
 4. New auto-provisioned or existing resource for each of Context KV, Blueprints KV, Avatars KV, and Blueprint Content R2.
 5. Which AI Gateway and which providers; billing/BYOK on the gateway, budget, prompt/response logging, and retention. Disabling `aiGateway` at all is the exception, not the default.
 6. Error Reporter enabled state, environment/release metadata, telemetry sampling, and retention/export policy.
@@ -303,11 +303,12 @@ When `cf` is signed in, `pnpm cf-os check` also confirms the following exist in 
 
 ### 10. Approve And Deploy
 
-Before requesting approval, inventory current deployed version IDs for all affected Workers and verify downstream RPC changes remain compatible with both the old and new Workshop. The deployment is not atomic. Every build has to pass before anything deploys; the Workers then deploy in three waves, each starting only once the one before has finished:
+Before requesting approval, inventory current deployed version IDs for all affected Workers and verify downstream RPC changes remain compatible with both the old and new Workshop. The deployment is not atomic. Every build has to pass before anything deploys; the Workers then deploy in three waves, four with the PDF renderer, each starting only once the one before has finished:
 
-1. Error Reporter (when enabled), Context, Scheduler, Web Search, Custom Gatekeeper (when enabled) and every optional Gatekeeper, concurrently.
-2. Workshop, which binds every one of them.
-3. Router, which binds the Workshop and every Gatekeeper.
+1. The PDF renderer, when a selected optional Gatekeeper (Google) binds it.
+2. Error Reporter (when enabled), Context, Scheduler, Web Search, Custom Gatekeeper (when enabled) and every optional Gatekeeper, concurrently.
+3. Workshop, which binds every one of them.
+4. Router, which binds the Workshop and every Gatekeeper.
 
 If `deployWaves()` in the current `packages/cf-os/src/core/deployment.ts` differs, use its waves. A failure inside a wave lets that wave's other deploys finish, then stops before the next wave, so several Workers of one wave can be updated while one is not. The Router going last means a failure before it leaves the previous Router version still serving the public URL over partly-updated backends, so a healthy-looking site is not evidence the deploy completed. Breaking cross-Worker contracts need parallel identities and a controlled binding switch, not an in-place deploy.
 
@@ -329,7 +330,7 @@ Success requires evidence for every applicable item:
 - Access redirects/denies unauthenticated users, allows the intended identity, and denies the negative test identity.
 - `/admin` allows an administrator and denies an authenticated non-administrator.
 - Signup, connector, Context, and Gatekeeper policies match the approved decisions.
-- Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, every optional Gatekeeper, and Error Reporter have no public routes and no Preview URLs. Each would be an unauthenticated path around the Router's Access application.
+- Workshop, Context, Scheduler, Web Search, Custom Gatekeeper, every optional Gatekeeper, the PDF renderer, and Error Reporter have no public routes and no Preview URLs. Each would be an unauthenticated path around the Router's Access application.
 - Existing data remains visible; newly created data persists across a safe reload or redeploy test.
 - Context Artifacts is absent when disabled, or an approved Git-backed collection can be populated and refreshed in the intended stable namespace when enabled.
 - Each Workshop service binding targets the intended service, entrypoint, and props, and each Router service binding targets the intended service with no entrypoint. The Context binding's `sharingDomain` prop matches the boundary the existing collections live under.

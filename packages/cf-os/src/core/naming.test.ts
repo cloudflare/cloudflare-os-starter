@@ -17,7 +17,7 @@ import {
   workerNames,
 } from "./naming.ts";
 
-test("names all seven Workers the hosted way", () => {
+test("names every Worker the hosted way", () => {
   assert.deepEqual(workerNames("acme"), {
     router: "acme",
     workshop: "acme-backend",
@@ -26,6 +26,7 @@ test("names all seven Workers the hosted way", () => {
     websearch: "acme-gk-websearch",
     customGatekeeper: "acme-gk-custom",
     errorReporter: "acme-errors",
+    pdfRenderer: "acme-pdf-renderer",
   });
 });
 
@@ -60,6 +61,8 @@ test("a router and a backend named by the operator replace the first two names, 
     websearch: "moss-gk-websearch",
     customGatekeeper: "moss-gk-custom",
     errorReporter: "moss-errors",
+    // An internal Worker is named after the instance, whatever the router is called.
+    pdfRenderer: "moss-pdf-renderer",
   });
   // Only the two rows differ from the hosted flow's own naming: storage, the gateway and the
   // Gatekeepers are named after the instance either way.

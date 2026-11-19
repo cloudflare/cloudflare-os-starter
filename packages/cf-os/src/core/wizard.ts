@@ -194,6 +194,8 @@ export function newDeploymentEdits(answers: NewDeploymentAnswers): DeploymentEdi
     },
     ...(Object.entries(names) as [WorkerKey, string][])
       .filter(([key]) => key !== "customGatekeeper" || custom)
+      // Left out: absent, the PDF renderer is named as this would name it.
+      .filter(([key]) => key !== "pdfRenderer")
       .map(([key, name]) => ({ path: ["workers", key, "name"], value: name })),
     {
       path: ["workers", "router", "route"],

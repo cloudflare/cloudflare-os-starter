@@ -90,6 +90,13 @@ export function matchers(n: string, names: CoreNames = {}): Matcher[] {
       path: ["workers", "errorReporter", "name"], value: "name", source: "suggestion",
     },
     {
+      // An internal Worker: the hosted deploy names it `N-<package>` and lets nobody rename it.
+      label: "PDF renderer Worker", kind: "worker", name: `${n}-pdf-renderer`,
+      path: ["workers", "pdfRenderer", "name"], value: "name", source: hosted,
+      missing: "instances on a release from before the PDF renderer have none; the deploy creates it " +
+        "when a selected Gatekeeper binds it",
+    },
+    {
       label: "Blueprints KV namespace", kind: "kv", name: `${n}-blueprints`,
       path: ["resources", "blueprintsKvNamespaceId"], value: "id", source: hosted,
     },
@@ -114,10 +121,11 @@ export function matchers(n: string, names: CoreNames = {}): Matcher[] {
 
 /** A `workers.<key>` entry in `deployment.jsonc`. */
 export type WorkerKey =
-  "router" | "workshop" | "context" | "scheduler" | "websearch" | "customGatekeeper" | "errorReporter";
+  | "router" | "workshop" | "context" | "scheduler" | "websearch" | "customGatekeeper" | "errorReporter"
+  | "pdfRenderer";
 
 /**
- * The seven Worker names for instance `n`, keyed as `deployment.jsonc`'s `workers` block keys them,
+ * The Worker names for instance `n`, keyed as `deployment.jsonc`'s `workers` block keys them,
  * the router's and the backend's being `names`' where it gives them.
  */
 export function workerNames(n: string, names: CoreNames = {}): Record<WorkerKey, string> {
