@@ -49,6 +49,7 @@ import {
   buildCommands,
   deployOrder,
   deployWaves,
+  deploysPdfRenderer,
   gatekeeperSlugs,
   gatekeeperWorkerId,
   GENERATED_NAME,
@@ -92,11 +93,19 @@ async function readJsonc<T>(root: string, path: string): Promise<T> {
 
 /**
  * The base config of every Worker in {@link PACKAGE_DIRS}, read from its package. An optional
- * Gatekeeper's comes with its catalog entry.
+ * Gatekeeper's comes with its catalog entry. The PDF renderer's is read only when `config` deploys
+ * it: a pin from before upstream had the package (one rolled back to) has no file to read, and a
+ * deployment without Google's Gatekeeper has no use for it.
  */
-async function readBaseConfigs(root: string): Promise<BaseConfigs> {
-  const entries = await Promise.all(Object.entries(PACKAGE_DIRS).map(async ([key, dir]) =>
-    [key, await readJsonc(root, join(root, dir, "wrangler.jsonc"))] as const));
+export async function readBaseConfigs(
+  root: string,
+  config: DeploymentConfig,
+  catalog: GatekeeperCatalog,
+): Promise<BaseConfigs> {
+  const renderer = deploysPdfRenderer(config, catalog);
+  const entries = await Promise.all(Object.entries(PACKAGE_DIRS)
+    .filter(([key]) => key !== "pdfRenderer" || renderer)
+    .map(async ([key, dir]) => [key, await readJsonc(root, join(root, dir, "wrangler.jsonc"))] as const));
   return Object.fromEntries(entries) as unknown as BaseConfigs;
 }
 
@@ -458,7 +467,7 @@ async function buildAndDeploy(
   if (ctx.flags.account && ctx.flags.account.toLowerCase() !== config.accountId.toLowerCase()) {
     throw new Error(`--account ${ctx.flags.account} is not ${where}'s accountId (${config.accountId}).`);
   }
-  const generated = generateConfigs(config, await readBaseConfigs(root), catalog);
+  const generated = generateConfigs(config, await readBaseConfigs(root, config, catalog), catalog);
   reportAiGateway(ctx, config);
   for (const warning of undeclaredVarWarnings(config.gatekeepers ?? {})) ctx.out.log(`\n${warning}`);
   await checkAccount(ctx, config, generated, where, catalog, secrets, check);

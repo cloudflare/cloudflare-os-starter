@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { cfClient } from "../cf-client.ts";
 import type { CfWorkerBinding, CfWorkerVersion } from "../core/client.ts";
-import type { ProdWranglerConfig } from "../core/deployment-config.ts";
-import { PACKAGE_DIRS } from "../core/deployment.ts";
+import type { DeploymentConfig, ProdWranglerConfig } from "../core/deployment-config.ts";
+import { generateConfigs, PACKAGE_DIRS } from "../core/deployment.ts";
 import { backendValues, readWorker } from "../core/hosted-release.ts";
 import { durableObjectNamespacesReply, FAKE_ACCOUNT, fakeCf, workerLiveReplies, workerSecretsReply, type FakeReply } from "../fake-cf.ts";
 import {
@@ -18,11 +18,13 @@ import {
   scratchProject,
   scriptedPrompter,
   TEMPLATE,
+  testCatalog,
+  testCatalogWithGoogle,
   testContext,
   type WorkerLive,
 } from "../test-support.ts";
 import type { PendingSecrets } from "../gatekeeper-secrets.ts";
-import { run, type DeployDeps } from "./deploy.ts";
+import { readBaseConfigs, run, type DeployDeps } from "./deploy.ts";
 import { INSTALL_MARKER } from "./install.ts";
 
 /** A project whose submodule is checked out and installed, holding the unconfigured template. */
@@ -153,13 +155,22 @@ test("refuses any optional Gatekeeper when the catalog cannot be read", async (t
     /deployment\.jsonc: gatekeepers: the Gatekeeper catalog could not be read, so none can be deployed: cloudflare-os\/packages could not be read/);
 });
 
+/**
+ * Every base config the pin has, from the repository root: all of {@link PACKAGE_DIRS}, but for the
+ * PDF renderer's on a pin from before upstream had it, which a deployment without Google never reads.
+ */
+function pinnedBaseConfigs(repository: string): string[] {
+  return Object.values(PACKAGE_DIRS).map((dir) => `${dir}/wrangler.jsonc`)
+    .filter((file) => file !== `${PACKAGE_DIRS.pdfRenderer}/wrangler.jsonc` || existsSync(join(repository, file)));
+}
+
 /** An installed project with the real base configs and GitHub's package, {@link FILLED} selecting GitHub. */
 function githubProject(t: Parameters<typeof scratchProject>[0]): { root: string; github: string } {
   const root = installedProject(t);
   const repository = join(import.meta.dirname, "..", "..", "..", "..");
   const github = "cloudflare-os/packages/gatekeeper-github";
   for (const file of [
-    ...Object.values(PACKAGE_DIRS).map((dir) => `${dir}/wrangler.jsonc`),
+    ...pinnedBaseConfigs(repository),
     ...["wrangler.jsonc", "package.json", "deploy-inputs.json"].map((name) => `${github}/${name}`),
   ]) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
@@ -231,7 +242,7 @@ test("check and deploy warn about an MCP portal with no endpoint, and deploy it 
   const repository = join(import.meta.dirname, "..", "..", "..", "..");
   const portal = "cloudflare-os/packages/gatekeeper-mcp-portal";
   for (const file of [
-    ...Object.values(PACKAGE_DIRS).map((dir) => `${dir}/wrangler.jsonc`),
+    ...pinnedBaseConfigs(repository),
     ...["wrangler.jsonc", "package.json"].map((name) => `${portal}/${name}`),
   ]) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
@@ -866,4 +877,47 @@ test("a deploy of a project without a push identity sends none, and still leaves
   }
   // Absent or null, every Worker's config is the same.
   assert.deepEqual(results[0], results[1]);
+});
+
+test("reads no PDF renderer base on a pin without one, unless a selected Gatekeeper binds it", async (t) => {
+  // A pin from before upstream had the renderer, as one rolled back to: every other base config.
+  const root = scratchProject(t, TEMPLATE);
+  const repo = join(import.meta.dirname, "..", "..", "..", "..");
+  for (const [key, dir] of Object.entries(PACKAGE_DIRS)) {
+    if (key === "pdfRenderer") continue;
+    mkdirSync(join(root, dir), { recursive: true });
+    copyFileSync(join(repo, dir, "wrangler.jsonc"), join(root, dir, "wrangler.jsonc"));
+  }
+  const config: DeploymentConfig = {
+    accountId: "0123456789abcdef0123456789abcdef",
+    publicBaseUrl: null,
+    workers: {
+      router: { name: "acme-os", route: { customDomain: "os.example.com" } },
+      workshop: { name: "acme-os-backend" },
+      context: { name: "acme-os-context" },
+      scheduler: { name: "acme-os-scheduler" },
+      websearch: { name: "acme-os-websearch" },
+      customGatekeeper: { name: "acme-os-custom" },
+      errorReporter: { name: "acme-os-errors" },
+    },
+    access: { issuer: "https://acme.cloudflareaccess.com", audience: "access-audience", admins: ["admin@example.com"] },
+    aiGateway: { enabled: false, name: "cloudflare-os", accountId: null, providers: [] },
+    context: { sharingDomain: null, kvNamespaceId: null, artifacts: { enabled: false } },
+    customGatekeeper: { name: "Acme", message: "Use the company handbook." },
+    errorReporting: { enabled: true, environment: "production", release: null },
+    resources: { blueprintsKvNamespaceId: null, avatarsKvNamespaceId: null, blueprintContentBucket: null },
+    observability: { enabled: true, headSamplingRate: 1, logs: { invocationLogs: true }, traces: { enabled: false, headSamplingRate: 1 } },
+  } as DeploymentConfig;
+
+  const catalog = testCatalog();
+  const bases = await readBaseConfigs(root, config, catalog);
+  assert.equal(bases.pdfRenderer, undefined);
+  assert.equal(generateConfigs(config, bases, catalog).pdfRenderer, undefined);
+
+  // With Google, the file it needs is named, and what the pin lacks.
+  const withGoogle = { ...config, gatekeepers: { google: { name: "acme-os-google" } } } as DeploymentConfig;
+  const googleCatalog = testCatalogWithGoogle();
+  await assert.rejects(readBaseConfigs(root, withGoogle, googleCatalog), /pdf-renderer[/\\]wrangler\.jsonc/);
+  assert.throws(() => generateConfigs(withGoogle, bases, googleCatalog),
+    /cloudflare-os\/packages\/pdf-renderer\/wrangler\.jsonc is missing: the pinned cloudflare-os has no PDF renderer/);
 });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -89,12 +90,27 @@ function variant(mutate: (config: Record<string, any>) => void): DeploymentConfi
   return config as DeploymentConfig;
 }
 
+/** Whether the pinned cloudflare-os has upstream's PDF renderer: a pin from before it does not. */
+const PIN_HAS_PDF_RENDERER = existsSync(join(PACKAGE_DIRS.pdfRenderer, "wrangler.jsonc"));
+
+/**
+ * The renderer's base config on a pin without one: enough for the tests of how a deployment that
+ * deploys it is generated, which a pin rolled back to must still pass.
+ */
+const STAND_IN_PDF_RENDERER: ProdWranglerConfig = {
+  name: "pdf-renderer",
+  main: "src/index.ts",
+  compatibility_date: "2025-01-01",
+} as ProdWranglerConfig;
+
 // Read from disk rather than inlined, including the Error Reporter's: the deploy derives every
 // generated config from these files, so a copy here could drift from what actually ships. Paths are
 // from the repository root, where the test task runs.
 async function baseConfigs(): Promise<BaseConfigs> {
   const entries = await Promise.all(Object.entries(PACKAGE_DIRS).map(async ([key, dir]) =>
-    [key, await baseConfig(join(dir, "wrangler.jsonc"))] as const));
+    [key, key === "pdfRenderer" && !PIN_HAS_PDF_RENDERER
+      ? structuredClone(STAND_IN_PDF_RENDERER)
+      : await baseConfig(join(dir, "wrangler.jsonc"))] as const));
   return Object.fromEntries(entries) as unknown as BaseConfigs;
 }
 
@@ -773,6 +789,15 @@ test("deploys every Worker before the router that binds them", () => {
     new Set([...Object.keys(PACKAGE_DIRS), "gatekeepers.google"]));
 });
 
+test("carries upstream's limits to the PDF renderer and Google, and the renderer's compiled-WebAssembly rule",
+  { skip: PIN_HAS_PDF_RENDERER ? false : "the pinned cloudflare-os has no pdf-renderer package" }, async () => {
+    const generated = generateConfigs(withGoogle, await baseConfigs(), googleCatalog);
+    const renderer = generated.pdfRenderer!;
+    assert.deepEqual(renderer.limits, { cpu_ms: 300_000 });
+    assert.ok(renderer.rules!.some((rule) => (rule as { type: string }).type === "CompiledWasm"));
+    assert.deepEqual(generated.gatekeepers.google.limits, { subrequests: 100_000 });
+  });
+
 test("deploys upstream's PDF renderer first, and binds Google to it", async () => {
   const bases = await baseConfigs();
   const generated = generateConfigs(withGoogle, bases, googleCatalog);
@@ -783,12 +808,8 @@ test("deploys upstream's PDF renderer first, and binds Google to it", async () =
   assert.equal(renderer.workers_dev, false);
   assert.equal(renderer.preview_urls, false);
   assert.equal(renderer.routes, undefined);
-  // Upstream's CPU limit and its compiled-WebAssembly rule carry over.
-  assert.deepEqual(renderer.limits, { cpu_ms: 300_000 });
-  assert.ok(renderer.rules!.some((rule) => (rule as { type: string }).type === "CompiledWasm"));
   assert.deepEqual(generated.gatekeepers.google.services,
     [{ binding: "PDF_RENDERER", service: "acme-cloudflare-os-pdf-renderer", entrypoint: "PdfRenderer" }]);
-  assert.deepEqual(generated.gatekeepers.google.limits, { subrequests: 100_000 });
   assert.deepEqual(deployWaves(withGoogle, googleCatalog)[0], ["pdfRenderer"]);
   assert.ok(buildCommands(withGoogle, googleCatalog).flat()
     .some(({ args }) => args.join(" ") === "--dir cloudflare-os exec vp run -F @gadgets/pdf-renderer --no-cache build"));

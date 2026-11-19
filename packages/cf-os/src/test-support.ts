@@ -12,7 +12,7 @@ import { INSTALL_MARKER } from "./commands/install.ts";
 import type { Context, GlobalFlags, Output } from "./context.ts";
 import type { CloudflareClient } from "./core/client.ts";
 import type { ProdWranglerConfig } from "./core/deployment-config.ts";
-import type { GatekeeperCatalog } from "./core/gatekeepers.ts";
+import { bindsPdfRenderer, PDF_RENDERER_SERVICE, type GatekeeperCatalog } from "./core/gatekeepers.ts";
 import type { FakeReply } from "./fake-cf.ts";
 import type { CfWorkerBinding, CfWorkerDeployment, CfWorkerVersion } from "./core/client.ts";
 import type { MemoryAccount } from "./core/memory-client.ts";
@@ -356,10 +356,17 @@ export function testCatalogWithGitlab(): GatekeeperCatalog {
   return catalog;
 }
 
-/** {@link testCatalog} with Google too: an optional Gatekeeper with a Workers AI binding of its own. */
+/** {@link testCatalog} with Google too: an optional Gatekeeper with a Workers AI binding of its own, and the PDF renderer bound. */
 export function testCatalogWithGoogle(): GatekeeperCatalog {
   const catalog = testCatalog();
-  catalog.offered.push(offeredGatekeeper("google", "gatekeeper-google", "@gadgets/google-gatekeeper", false, true));
+  const google = offeredGatekeeper("google", "gatekeeper-google", "@gadgets/google-gatekeeper", false, true);
+  // Bound to the renderer as upstream's config is since the renderer landed: on a pin from before,
+  // Google's binds nothing, and the tests of what deploying the renderer beside it does need one.
+  if (!bindsPdfRenderer(google)) {
+    google.config.services = [...google.config.services ?? [],
+      { binding: "PDF_RENDERER", service: PDF_RENDERER_SERVICE, entrypoint: "PdfRenderer" }];
+  }
+  catalog.offered.push(google);
   return catalog;
 }
 

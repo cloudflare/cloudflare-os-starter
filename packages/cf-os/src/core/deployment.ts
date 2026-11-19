@@ -90,6 +90,17 @@ export function deploysPdfRenderer(config: DeploymentConfig, catalog: Gatekeeper
     ?.some((service) => service.service === PDF_RENDERER_SERVICE));
 }
 
+/**
+ * The PDF renderer's base config, which a deployment that deploys the renderer needs: a pin from
+ * before upstream had the package cannot deploy a Gatekeeper that binds it.
+ */
+function requirePdfRendererBase(bases: BaseConfigs): ProdWranglerConfig {
+  if (bases.pdfRenderer) return bases.pdfRenderer;
+  throw new Error(
+    `${PACKAGE_DIRS.pdfRenderer}/wrangler.jsonc is missing: the pinned cloudflare-os has no PDF renderer, which ` +
+    "a selected Gatekeeper binds. Move the pin to a release that has it (`cf-os update`), or leave that Gatekeeper out.");
+}
+
 /** Every generated config, by the Worker it is for. */
 export function generatedOutputs(generated: GeneratedConfigs): [WorkerId, ProdWranglerConfig][] {
   const { gatekeepers, ...own } = generated;
@@ -709,7 +720,7 @@ export function generateConfigs(
     ? structuredClone(bases.errorReporter)
     : undefined;
   const pdfRenderer = deploysPdfRenderer(config, catalog)
-    ? structuredClone(bases.pdfRenderer)
+    ? structuredClone(requirePdfRendererBase(bases))
     : undefined;
   const origin = publicOrigin(config);
   const optional = Object.entries(config.gatekeepers ?? {});
