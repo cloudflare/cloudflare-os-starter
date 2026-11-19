@@ -547,8 +547,10 @@ export async function settlePin(
           result.reason,
           "Deploying a pin behind a commit a Worker runs would put older code over storage the instance has already " +
             "migrated, which cannot be undone, so the command is not one for what the instance runs. Get a fresh one " +
-            "from the deploy flow, pass a --commit that is at or past every commit its Workers name, or leave --release " +
-            "and --commit out to take the instance over at the release its Workers report.",
+            "from the deploy flow, or leave --release and --commit out to take the instance over at the release its " +
+            "Workers report. Where that stops too (a later build from an older revision), move the pin forward first, " +
+            "to a commit at or past every one above, with `pnpm cf-os update --to <commit>`, then run this again " +
+            "without --release and --commit: a pin already past the release is held to these commits where it stands.",
           "Nothing was moved or written.",
         ].join("\n"));
         return outcome({ ok: false, pin, behind: null, moved: false });

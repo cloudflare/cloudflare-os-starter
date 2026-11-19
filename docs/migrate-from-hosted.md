@@ -217,9 +217,13 @@ older revision would otherwise leave the pin behind code another Worker already 
 names no commit (a version known by its tag's run number alone, an id with no commit in it) holds
 the pin to nothing. A pin that would be behind one of them, or that cannot be placed against it,
 stops the takeover and the read-only report alike, with nothing moved: get a fresh command from the
-hosted flow, leave `--release` and `--commit` out to take the instance over at the release its
-Workers report, or, where that release's own commit is the one behind, pass a `--commit` at or past
-every commit the Workers name.
+hosted flow, or leave `--release` and `--commit` out to take the instance over at the release its
+Workers report. Where that release's own commit is the one behind (a later build from an older
+revision), no `--commit` gets past it: one that is not that release's commit is refused before any
+history is read. Move the pin forward first instead, to a commit at or past every one the message
+lists, with `pnpm cf-os update --to <commit>`, review and commit it, then run the takeover again
+without `--release` and `--commit`. A pin already past the instance's release stays where it is,
+and is held to those commits there.
 
 ### Moving the pin
 

@@ -1232,9 +1232,12 @@ test("holds the pin to the commit the Workers' own release names, whatever --rel
       assert.deepEqual(readdirSync(root).toSorted(), ["cloudflare-os", "deployment.jsonc"]);
       assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE);
       assert.match(stderr(), /The instance's Workers themselves report r004945-6c8d301 \(commit 6c8d301, reported by acme, acme-backend[^)]*\), and where commit 1111111[0-9a-f]* leaves the pin is not shown to be at or past that commit:\n6c8d301 is ahead of 1111111, /);
-      assert.match(stderr(), /Get a fresh one from the deploy flow, pass a --commit that is at or past every commit its Workers name, or leave --release and --commit out/);
+      assert.match(stderr(), /Get a fresh one from the deploy flow, or leave --release and --commit out/);
+      // The way out a later build from an older revision leaves: the pin moved forward first, past every floor.
+      assert.match(stderr(), /move the pin forward first, to a commit at or past every one above, with `pnpm cf-os update --to <commit>`, then run this again without --release and --commit/);
       assert.match(stderr(), /\nNothing was moved or written\.$/);
-      assert.doesNotMatch(stderr(), /already at or past the instance's release|update --to/);
+      // Never the move to the target: that is what would leave the pin behind the floor.
+      assert.doesNotMatch(stderr(), /already at or past the instance's release|update --to 1111111/);
     }
   }
 
