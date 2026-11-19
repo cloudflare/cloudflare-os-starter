@@ -236,9 +236,12 @@ test("never settles a version's contradictory evidence on the older release", ()
   const instance = hostedInstance([instanceWorker(reading("acme"), "router"), instanceWorker(copied, "backend")]);
   assert.deepEqual(instance.reports.map(({ name, release }) => [name, release.id ?? `run ${release.run}`]),
     [["acme", HOSTED_RELEASE], ["acme-backend", "run 4945"], ["acme-backend", NEWER]]);
-  // The later release is the instance's, and its commit is the one pinned.
+  // The later release is the instance's, and its commit is the one pinned, held to the router's.
   assert.equal(instance.release.kind === "known" && instance.release.release.id, NEWER);
-  assert.deepEqual(decideCommit(instance.reports), { ok: true, commit: "abcdef0", full: false, release: NEWER, from: "release" });
+  assert.deepEqual(decideCommit(instance.reports), {
+    ok: true, commit: "abcdef0", full: false, release: NEWER, from: "release",
+    atLeast: [{ commit: "6c8d301", release: HOSTED_RELEASE, workers: ["acme"] }],
+  });
   // A command made for the older one is stale.
   const stale = decideCommit(instance.reports, { release: HOSTED_RELEASE, commit: HOSTED_COMMIT });
   assert.ok(!stale.ok && stale.reason === "stale" && stale.message.includes(MOVED(NEWER)));
@@ -333,9 +336,11 @@ test("does not settle releases it cannot order", () => {
 test("without --commit, pins the commit the instance's release ends in", () => {
   const reports = [report("acme", HOSTED_RELEASE), report("acme-backend", HOSTED_RELEASE)];
   assert.deepEqual(decideCommit(reports), { ok: true, commit: "6c8d301", full: false, release: HOSTED_RELEASE, from: "release" });
-  // Mixed: the newest release's commit, never an older one's.
-  assert.deepEqual(decideCommit([...reports, report("acme-gk-github", NEWER)]),
-    { ok: true, commit: "abcdef0", full: false, release: NEWER, from: "release" });
+  // Mixed: the newest release's commit, never an older one's, which it must be at or past.
+  assert.deepEqual(decideCommit([...reports, report("acme-gk-github", NEWER)]), {
+    ok: true, commit: "abcdef0", full: false, release: NEWER, from: "release",
+    atLeast: [{ commit: "6c8d301", release: HOSTED_RELEASE, workers: ["acme", "acme-backend"] }],
+  });
   // --release is one more report: whichever is newer is pinned. One no Worker reports is the
   // command's word alone, so the commit the Workers themselves name is still one to be at or past.
   assert.deepEqual(decideCommit(reports, { release: NEWER }), {
@@ -374,8 +379,10 @@ test("an explicit --commit wins while the account does not show it stale", () =>
   assert.deepEqual(decideCommit(reports, flags), pinned);
   // Nothing readable in the account proves nothing.
   assert.deepEqual(decideCommit([], flags), pinned);
-  // A Worker still on an older release is behind the command, not ahead of it.
-  assert.deepEqual(decideCommit([...reports, report("acme-gk-github", "r004900-1234567")], flags), pinned);
+  // A Worker still on an older release is behind the command, not ahead of it: a commit the pin is
+  // held to, which upstream's history shows it is past.
+  const lagging = { ...pinned, atLeast: [{ commit: "1234567", release: "r004900-1234567", workers: ["acme-gk-github"] }] };
+  assert.deepEqual(decideCommit([...reports, report("acme-gk-github", "r004900-1234567")], flags), lagging);
   assert.deepEqual(decideCommit([...reports, runOnly("acme-gk-github", 4945)], flags), pinned);
   // Typed in capitals, it is the same commit.
   assert.deepEqual(decideCommit(reports, { ...flags, commit: HOSTED_COMMIT.toUpperCase() }), pinned);
@@ -389,7 +396,7 @@ test("an explicit --commit wins while the account does not show it stale", () =>
     assert.deepEqual(decideCommit(unsettled, { commit: HOSTED_COMMIT }), { ...pinned, release: null });
   }
   // A Worker left behind on an older release does not make the newest one's commit stale.
-  assert.deepEqual(decideCommit([...reports, report("acme-gk-github", "r004900-1234567")], { commit: HOSTED_COMMIT }), pinned);
+  assert.deepEqual(decideCommit([...reports, report("acme-gk-github", "r004900-1234567")], { commit: HOSTED_COMMIT }), lagging);
   // Two runs built the commit: it is the newer release's, whichever Worker is listed first.
   const rebuilt = [report("acme", HOSTED_RELEASE), report("acme-backend", "r004950-6c8d301")];
   for (const seen of [rebuilt, rebuilt.toReversed()]) {
@@ -485,7 +492,7 @@ test("refuses a --commit that is not the release's commit", () => {
   }
 });
 
-test("holds a commit to pin to the commits the Workers' own newest releases name", () => {
+test("holds a commit to pin to every commit the Workers' own releases name", () => {
   const live = [report("acme", HOSTED_RELEASE), report("acme-backend", HOSTED_RELEASE)];
   const floor = [{ commit: "6c8d301", release: HOSTED_RELEASE, workers: ["acme", "acme-backend"] }];
   const older = `1111111${"0".repeat(33)}`;
@@ -503,10 +510,20 @@ test("holds a commit to pin to the commits the Workers' own newest releases name
     ok: true, commit: older, full: true, release: null, from: "flag",
     atLeast: [{ commit: "9f8e7d6", release: "r005012-9f8e7d6", workers: ["acme"] }],
   });
-  // A report a run number puts behind another is left to the newer one to stand for.
+  // A report a run number puts behind another is held to all the same: run order is build order,
+  // not Git ancestry, so the lower run's commit may still be the newer one.
   const lagging = [report("acme", "r004900-1234567"), report("acme-backend", "r005012-9f8e7d6"), report("acme-gk-github", "dev-k3x9")];
   const decision = decideCommit(lagging, { commit: older });
-  assert.deepEqual(decision.ok && decision.atLeast, [{ commit: "9f8e7d6", release: "r005012-9f8e7d6", workers: ["acme-backend"] }]);
+  assert.deepEqual(decision.ok && decision.atLeast, [
+    { commit: "1234567", release: "r004900-1234567", workers: ["acme"] },
+    { commit: "9f8e7d6", release: "r005012-9f8e7d6", workers: ["acme-backend"] },
+  ]);
+  // A later build from an older revision: the instance's release is the Gatekeeper's, the higher
+  // run, and the backend's newer commit is still one the pin must be at or past.
+  const mixed = [...live, report("acme-gk-github", "r005000-1111111")];
+  assert.deepEqual(decideCommit(mixed), {
+    ok: true, commit: "1111111", full: false, release: "r005000-1111111", from: "release", atLeast: floor,
+  });
   // A newer report that names no commit stands for nothing: a Gatekeeper known by its tag's run
   // number alone, or by an id with no commit in it, does not hide the commit the other Workers name.
   for (const unnamed of [runOnly("acme-gk-github", 5000), report("acme-gk-github", "r005000-3333333-dirty")]) {
@@ -515,15 +532,19 @@ test("holds a commit to pin to the commits the Workers' own newest releases name
       const settled = decideCommit(seen, flags);
       assert.deepEqual(settled.ok && settled.atLeast, floor, JSON.stringify([unnamed, flags]));
     }
-    // One that does name a commit, newer still, stands for them all.
+    // One that does name a commit, newer still, is held to beside them.
     const named = decideCommit([...seen, report("acme-gk-notion", "r005012-9f8e7d6")], { release: "r999999-1111111", commit: older });
-    assert.deepEqual(named.ok && named.atLeast, [{ commit: "9f8e7d6", release: "r005012-9f8e7d6", workers: ["acme-gk-notion"] }]);
+    assert.deepEqual(named.ok && named.atLeast,
+      [...floor, { commit: "9f8e7d6", release: "r005012-9f8e7d6", workers: ["acme-gk-notion"] }]);
   }
-  // Nothing to hold to where the Workers' newest release is the one pinned, or names no commit.
+  // An older release beside the pinned one is held to as well: only upstream's history says it is
+  // behind.
+  const behind = decideCommit([...live, report("acme-gk-github", "r004900-1234567")], { commit: HOSTED_COMMIT });
+  assert.deepEqual(behind.ok && behind.atLeast, [{ commit: "1234567", release: "r004900-1234567", workers: ["acme-gk-github"] }]);
+  // Nothing to hold to where every release the Workers report is the one pinned, or names no commit.
   for (const [reports, flags] of [
     [live, {}],
     [live, { release: HOSTED_RELEASE, commit: HOSTED_COMMIT }],
-    [[...live, report("acme-gk-github", "r004900-1234567")], { commit: HOSTED_COMMIT }],
     [[report("acme", HAND_BUILT)], { release: HAND_BUILT, commit: HOSTED_COMMIT }],
     [[runOnly("acme", 4950)], { commit: HOSTED_COMMIT }],
     [[], { release: HOSTED_RELEASE }],
@@ -705,7 +726,13 @@ test("reads the Worker of every Gatekeeper-like binding, on every version servin
   // The values are the larger share's; the release is the newest any of them runs.
   assert.deepEqual(instance.backend?.gatekeepers.map(({ slug }) => slug), ["context", "github", "scheduler"]);
   assert.deepEqual(instance.backend?.unmappedGatekeepers, [{ binding: "GATEKEEPER_HOME_ASSISTANT", worker: "acme-two-words" }]);
-  assert.deepEqual(decideCommit(instance.reports), { ok: true, commit: "1234567", full: false, release: "r004960-1234567", from: "release" });
+  assert.deepEqual(decideCommit(instance.reports), {
+    ok: true, commit: "1234567", full: false, release: "r004960-1234567", from: "release",
+    atLeast: [
+      { commit: "6c8d301", release: HOSTED_RELEASE, workers: ["acme", "acme-backend", "acme-gk-context", "acme-gk-github", "acme-gk-scheduler"] },
+      { commit: "abcdef0", release: NEWER, workers: ["acme-two-words"] },
+    ],
+  });
   assert.deepEqual(instanceStops(instance), []);
 });
 
@@ -766,7 +793,10 @@ test("counts every release a rollout serves, so a newer one on a small share is 
   assert.deepEqual(worker.releases.map(({ id }) => id), [HOSTED_RELEASE, NEWER]);
   const instance = hostedInstance([worker, instanceWorker(reading("acme"), "router")]);
   assert.equal(instance.release.kind === "known" && instance.release.release.id, NEWER);
-  assert.deepEqual(decideCommit(instance.reports), { ok: true, commit: "abcdef0", full: false, release: NEWER, from: "release" });
+  assert.deepEqual(decideCommit(instance.reports), {
+    ok: true, commit: "abcdef0", full: false, release: NEWER, from: "release",
+    atLeast: [{ commit: "6c8d301", release: HOSTED_RELEASE, workers: ["acme-backend", "acme"] }],
+  });
   // Two versions of one release are one report.
   const twice = instanceWorker({ name: "acme", deployment: null, versions: [older, { ...older, id: "second" }] }, "router");
   assert.equal(twice.releases.length, 1);
@@ -1115,10 +1145,14 @@ test("stops a takeover whose router is not bound to its backend", async () => {
       "reaches its backend through that binding. acme is bound that way to acme-backend: --router and --backend are the " +
       "wrong way round.",
   }]);
-  // The right way round, it is whole, and the Gatekeeper's release is the instance's.
+  // The right way round, it is whole, and the Gatekeeper's release is the instance's, held to the
+  // commit the rest run.
   const right = await readInstance(memoryClient(account), FAKE_ACCOUNT, names);
   assert.deepEqual(instanceStops(right), []);
-  assert.deepEqual(decideCommit(right.reports), { ok: true, commit: "abcdef0", full: false, release: NEWER, from: "release" });
+  assert.deepEqual(decideCommit(right.reports), {
+    ok: true, commit: "abcdef0", full: false, release: NEWER, from: "release",
+    atLeast: [{ commit: "6c8d301", release: HOSTED_RELEASE, workers: ["acme", "acme-backend", "acme-gk-context", "acme-gk-scheduler"] }],
+  });
 
   // Another deployment's router, changed by hand: no fingerprint tells it apart, its binding does.
   const foreign = hostedMemoryAccount({

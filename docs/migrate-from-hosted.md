@@ -209,14 +209,17 @@ refused too: take the instance over at its own release, then move on with `pnpm 
 Nor are the flags the last word where the Workers themselves say otherwise. A `--release` no Worker
 reports, with a run number above them all, would read as the newest release whatever commit came
 with it; so would a `--commit` given for a hand-built release beside a CI one, or because one
-Worker's newer release names no commit. Wherever the newest release a Worker reports that names a
-commit names another than the one to pin, the pin is held against that commit too, in upstream's
-commit graph: where the takeover would leave the pin must be at or past it. A newer report that
-names no commit (a version known by its tag's run number alone, an id with no commit in it) does not
-stand in for the commit the other Workers name. A pin that would be behind it, or that cannot be
-placed against it, stops the takeover and the read-only report alike, with nothing moved: get a
-fresh command from the hosted flow, or leave `--release` and `--commit` out to take the instance
-over at the release its Workers report.
+Worker's newer release names no commit. Every commit a live Worker names through its release id,
+not only the newest release's, holds the pin when it is another than the one to pin, in upstream's
+commit graph: where the takeover would leave the pin must be at or past each of them. A higher run
+number elsewhere does not excuse one: runs order builds, not commits, and a later build from an
+older revision would otherwise leave the pin behind code another Worker already runs. A report that
+names no commit (a version known by its tag's run number alone, an id with no commit in it) holds
+the pin to nothing. A pin that would be behind one of them, or that cannot be placed against it,
+stops the takeover and the read-only report alike, with nothing moved: get a fresh command from the
+hosted flow, leave `--release` and `--commit` out to take the instance over at the release its
+Workers report, or, where that release's own commit is the one behind, pass a `--commit` at or past
+every commit the Workers name.
 
 ### Moving the pin
 

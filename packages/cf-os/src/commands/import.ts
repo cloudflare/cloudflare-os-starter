@@ -456,7 +456,8 @@ export async function settlePin(
     .map(({ workers, release: named, commit: floor }) => `${named} (commit ${floor}, reported by ${workers.join(", ")})`)
     .join("; ");
   const result = await move(decision.commit, ask ? ctx : { ...ctx, prompter: null },
-    { dryRun: !write, ...atLeast.length ? { atLeast: atLeast.map(({ commit: floor }) => floor) } : {} });
+    // Once each: two releases built from one commit are two floors, one commit to place.
+    { dryRun: !write, ...atLeast.length ? { atLeast: [...new Set(atLeast.map(({ commit: floor }) => floor))] } : {} });
   // The full SHA, once upstream's history gave it; until then, the commit as decided.
   const commit = result.to || decision.commit;
   const outcome = (fields: Pick<PinOutcome, "ok" | "pin" | "behind" | "moved">): PinOutcome =>

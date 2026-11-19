@@ -678,7 +678,8 @@ export type CommitDecision =
 
 /**
  * A commit one of the instance's Workers names as the one it runs, through its release id, where the
- * commit to pin is another. The command's `--release` and `--commit` are the operator's word, and a
+ * commit to pin is another: whatever its run number, as a higher one elsewhere is a later build, not
+ * proof of a later commit. The command's `--release` and `--commit` are the operator's word, and a
  * Worker's own release id is the account's: whatever the flags say, the pin must not end up behind a
  * commit a Worker runs, and only upstream's commit graph can say whether it would.
  */
@@ -711,16 +712,15 @@ function movedPast({ release }: ReleaseReport, made: Release): boolean {
 }
 
 /**
- * The commits `reports` hold a pin of `commit` to ({@link CommitFloor}): the one each of the newest
- * of them that names a commit does, where it is not `commit` itself. A report is left out only when
- * a run number puts it behind another that names a commit, which then stands for it. A newer report
- * that names none (a bare run number, an id with no commit in it) stands for nothing: the commit
- * the Workers behind it name is still the newest one known to run.
+ * The commits `reports` hold a pin of `commit` to ({@link CommitFloor}): every one a report names,
+ * where it is not `commit` itself. None is left out for a higher run number elsewhere: run order is
+ * build order, not Git ancestry, so a later build from an older revision does not put the newer
+ * commit another Worker runs behind it. Only upstream's history can, which is where the pin is held
+ * to each of them.
  */
 function floors(reports: readonly ReleaseReport[], commit: string): CommitFloor[] {
   const found = new Map<string, CommitFloor>();
   for (const { name, release } of reports) {
-    if (reports.some((other) => other.release.sha7 !== null && olderThan(release, other.release))) continue;
     if (release.id === null || release.sha7 === null || commit.startsWith(release.sha7)) continue;
     const floor = found.get(release.id) ?? { commit: release.sha7, release: release.id, workers: [] };
     if (!floor.workers.includes(name)) floor.workers.push(name);
@@ -754,11 +754,12 @@ function held(decision: CommitDecision, reports: readonly ReleaseReport[]): Comm
  * be resolved in upstream's history. A release that is unknown, or whose id names no commit, stops
  * and asks for `--commit`.
  *
- * Either way the flags are not the last word on a commit to pin: where the newest release a Worker
- * itself reports that names a commit names another one, the decision carries it (`atLeast`), for the
- * pin to be held against in upstream's history too. A `--release` no Worker reports, with a run
- * number above them all, would otherwise pass an older commit as the newest; so would a `--commit`
- * given because one Worker's newer release names none.
+ * Either way the flags are not the last word on a commit to pin: every other commit a Worker itself
+ * reports, through a release id that names one, the decision carries (`atLeast`), for the pin to be
+ * held against in upstream's history too. A `--release` no Worker reports, with a run number above
+ * them all, would otherwise pass an older commit as the newest; so would a `--commit` given because
+ * one Worker's newer release names none, or a later build from an older revision than another
+ * Worker runs.
  */
 export function decideCommit(
   reports: readonly ReleaseReport[],
