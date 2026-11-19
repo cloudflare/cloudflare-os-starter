@@ -10,6 +10,7 @@ import {
   type HostedWorkerOptions,
 } from "../test-support.ts";
 import { CfAuthError } from "./client.ts";
+import { validatePushIdentity } from "./deployment-config.ts";
 import { discover, fetchInventory, instanceNameProblem, nameEvidence, type Discovery, type Inventory } from "./discovery.ts";
 import { editsAsFragment, PUSH_IDENTITY_PATH } from "./edits.ts";
 import { readInstance } from "./hosted-release.ts";
@@ -313,6 +314,34 @@ test("with the instance read, values the backend does not carry are missing, nev
   const keyless = await discoverRead(hostedMemoryAccount({ "acme-backend": { secrets: [] } }));
   assert.ok(keyless.edits.some((edit) => edit.path.join(".") === "pushIdentity"));
   assert.match(keyless.notes.join("\n"), /carries a push identity but no CFOS_INSTALL_PRIVATE_KEY secret to sign with/);
+});
+
+/** The push identity `discovery` writes. */
+function pushOf(discovery: Discovery): unknown {
+  return editsAsFragment(discovery.edits).pushIdentity;
+}
+
+test("with the instance read, writes only a push identity `cf-os check` accepts", async () => {
+  // Whitespace around the service address, which the backend's URL parser drops: written without it, and said.
+  const spaced = await discoverRead(hostedMemoryAccount({ "acme-backend": { vars: { NOTIFICATION_SERVICE_URL: " https://push.example.com " } } }));
+  assert.deepEqual(pushOf(spaced), {
+    serviceUrl: "https://push.example.com", installId: "install-acme", keyId: "key-1", webPushPublicKey: "BFixtureWebPushPublicKey",
+  });
+  assert.doesNotThrow(() => validatePushIdentity(pushOf(spaced)));
+  assert.match(spaced.notes.join("\n"), /NOTIFICATION_SERVICE_URL has whitespace around it[^\n]*pushIdentity\.serviceUrl is written without it, https:\/\/push\.example\.com\./);
+  // An install id with whitespace inside, which the notification service knows it by: left out, the
+  // row marked, and the note naming the variable, the reason and the hand edit push waits on.
+  const inner = await discoverRead(hostedMemoryAccount({ "acme-backend": { vars: { CFOS_INSTALL_ID: "install acme" } } }));
+  assert.ok(!inner.edits.some((edit) => edit.path[0] === "pushIdentity"));
+  assert.deepEqual(inner.rows.filter((row) => row.label === "Push identity").map(({ found, note }) => [found, note]),
+    [["install install acme, key key-1, at https://push.example.com", "not carried over: `cf-os check` would refuse it, see below"]]);
+  const note = inner.notes.join("\n");
+  assert.match(note, /The backend's push identity is not carried over, as `cf-os check` would refuse it: pushIdentity\.installId must be a non-empty string without whitespace\./);
+  assert.match(note, /The backend's CFOS_INSTALL_ID is "install acme"\. Set pushIdentity by hand[^\n]*push notifications stop\./);
+  assert.doesNotMatch(note, /signing key is the secret/);
+  // One already as check wants it is written with neither note.
+  const plain = await discoverRead(hostedMemoryAccount());
+  assert.doesNotMatch(plain.notes.join("\n"), /whitespace around it|is not carried over, as `cf-os check`/);
 });
 
 test("with the instance read, Gatekeepers are the Workers its backend binds, whatever they are called", async () => {

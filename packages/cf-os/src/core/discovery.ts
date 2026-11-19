@@ -31,7 +31,7 @@ import {
   type CfWorkerBinding,
   type CloudflareClient,
 } from "./client.ts";
-import { AI_GATEWAY_PROVIDERS } from "./deployment-config.ts";
+import { AI_GATEWAY_PROVIDERS, validatePushIdentity } from "./deployment-config.ts";
 import { pushIdentityEdit, PUSH_IDENTITY_PATH, type DeploymentEdit } from "./edits.ts";
 import type { ExcludedGatekeeper } from "./gatekeepers.ts";
 import {
@@ -40,6 +40,7 @@ import {
   PUSH_IDENTITY_SECRET,
   PUSH_IDENTITY_VARS,
   type HostedInstance,
+  type PushIdentity,
 } from "./hosted-release.ts";
 import {
   accessAppInstance,
@@ -184,6 +185,35 @@ const AI_GATEWAY_VAR = "CF_AI_GATEWAY";
 /** The backend's service binding to the Gatekeeper with install slug `slug`. */
 function gatekeeperBinding(slug: string): string {
   return `${GATEKEEPER_BINDING_PREFIX}${slug.toUpperCase()}`;
+}
+
+/**
+ * The push identity the backend carries, as `cf-os check` holds the file's to it: `serviceUrl` with
+ * the whitespace around it dropped, as the backend's URL parser drops it (`trimmed` says it had
+ * some), and the rest as it is, since the notification service knows the identity by those exact
+ * strings. One `validatePushIdentity` still refuses is `problem`, with the variable at fault, and
+ * no `push`: written, it would stop every check and deploy.
+ */
+function checkedPush(carried: PushIdentity | null): {
+  push: PushIdentity | null;
+  trimmed?: boolean;
+  problem?: { message: string; variable?: string; value?: unknown };
+} {
+  if (!carried) return { push: null };
+  const push = { ...carried, serviceUrl: carried.serviceUrl.trim() };
+  try {
+    validatePushIdentity(push);
+  } catch (error) {
+    const message = (error as Error).message;
+    const field = /^pushIdentity\.(\w+)/.exec(message)?.[1];
+    return {
+      push: null,
+      problem: field && field in PUSH_IDENTITY_VARS
+        ? { message, variable: PUSH_IDENTITY_VARS[field as keyof PushIdentity], value: carried[field as keyof PushIdentity] }
+        : { message },
+    };
+  }
+  return push.serviceUrl === carried.serviceUrl ? { push } : { push, trimmed: true };
 }
 
 /**
@@ -380,14 +410,26 @@ export function discover(
   if (backend) {
     // The push identity: the four variables go into the file, and the key that signs with them stays
     // where it is, a secret of the backend Worker that nothing here reads.
-    const { push } = backend;
+    const { push: backendPush } = backend;
+    const { push, problem, trimmed } = checkedPush(backendPush);
     rows.push({
       label: "Push identity",
-      found: push ? `install ${push.installId}, key ${push.keyId}, at ${push.serviceUrl}` : null,
+      found: backendPush ? `install ${backendPush.installId}, key ${backendPush.keyId}, at ${backendPush.serviceUrl}` : null,
       expected: `the backend's ${[PUSH_IDENTITY_VARS.serviceUrl, PUSH_IDENTITY_VARS.installId, PUSH_IDENTITY_VARS.keyId].join(", ")} variables`,
       path: PUSH_IDENTITY_PATH.join("."),
-      ...(push ? {} : { note: "the instance has none, so it sends no push notifications, and a take-over changes nothing there" }),
+      ...(!backendPush ? { note: "the instance has none, so it sends no push notifications, and a take-over changes nothing there" }
+        : problem ? { note: "not carried over: `cf-os check` would refuse it, see below" } : {}),
     });
+    if (problem) {
+      notes.push(`The backend's push identity is not carried over, as \`cf-os check\` would refuse it: ${problem.message}` +
+        (problem.variable ? ` The backend's ${problem.variable} is ${JSON.stringify(problem.value)}.` : "") +
+        ` Set ${PUSH_IDENTITY_PATH.join(".")} by hand, to the identity the hosted flow registered for the instance, ` +
+        "before deploying: until then the deploy sends none, and push notifications stop.");
+    }
+    if (push && trimmed) {
+      notes.push(`The backend's ${PUSH_IDENTITY_VARS.serviceUrl} has whitespace around it, which the backend drops ` +
+        `when it reads the address: ${PUSH_IDENTITY_PATH.join(".")}.serviceUrl is written without it, ${push.serviceUrl}.`);
+    }
     if (push) {
       edits.push(pushIdentityEdit(push));
       notes.push(backend.pushKeyBound

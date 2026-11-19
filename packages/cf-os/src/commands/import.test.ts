@@ -5,6 +5,7 @@ import test from "node:test";
 import { cfClient } from "../cf-client.ts";
 import { parseDeployment, valueAtPath } from "../deployment-file.ts";
 import { FAKE_ACCOUNT, fakeCf, workerLiveReplies, type FakeReply } from "../fake-cf.ts";
+import { validatePushIdentity } from "../core/deployment-config.ts";
 import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
 import {
   CANCEL,
@@ -768,6 +769,30 @@ test("writes the backend's own admins, providers, origin and push identity, and 
   const undiscoverable = stderr().slice(stderr().indexOf("Not part of the hosted deploy"), stderr().indexOf("Note:"));
   assert.deepEqual([...undiscoverable.matchAll(/^ {2}(\S+) /gm)].map((match) => match[1]),
     ["workers.customGatekeeper", "workers.errorReporter", "customGatekeeper.*"]);
+});
+
+test("--out writes the push identity as check holds it: the service address trimmed, an unusable one left for a hand edit", async (t) => {
+  const spaced = scratchProject(t, TEMPLATE);
+  const trailing = await importing(spaced, ["acme"], {
+    out: "deployment.jsonc", flags: { account: FAKE_ACCOUNT },
+    account: hostedAccountLive({ "acme-backend": { vars: { NOTIFICATION_SERVICE_URL: "https://push.example.com " } } }),
+  });
+  assert.equal(trailing.code, 0);
+  const written = valueAtPath(parseDeployment(readFileSync(join(spaced, "deployment.jsonc"), "utf8")), ["pushIdentity"]);
+  assert.equal((written as { serviceUrl: string }).serviceUrl, "https://push.example.com");
+  assert.doesNotThrow(() => validatePushIdentity(written));
+  assert.match(trailing.stderr(), /Note: The backend's NOTIFICATION_SERVICE_URL has whitespace around it/);
+
+  const inner = scratchProject(t, TEMPLATE);
+  const unusable = await importing(inner, ["acme"], {
+    out: "deployment.jsonc", flags: { account: FAKE_ACCOUNT },
+    account: hostedAccountLive({ "acme-backend": { vars: { CFOS_INSTALL_ID: "install acme" } } }),
+  });
+  assert.equal(unusable.code, 0);
+  // Left as the file had it: the template sets none.
+  assert.equal(valueAtPath(parseDeployment(readFileSync(join(inner, "deployment.jsonc"), "utf8")), ["pushIdentity"]), undefined);
+  assert.match(unusable.stderr(), /\(not carried over: `cf-os check` would refuse it, see below\)/);
+  assert.match(unusable.stderr(), /Note: The backend's push identity is not carried over[^\n]*pushIdentity\.installId[^\n]*The backend's CFOS_INSTALL_ID is "install acme"\. Set pushIdentity by hand/);
 });
 
 test("a backend that carries no admins, providers or push identity leaves them to the operator, and says so", async (t) => {

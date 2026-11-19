@@ -550,7 +550,13 @@ Every deploy sends those four again. The key that signs with them is the secret
 deploy leaves a Worker's secrets in place, so the key stays bound as long as the Worker keeps its
 name. It is never in `deployment.jsonc`, and a key added to the block is refused. The block is all
 or nothing: `null` is a deployment without push, whose notifications reach open browser tabs only.
-An instance that never had a push identity stays that way, and the report says so. The identity
+An instance that never had a push identity stays that way, and the report says so. The four are
+held to what `cf-os check` accepts: whitespace around the service address, which the backend drops
+when it reads it, is dropped from the file too, with a note. Anything else check would refuse (an
+install id or key id with whitespace inside, an address that is not `https:`) is not written at all:
+the report marks the row, and a note names the variable, the reason, and that `pushIdentity` has to
+be set by hand to the identity the hosted flow registered. Until it is, the deploy sends none and
+push notifications stop. The identity
 belongs to the one installation: `pnpm cf-os init` setting up **A new deployment** over a file that
 holds one sets the block to `null`, unless the new deployment is the same Workshop Worker in the same
 account and that Worker may still be there to hold the key. A new deployment's name is one no Worker
