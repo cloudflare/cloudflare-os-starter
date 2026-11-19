@@ -105,8 +105,14 @@ export async function readBaseConfigs(
   const renderer = deploysPdfRenderer(config, catalog);
   const entries = await Promise.all(Object.entries(PACKAGE_DIRS)
     .filter(([key]) => key !== "pdfRenderer" || renderer)
-    .map(async ([key, dir]) => [key, await readJsonc(root, join(root, dir, "wrangler.jsonc"))] as const));
-  return Object.fromEntries(entries) as unknown as BaseConfigs;
+    .map(async ([key, dir]) => {
+      const path = join(root, dir, "wrangler.jsonc");
+      // Left absent, for `generateConfigs` to say which selection needs it and what to do; any other
+      // failure to read it is the error itself.
+      if (key === "pdfRenderer" && !existsSync(path)) return [key, undefined] as const;
+      return [key, await readJsonc(root, path)] as const;
+    }));
+  return Object.fromEntries(entries.filter(([, base]) => base !== undefined)) as unknown as BaseConfigs;
 }
 
 // Spawned through pnpmCommand rather than as a bare "pnpm": on Windows the pnpm on PATH is a `.cmd`

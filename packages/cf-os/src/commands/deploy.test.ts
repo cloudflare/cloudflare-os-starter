@@ -914,10 +914,12 @@ test("reads no PDF renderer base on a pin without one, unless a selected Gatekee
   assert.equal(bases.pdfRenderer, undefined);
   assert.equal(generateConfigs(config, bases, catalog).pdfRenderer, undefined);
 
-  // With Google, the file it needs is named, and what the pin lacks.
+  // With Google, the read leaves it absent rather than failing on the missing file, so what `check`
+  // and `deploy` print is the explanation: the file it needs, and what the pin lacks.
   const withGoogle = { ...config, gatekeepers: { google: { name: "acme-os-google" } } } as DeploymentConfig;
   const googleCatalog = testCatalogWithGoogle();
-  await assert.rejects(readBaseConfigs(root, withGoogle, googleCatalog), /pdf-renderer[/\\]wrangler\.jsonc/);
-  assert.throws(() => generateConfigs(withGoogle, bases, googleCatalog),
+  const googleBases = await readBaseConfigs(root, withGoogle, googleCatalog);
+  assert.equal(googleBases.pdfRenderer, undefined);
+  assert.throws(() => generateConfigs(withGoogle, googleBases, googleCatalog),
     /cloudflare-os\/packages\/pdf-renderer\/wrangler\.jsonc is missing: the pinned cloudflare-os has no PDF renderer/);
 });
