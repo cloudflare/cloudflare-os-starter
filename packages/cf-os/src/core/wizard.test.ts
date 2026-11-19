@@ -49,6 +49,8 @@ test("records a new deployment on a custom domain", () => {
       websearch: { name: "acme-gk-websearch" },
       customGatekeeper: { name: "acme-gk-custom" },
       errorReporter: { name: "acme-errors" },
+      // Written, so one a take-over of another instance left in the file is not.
+      pdfRenderer: { name: "acme-pdf-renderer" },
     },
     access: { admins: ["a@example.com"] },
     aiGateway: { enabled: true, name: "default", accountId: null, providers: ["cloudflare", "anthropic"] },

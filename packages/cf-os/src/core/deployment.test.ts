@@ -804,9 +804,23 @@ test("deploys upstream's PDF renderer first, and binds Google to it", async () =
   assert.ok(!buildCommands(withOptional, catalog).flat().some(({ args }) => args.includes("@gadgets/pdf-renderer")));
   assert.ok(!deployOrder(withOptional, catalog).includes("pdfRenderer"));
 
-  // Its name is one of the deployment's, deployed or not.
-  assert.throws(() => validateConfig(variant((c) => { c.workers.pdfRenderer = { name: c.workers.context.name }; })),
+  // Its name is checked only where it is deployed: a 51-character router name makes a 64-character
+  // renderer name, which fails a deployment with Google and nothing else.
+  type Change = Parameters<typeof variant>[0];
+  const longRouter: Change = (c) => { c.workers.router.name = "a".repeat(51); };
+  const withGoogleAnd = (change: Change) =>
+    variant((c) => { Object.assign(c, structuredClone(withGoogle)); change(c); });
+  assert.doesNotThrow(() => generateConfigs(variant(longRouter), bases, catalog));
+  assert.throws(() => generateConfigs(withGoogleAnd(longRouter), bases, googleCatalog),
+    /workers\.pdfRenderer\.name: a{51}-pdf-renderer is not a Worker name[\s\S]*set workers\.pdfRenderer\.name to a shorter one/);
+  assert.equal(generateConfigs(withGoogleAnd((c) => { longRouter(c); c.workers.pdfRenderer = { name: "acme-pdf" }; }),
+    bases, googleCatalog).pdfRenderer!.name, "acme-pdf");
+  // A name another Worker has, likewise.
+  const shared: Change = (c) => { c.workers.pdfRenderer = { name: c.workers.context.name }; };
+  assert.doesNotThrow(() => generateConfigs(variant(shared), bases, catalog));
+  assert.throws(() => generateConfigs(withGoogleAnd(shared), bases, googleCatalog),
     /names must be unique: acme-cloudflare-os-context is used twice/);
+  // A block that is not a name is refused either way.
   assert.throws(() => validateConfig(variant((c) => { c.workers.pdfRenderer = {} as { name: string }; })),
     /workers.pdfRenderer must be an object with a name/);
 });

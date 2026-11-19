@@ -193,9 +193,9 @@ export function newDeploymentEdits(answers: NewDeploymentAnswers): DeploymentEdi
       value: "customDomain" in route ? null : `https://${routerHost(answers.name, route)}`,
     },
     ...(Object.entries(names) as [WorkerKey, string][])
+      // The PDF renderer's too, deployed or not: left out, a name a take-over wrote would stay, and
+      // the new deployment would deploy over that deployment's renderer and bind Google to it.
       .filter(([key]) => key !== "customGatekeeper" || custom)
-      // Left out: absent, the PDF renderer is named as this would name it.
-      .filter(([key]) => key !== "pdfRenderer")
       .map(([key, name]) => ({ path: ["workers", key, "name"], value: name })),
     {
       path: ["workers", "router", "route"],

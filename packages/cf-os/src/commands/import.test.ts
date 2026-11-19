@@ -241,6 +241,17 @@ test("--out sets another deployment's custom Gatekeeper and Error Reporter names
   }
 });
 
+test("--out sets another deployment's PDF renderer name to the instance's, not to a placeholder", async (t) => {
+  // beta's file names beta's renderer, and acme has none: a placeholder would stop a deployment without Google.
+  const root = scratchProject(t, gatekeepersTemplate("beta").replace('"workers": {', '"workers": { "pdfRenderer": { "name": "beta-pdf-renderer" },'));
+  const { code, stderr } = await importing(root, ["acme"], { out: "acme.jsonc", flags: { account: FAKE_ACCOUNT } });
+  assert.equal(code, 0);
+  const written = parseDeployment(readFileSync(join(root, "acme.jsonc"), "utf8"));
+  assert.equal(valueAtPath(written, ["workers", "pdfRenderer", "name"]), "acme-pdf-renderer");
+  assert.match(stderr(), /workers\.pdfRenderer\.name \(beta-pdf-renderer\)\. workers\.pdfRenderer\.name goes to acme-pdf-renderer instead/);
+  assert.match(stderr(), /setting workers\.pdfRenderer\.name to acme-pdf-renderer/);
+});
+
 /** {@link gatekeepersTemplate}, naming beta's Context and Web Search Gatekeeper Workers too. */
 function builtInsTemplate(router: string): string {
   return gatekeepersTemplate(router)

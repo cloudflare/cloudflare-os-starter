@@ -15,7 +15,7 @@ import type {
 } from "./deployment-config.ts";
 import { PDF_RENDERER_SERVICE, type CatalogGatekeeper, type GatekeeperCatalog } from "./gatekeepers.ts";
 import { PUSH_IDENTITY_VARS, type PushIdentity } from "./hosted-release.ts";
-import { BUILT_IN_GATEKEEPER_SLUGS } from "./naming.ts";
+import { BUILT_IN_GATEKEEPER_SLUGS, WORKER_NAME } from "./naming.ts";
 
 /**
  * Where each Worker's package lives, relative to the project root, keyed as `deployment.jsonc` keys
@@ -339,24 +339,10 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
       (!renderer || typeof renderer !== "object" || typeof (renderer as { name?: unknown }).name !== "string")) {
     throw new Error("workers.pdfRenderer must be an object with a name, or absent to name it <router name>-pdf-renderer.");
   }
-  // The renderer's name whether or not it is deployed: a selection can add it without this file
-  // changing anywhere else.
-  const workerNames = [
-    ...Object.entries(config.workers)
-      .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
-      .filter(([key]) => key !== "customGatekeeper" || customGatekeeper)
-      .filter(([key]) => key !== "pdfRenderer")
-      .map(([, worker]) => worker!.name),
-    pdfRendererName(config),
-    ...Object.values(config.gatekeepers ?? {}).map((entry) => entry.name),
-  ];
+  const workerNames = deployedWorkerNames(config);
   const duplicate = workerNames.find((name, index) => workerNames.indexOf(name) !== index);
-  if (duplicate !== undefined) {
-    throw new Error(
-      "Router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, Error Reporter, PDF " +
-      `renderer and optional Gatekeeper names must be unique: ${duplicate} is used twice.`);
-  }
-  if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
+  if (duplicate !== undefined) throw sharedNameError(duplicate);
+  if (!workerNames.every((name) => WORKER_NAME.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
   }
 
@@ -447,6 +433,27 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
 }
 
 /**
+ * The names of the Workers `config` deploys, but for the PDF renderer's: whether that one is
+ * deployed depends on the catalog, so {@link validateGatekeepers} checks it.
+ */
+function deployedWorkerNames(config: DeploymentConfig): string[] {
+  return [
+    ...Object.entries(config.workers)
+      .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
+      .filter(([key]) => key !== "customGatekeeper" || customGatekeeperEnabled(config))
+      .filter(([key]) => key !== "pdfRenderer")
+      .map(([, worker]) => worker!.name),
+    ...Object.values(config.gatekeepers ?? {}).map((entry) => entry.name),
+  ];
+}
+
+function sharedNameError(name: string): Error {
+  return new Error(
+    "Router, Workshop, Context, Scheduler, Web Search, custom Gatekeeper, Error Reporter, PDF " +
+    `renderer and optional Gatekeeper names must be unique: ${name} is used twice.`);
+}
+
+/**
  * The shape of `gatekeepers`, which needs no catalog: slugs, names and vars. Whether each slug is
  * one upstream offers is {@link validateGatekeepers}'s question.
  */
@@ -526,6 +533,18 @@ export function validateGatekeepers(config: DeploymentConfig, catalog: Gatekeepe
       if (entry.vars?.[input.name] === undefined) {
         throw new Error(`Missing required deployment value: gatekeepers.${slug}.vars.${input.name} (${input.label}).`);
       }
+    }
+  }
+  // Checked only where the renderer is deployed, so a name it would have, too long beside a long
+  // router name, say, fails no deployment that never deploys it.
+  if (deploysPdfRenderer(config, catalog)) {
+    const name = pdfRendererName(config);
+    if (deployedWorkerNames(config).includes(name)) throw sharedNameError(name);
+    if (!WORKER_NAME.test(name)) {
+      throw new Error(
+        `workers.pdfRenderer.name: ${name} is not a Worker name: lowercase letters, numbers and hyphens, at ` +
+        "most 63 characters." + (config.workers.pdfRenderer ? "" : " It is the router's name with -pdf-renderer " +
+        "added, which Google's Gatekeeper needs deployed; set workers.pdfRenderer.name to a shorter one."));
     }
   }
 }

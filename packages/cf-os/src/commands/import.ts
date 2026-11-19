@@ -64,7 +64,7 @@ import {
   type HandEditedWorker,
   type HostedInstance,
 } from "../core/hosted-release.ts";
-import { coreNames, CUSTOM_NAMES_HINT, findInstances, WORKER_NAME, type CoreNames } from "../core/naming.ts";
+import { coreNames, CUSTOM_NAMES_HINT, findInstances, WORKER_NAME, workerNames, type CoreNames } from "../core/naming.ts";
 import { parseDeployment, updateDeployment } from "../deployment-file.ts";
 import { loadCatalog } from "../gatekeeper-catalog.ts";
 import { waitOn } from "../prompt.ts";
@@ -146,11 +146,16 @@ const UNDISCOVERED_WORKERS = [
   { path: ["workers", "errorReporter", "name"], placeholder: "<ERROR_REPORTER_WORKER_NAME>", builtIn: false },
 ];
 
+/** Where the PDF renderer's name goes: optional, so `--out` sets another deployment's to the instance's, not to a placeholder. */
+const RENDERER_PATH = ["workers", "pdfRenderer", "name"];
+
 /**
  * The edits setting Worker names back to placeholders when the file names a router but is not the
  * instance's ({@link fileIsInstance}): the custom Gatekeeper's and the Error Reporter's, which
  * discovery never writes, and each built-in Gatekeeper's `discovery` found the instance none of
- * (without `discovery`, the built-in ones are left alone: nothing says which it wrote). `--out` would
+ * (without `discovery`, the built-in ones are left alone: nothing says which it wrote). The PDF
+ * renderer's, when `discovery` found the instance none, goes to the name the hosted deploy gives the
+ * instance's instead: a placeholder would stop a deployment that never deploys one. `--out` would
  * otherwise keep another deployment's names in a file that reads as this instance's.
  */
 export function foreignWorkers(
@@ -170,15 +175,23 @@ export function foreignWorkers(
     const kept = builtIn && (discovery === undefined || discovered(discovery, path.join(".")));
     return typeof name === "string" && !isPlaceholder(name) && !kept ? [{ path, placeholder, name }] : [];
   });
-  if (!named.length) return { resets: [] };
+  const renderer = valueAtPath(file, RENDERER_PATH);
+  const instanceRenderer = workerNames(n).pdfRenderer;
+  const rendererReset = typeof renderer === "string" && renderer !== instanceRenderer && discovery !== undefined &&
+      !discovered(discovery, RENDERER_PATH.join("."))
+    ? { path: RENDERER_PATH, value: instanceRenderer } : undefined;
+  if (!named.length && !rendererReset) return { resets: [] };
+  const listed = [...named, ...rendererReset ? [{ path: RENDERER_PATH, name: renderer as string }] : []];
   return {
-    resets: named.map(({ path, placeholder }) => ({ path, value: placeholder })),
+    resets: [...named.map(({ path, placeholder }) => ({ path, value: placeholder })), ...rendererReset ? [rendererReset] : []],
     // An instance under a router name of its own can share its name with another deployment's router.
     note: (router === n && instanceRouter !== n
       ? `The file is the deployment's whose router is ${router}, not ${n}'s in account ${accountId}, whose router is ${instanceRouter}`
       : `The file is ${router}'s, not ${n}'s in account ${accountId}`) + ", so the Worker names it gives the rest may be " +
-      `that deployment's: ${named.map(({ path, name }) => `${path.join(".")} (${name})`).join(", ")}. --out sets them ` +
-      "back to placeholders, and `pnpm cf-os init` asks for this deployment's.",
+      `that deployment's: ${listed.map(({ path, name }) => `${path.join(".")} (${name})`).join(", ")}.` +
+      (named.length ? " --out sets them back to placeholders, and `pnpm cf-os init` asks for this deployment's." : "") +
+      (rendererReset ? ` ${RENDERER_PATH.join(".")} goes to ${instanceRenderer} instead, the name the hosted deploy gives ` +
+        `${n}'s: a placeholder would stop a deployment that deploys no PDF renderer.` : ""),
   };
 }
 
@@ -651,7 +664,9 @@ export async function run(
     const removed = removals.length
       ? `, removing ${removals.length} gatekeepers ${removals.length === 1 ? "entry" : "entries"}` : "";
     const unpushed = pushRemovals.length ? `, removing ${PUSH_IDENTITY_PATH.join(".")}` : "";
-    const reset = resets.length ? `, setting ${resets.map(({ path }) => path.join(".")).join(" and ")} back to placeholders` : "";
+    const placeheld = resets.filter(({ value }) => isPlaceholder(value));
+    const reset = (placeheld.length ? `, setting ${placeheld.map(({ path }) => path.join(".")).join(" and ")} back to placeholders` : "") +
+      resets.filter(({ value }) => !isPlaceholder(value)).map(({ path, value }) => `, setting ${path.join(".")} to ${String(value)}`).join("");
     ctx.out.log(`\nWrote ${discovery.edits.length} values to ${outWhere}${removed}${unpushed}${reset} (local file only; nothing in ` +
       `the account changed). Review it${outPath === inPath ? ` with \`git diff ${outWhere}\`` : ""}, ` +
       "fill in what is listed above, then run `pnpm cf-os check` and, once it passes, `pnpm cf-os deploy`." +
