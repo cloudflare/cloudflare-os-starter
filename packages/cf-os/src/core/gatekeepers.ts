@@ -13,6 +13,11 @@ import type { ProdWranglerConfig } from "./deployment-config.ts";
  */
 export const PDF_RENDERER_SERVICE = "pdf-renderer";
 
+/** Whether `gatekeeper` binds upstream's PDF renderer, which is then deployed beside it. */
+export function bindsPdfRenderer(gatekeeper: CatalogGatekeeper): boolean {
+  return gatekeeper.config.services?.some((service) => service.service === PDF_RENDERER_SERVICE) ?? false;
+}
+
 /** One Gatekeeper the starter can deploy beside the built-in ones. */
 export interface CatalogGatekeeper {
   /** The hosted install slug: its `gatekeepers` key, `GATEKEEPER_<SLUG>` binding and route. */

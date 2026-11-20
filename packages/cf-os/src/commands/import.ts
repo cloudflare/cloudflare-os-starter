@@ -43,7 +43,7 @@ import {
   type Context,
   type TakeoverFlags,
 } from "../context.ts";
-import type { CloudflareClient } from "../core/client.ts";
+import type { CfWorker, CloudflareClient } from "../core/client.ts";
 import {
   discover,
   fetchInventory,
@@ -53,11 +53,12 @@ import {
   type Inventory,
 } from "../core/discovery.ts";
 import { editsAsFragment, isPlaceholder, PUSH_IDENTITY_PATH, valueAtPath, type DeploymentEdit } from "../core/edits.ts";
-import type { GatekeeperCatalog } from "../core/gatekeepers.ts";
+import { bindsPdfRenderer, PDF_RENDERER_SERVICE, type GatekeeperCatalog } from "../core/gatekeepers.ts";
 import {
   decideCommit,
   formatHandEdited,
   formatReleases,
+  installationOf,
   instanceStops,
   readInstance,
   type CommitDecision,
@@ -67,7 +68,7 @@ import {
 import { coreNames, CUSTOM_NAMES_HINT, findInstances, WORKER_NAME, workerNames, type CoreNames } from "../core/naming.ts";
 import { parseDeployment, updateDeployment } from "../deployment-file.ts";
 import { loadCatalog } from "../gatekeeper-catalog.ts";
-import { waitOn } from "../prompt.ts";
+import { waitOn, type Prompter } from "../prompt.ts";
 import { resolveAccount } from "./account.ts";
 import { movePin, type PinMove } from "./update.ts";
 
@@ -149,14 +150,276 @@ const UNDISCOVERED_WORKERS = [
 /** Where the PDF renderer's name goes: optional, so `--out` sets another deployment's to the instance's, not to a placeholder. */
 const RENDERER_PATH = ["workers", "pdfRenderer", "name"];
 
+/** Whose the file is, for a note on names it gives that may be another deployment's. */
+function foreignFile(router: string, accountId: string, n: string, instanceRouter: string): string {
+  // An instance under a router name of its own can share its name with another deployment's router.
+  return router === n && instanceRouter !== n
+    ? `The file is the deployment's whose router is ${router}, not ${n}'s in account ${accountId}, whose router is ${instanceRouter}`
+    : `The file is ${router}'s, not ${n}'s in account ${accountId}`;
+}
+
+/** The router name the file gives, when it is not the instance's ({@link fileIsInstance}). */
+function foreignRouter(file: Record<string, unknown>, accountId: string, n: string, instanceRouter: string): string | undefined {
+  const router = valueAtPath(file, ["workers", "router", "name"]);
+  return typeof router !== "string" || isPlaceholder(router) || fileIsInstance(file, accountId, n, instanceRouter)
+    ? undefined : router;
+}
+
+/**
+ * The edit setting the PDF renderer's name to the one the hosted deploy gives instance `n`'s, with a
+ * note, when the file names a router but is not the instance's ({@link fileIsInstance}), names
+ * another renderer, and `discovery` found the instance none: the name is then another deployment's,
+ * which a deploy with Google would deploy over. Not a placeholder, which would stop a deployment
+ * that never deploys one.
+ */
+export function foreignRenderer(
+  file: Record<string, unknown>,
+  accountId: string,
+  n: string,
+  instanceRouter = n,
+  discovery?: Discovery,
+): { reset?: DeploymentEdit; note?: string } {
+  const router = foreignRouter(file, accountId, n, instanceRouter);
+  const renderer = valueAtPath(file, RENDERER_PATH);
+  const instanceRenderer = workerNames(n).pdfRenderer;
+  if (router === undefined || typeof renderer !== "string" || renderer === instanceRenderer || discovery === undefined ||
+      discovered(discovery, RENDERER_PATH.join("."))) {
+    return {};
+  }
+  return {
+    reset: { path: RENDERER_PATH, value: instanceRenderer },
+    note: `${foreignFile(router, accountId, n, instanceRouter)}, so the PDF renderer name it gives, ` +
+      `${RENDERER_PATH.join(".")} (${renderer}), may be that deployment's. ${rendererMove(n, instanceRenderer)}`,
+  };
+}
+
+/**
+ * Where a takeover deploys the PDF renderer, held to the hosted flow's word or the operator's: a
+ * Worker standing under the name is taken for this deployment's only where what it runs carries
+ * this installation's tag (`installationOf`), or where the operator says it is. The name is the
+ * instance's own file's ({@link fileIsInstance}), which stands where no Worker has it yet or its
+ * Worker is tagged as this installation's; else the hosted `N-pdf-renderer`, where discovery found it
+ * unproven; else the one derived from the router's. A Worker there that nothing shows is the instance's is asked about
+ * with `prompter` (`init --take-over`'s): deploy over it, or another name. Without one, `write`
+ * stops, and the report says what --out would need; `--pdf-renderer` (`chosen`) answers it either way.
+ * Where the output deploys no renderer (`deploys`, no Gatekeeper it selects binds one), nothing is
+ * asked: a free name is written, so a Gatekeeper added later does not deploy over that Worker. The answer
+ * goes into `discovery.edits`, so the resets after it leave it be; notes go to `say`. Resolves to the
+ * reason the takeover stops, or undefined.
+ */
+export async function settleRenderer(
+  file: Record<string, unknown>,
+  accountId: string,
+  n: string,
+  instanceRouter: string,
+  discovery: Discovery,
+  workers: readonly CfWorker[],
+  { client, instance, prompter, chosen, write, deploys, say, edits = [] }: {
+    client: CloudflareClient;
+    instance: HostedInstance;
+    prompter: Prompter | null;
+    chosen?: string;
+    write: boolean;
+    deploys: boolean;
+    say: (note: string) => void;
+    /** Edits the output makes beyond discovery's: `import`'s removals, `init`'s answers. */
+    edits?: readonly DeploymentEdit[];
+  },
+): Promise<string | undefined> {
+  const path = RENDERER_PATH.join(".");
+  const set = (name: string) => {
+    discovery.edits = [...discovery.edits.filter((edit) => edit.path.join(".") !== path), { path: [...RENDERER_PATH], value: name }];
+  };
+  const exists = (name: string) => workers.some((worker) => worker.name === name);
+  const own = valueAtPath(file, RENDERER_PATH);
+  let name: string;
+  let what: string;
+  // Another of the output's deployed Workers' names is no renderer's: the hosted one, or the rest, can
+  // stand. The output is the file with discovery's edits and `edits` over it, so a name they replace
+  // is free, and so is one the output deploys no Worker under (a reporter or custom Gatekeeper turned off).
+  const output = applied(file, [...discovery.edits, ...edits]);
+  const workersBlock = { ...valueAtPath(output, ["workers"]) as object } as Record<string, unknown>;
+  delete workersBlock.pdfRenderer;
+  if (valueAtPath(output, ["errorReporting", "enabled"]) === false) delete workersBlock.errorReporter;
+  if (valueAtPath(output, ["customGatekeeper", "enabled"]) === false) delete workersBlock.customGatekeeper;
+  // So is any Worker serving the instance in another role, which the inspection read from every
+  // version serving the backend's traffic: the output may not keep it, but the live instance calls it.
+  // And any Worker a router or backend version serving traffic binds at all (its Gatekeepers, the
+  // router's own for /gatekeeper/*, the Error Reporter): neither binds the renderer, which only a
+  // Gatekeeper does, so each is another Worker the live instance still calls.
+  const bound = instance.workers.filter(({ role }) => role === "router" || role === "backend")
+    .flatMap(({ reading }) => reading.versions.flatMap((version) => (version.bindings ?? [])
+      .filter((binding) => binding.type === "service" && binding.service)
+      .map((binding) => binding.service!)));
+  const others = new Set([
+    ...fileWorkerNames({ ...output, workers: workersBlock }),
+    ...instance.workers.map((worker) => worker.name),
+    ...bound,
+  ]);
+  const usable = (candidate: unknown): candidate is string =>
+    typeof candidate === "string" && WORKER_NAME.test(candidate) && !others.has(candidate);
+  if (chosen !== undefined) {
+    // The flag may confirm going over a Worker; it cannot give one Worker two roles.
+    if (others.has(chosen)) {
+      const clash = `--pdf-renderer ${chosen} is another of this deployment's Workers' names too, and a Worker has one ` +
+        "role: name another.";
+      if (write) return clash;
+      say(clash);
+      return undefined;
+    }
+    // Said in the report, which shows what discovery found, and where it is out already (init's) too.
+    const found = discovery.edits.find((edit) => edit.path.join(".") === path)?.value;
+    const row = discovery.rows.find((candidate) => candidate.path === path);
+    if (row) row.note = `--pdf-renderer: ${chosen} is written`;
+    say(`--pdf-renderer names ${chosen} as ${path}` +
+      (typeof found === "string" && found !== chosen ? `, in place of ${found}` : "") +
+      (!deploys ? `: kept for later, as no Gatekeeper selected binds the renderer, so this deploy leaves ${exists(chosen) ? "that Worker" : "it"} alone.`
+        : exists(chosen) ? `: ${chosen} is a Worker in the account, which the deploy goes over.` : ": the deploy creates it."));
+    set(chosen);
+    return undefined;
+  }
+  if (usable(own) && fileIsInstance(file, accountId, n, instanceRouter)) {
+    // The file's own, held to the same proof as any: a name no Worker has yet, or one whose Worker
+    // carries this installation's tag, stands, over the hosted name discovery found too, which the
+    // report says. The file cannot say whether a name it holds was an answer or only reserved.
+    const whose = exists(own) ? await installationOf(client, accountId, own, instance) : "none";
+    if (!exists(own) || whose === "this") {
+      const found = discovery.edits.find((edit) => edit.path.join(".") === path)?.value;
+      if (typeof found === "string" && found !== own) {
+        const row = discovery.rows.find((candidate) => candidate.path === path);
+        if (row) row.note = `the file's ${own} is kept in its place`;
+        say(`The file names ${own} as ${path}, which stays in place of ${found}, the hosted renderer: the deploy ` +
+          `deploys the renderer as ${own}, and leaves ${found} be.`);
+      }
+      set(own);
+      return undefined;
+    }
+    name = own;
+    what = `the file's ${path}, runs what is ${whose === "another" ? "tagged as another installation's" : "not tagged as this installation's"}`;
+  } else if (discovery.pdfRendererUnproven !== undefined) {
+    name = discovery.pdfRendererUnproven;
+    what = `the name the hosted flow gives ${n}'s renderer, runs what is not tagged as this installation's`;
+  } else {
+    // Proven, discovery wrote it. Else the name the output keeps: another deployment's file's,
+    // reset to the hosted one (`foreignRenderer`), that file's own where nothing resets it, or the
+    // one derived from the router.
+    const proven = discovery.rows.find((row) => row.path === path && row.found !== null)?.found;
+    if (proven !== undefined && proven !== null && !others.has(proven)) return undefined;
+    const reset = foreignRenderer(file, accountId, n, instanceRouter, discovery).reset;
+    name = typeof reset?.value === "string" ? reset.value
+      : usable(own) ? own : `${instanceRouter}-${PDF_RENDERER_SERVICE}`;
+    if (usable(name) && (!exists(name) || await installationOf(client, accountId, name, instance) === "this")) {
+      // What passed is what is written: a name the file gives that did not stand is replaced, unless
+      // another deployment's, which `foreignRenderer` resets.
+      // So is a proven name another Worker takes, discovery's edit for it included.
+      if (reset === undefined && (typeof own === "string" && own !== name || typeof proven === "string")) set(name);
+      return undefined;
+    }
+    what = "the name the renderer would be deployed under, runs what is not tagged as this installation's";
+  }
+  const taken = new Set([...workers.map((worker) => worker.name), ...fileWorkerNames(file), ...others]);
+  const fresh = [
+    ...Array.from({ length: 98 }, (_, i) => `${name}-${i + 2}`),
+    ...Array.from({ length: 98 }, (_, i) => `${n}-pdf-${i + 2}`),
+  ].find((candidate) => WORKER_NAME.test(candidate) && !taken.has(candidate));
+  const standing = `Worker ${name}, ${what}: nothing shows it is this deployment's PDF renderer, and deploying the ` +
+    `renderer as ${name} replaces it.`;
+  // A name another of the output's Workers takes is that Worker's, and one too long is no Worker's:
+  // the renderer goes under a free one, or one asked for, and never over it.
+  if (!usable(name)) {
+    const why = others.has(name) ? `${name} is another of this deployment's Workers` : `${name} is no Worker name`;
+    if (fresh !== undefined) {
+      set(fresh);
+      say(`${why}, so ${path} is ${fresh}.`);
+      return undefined;
+    }
+    const reserved = `${why}, and no free name was found for the renderer: pass --pdf-renderer with a name no Worker has.`;
+    if (!write) {
+      say(reserved);
+      return undefined;
+    }
+    if (!prompter) return reserved;
+    set(await prompter.text(`${why}. PDF renderer Worker name`, {
+      validate: (text) => !WORKER_NAME.test(text) ? "Use lowercase letters, numbers and hyphens."
+        : taken.has(text) ? `${text} is a Worker in the account, or another of this deployment's: name one no Worker has.`
+        : undefined,
+    }));
+    return undefined;
+  }
+  // With no name free to keep for later, it is asked about as if the renderer were deployed: left as
+  // it is, a Gatekeeper added later would deploy over that Worker.
+  if (!deploys && fresh !== undefined) {
+    set(fresh);
+    say(`${standing} No Gatekeeper selected binds the renderer, so none is deployed now; ${path} is ${fresh}, so one ` +
+      "added later does not go over it.");
+    return undefined;
+  }
+  const flags = `--pdf-renderer ${name} if it is this deployment's, to deploy over it, or --pdf-renderer <name> for ` +
+    `another${fresh ? ` (${fresh} is free)` : ""}`;
+  if (!write) {
+    say(`${standing} --out needs it answered: pass ${flags}.`);
+    return undefined;
+  }
+  if (!prompter) return `${standing} Pass ${flags}.`;
+  const choice = await prompter.select(`${standing} Is it this deployment's?`, [
+    { value: "rename" as const, label: "No: use another name" },
+    { value: "over" as const, label: `Yes: deploy over ${name}` },
+  ], "rename");
+  if (choice === "over") {
+    set(name);
+    return undefined;
+  }
+  set(await prompter.text("PDF renderer Worker name", {
+    initial: fresh,
+    validate: (text) => !WORKER_NAME.test(text) ? "Use lowercase letters, numbers and hyphens."
+      : taken.has(text) ? `${text} is a Worker in the account, or another of this deployment's: name one no Worker has.`
+      : undefined,
+  }));
+  return undefined;
+}
+
+/** `file` with `edits` applied over it, in order: an edit to `undefined` removes what is at its path. */
+function applied(file: Record<string, unknown>, edits: readonly DeploymentEdit[]): Record<string, unknown> {
+  const out = structuredClone(file);
+  for (const { path, value } of edits) {
+    let at: Record<string | number, unknown> = out;
+    for (const key of path.slice(0, -1)) {
+      const next = at[key];
+      if (!next || typeof next !== "object") at[key] = {};
+      at = at[key] as Record<string | number, unknown>;
+    }
+    const last = path.at(-1)!;
+    if (value === undefined) delete at[last];
+    else at[last] = value;
+  }
+  return out;
+}
+
+/** The Worker names `file` gives: each of `workers.<key>.name`, and each Gatekeeper's. */
+function fileWorkerNames(file: Record<string, unknown>): string[] {
+  return [...namesIn(valueAtPath(file, ["workers"])), ...namesIn(valueAtPath(file, ["gatekeepers"]))];
+}
+
+/** The string `name` of each entry of `block`, an object of named entries. */
+function namesIn(block: unknown): string[] {
+  return block && typeof block === "object"
+    ? Object.values(block).map((entry) => valueAtPath(entry, ["name"])).filter((name): name is string => typeof name === "string")
+    : [];
+}
+
+/** What becomes of a renderer name {@link foreignRenderer} resets. */
+function rendererMove(n: string, instanceRenderer: string): string {
+  return `${RENDERER_PATH.join(".")} goes to ${instanceRenderer} instead, the name the hosted deploy gives ` +
+    `${n}'s: a placeholder would stop a deployment that deploys no PDF renderer.`;
+}
+
 /**
  * The edits setting Worker names back to placeholders when the file names a router but is not the
  * instance's ({@link fileIsInstance}): the custom Gatekeeper's and the Error Reporter's, which
  * discovery never writes, and each built-in Gatekeeper's `discovery` found the instance none of
  * (without `discovery`, the built-in ones are left alone: nothing says which it wrote). The PDF
- * renderer's, when `discovery` found the instance none, goes to the name the hosted deploy gives the
- * instance's instead: a placeholder would stop a deployment that never deploys one. `--out` would
- * otherwise keep another deployment's names in a file that reads as this instance's.
+ * renderer's goes to the name the hosted deploy gives the instance's ({@link foreignRenderer}).
+ * `--out` would otherwise keep another deployment's names in a file that reads as this instance's.
  */
 export function foreignWorkers(
   file: Record<string, unknown>,
@@ -165,33 +428,23 @@ export function foreignWorkers(
   instanceRouter = n,
   discovery?: Discovery,
 ): { resets: DeploymentEdit[]; note?: string } {
-  const router = valueAtPath(file, ["workers", "router", "name"]);
-  if (typeof router !== "string" || isPlaceholder(router) || fileIsInstance(file, accountId, n, instanceRouter)) {
-    return { resets: [] };
-  }
+  const router = foreignRouter(file, accountId, n, instanceRouter);
+  if (router === undefined) return { resets: [] };
   const named = UNDISCOVERED_WORKERS.flatMap(({ path, placeholder, builtIn }) => {
     const name = valueAtPath(file, path);
     // A built-in Gatekeeper's name stands where discovery writes the instance's own over it.
     const kept = builtIn && (discovery === undefined || discovered(discovery, path.join(".")));
     return typeof name === "string" && !isPlaceholder(name) && !kept ? [{ path, placeholder, name }] : [];
   });
-  const renderer = valueAtPath(file, RENDERER_PATH);
-  const instanceRenderer = workerNames(n).pdfRenderer;
-  const rendererReset = typeof renderer === "string" && renderer !== instanceRenderer && discovery !== undefined &&
-      !discovered(discovery, RENDERER_PATH.join("."))
-    ? { path: RENDERER_PATH, value: instanceRenderer } : undefined;
+  const { reset: rendererReset } = foreignRenderer(file, accountId, n, instanceRouter, discovery);
   if (!named.length && !rendererReset) return { resets: [] };
-  const listed = [...named, ...rendererReset ? [{ path: RENDERER_PATH, name: renderer as string }] : []];
+  const listed = [...named, ...rendererReset ? [{ path: RENDERER_PATH, name: valueAtPath(file, RENDERER_PATH) as string }] : []];
   return {
     resets: [...named.map(({ path, placeholder }) => ({ path, value: placeholder })), ...rendererReset ? [rendererReset] : []],
-    // An instance under a router name of its own can share its name with another deployment's router.
-    note: (router === n && instanceRouter !== n
-      ? `The file is the deployment's whose router is ${router}, not ${n}'s in account ${accountId}, whose router is ${instanceRouter}`
-      : `The file is ${router}'s, not ${n}'s in account ${accountId}`) + ", so the Worker names it gives the rest may be " +
+    note: `${foreignFile(router, accountId, n, instanceRouter)}, so the Worker names it gives the rest may be ` +
       `that deployment's: ${listed.map(({ path, name }) => `${path.join(".")} (${name})`).join(", ")}.` +
       (named.length ? " --out sets them back to placeholders, and `pnpm cf-os init` asks for this deployment's." : "") +
-      (rendererReset ? ` ${RENDERER_PATH.join(".")} goes to ${instanceRenderer} instead, the name the hosted deploy gives ` +
-        `${n}'s: a placeholder would stop a deployment that deploys no PDF renderer.` : ""),
+      (rendererReset ? ` ${rendererMove(n, rendererReset.value as string)}` : ""),
   };
 }
 
@@ -321,7 +574,11 @@ export async function inspectInstance(
   // synchronously, so `pending` already covers them all.
   const reading = fetchInventory(reads.quiet, accountId);
   const inventory = await (reads.pending() ? waitOn(ctx.prompter, INVENTORY_LABEL, () => reading) : reading);
-  const hosted = await waitOn(ctx.prompter, INSTANCE_LABEL, () => readInstance(reads.quiet, accountId, names));
+  // The renderer under the hosted flow's name is read too, where the account has one, to tell whether it is the instance's.
+  const renderer = workerNames(instance).pdfRenderer;
+  const inAccount = inventory.workers.some((worker) => worker.name === renderer);
+  const hosted = await waitOn(ctx.prompter, INSTANCE_LABEL, () => readInstance(reads.quiet, accountId,
+    { ...names, ...inAccount && { renderer } }));
   return { names, inventory, hosted };
 }
 
@@ -456,7 +713,8 @@ export async function settlePin(
     .map(({ workers, release: named, commit: floor }) => `${named} (commit ${floor}, reported by ${workers.join(", ")})`)
     .join("; ");
   const result = await move(decision.commit, ask ? ctx : { ...ctx, prompter: null },
-    { dryRun: !write, ...atLeast.length ? { atLeast: atLeast.map(({ commit: floor }) => floor) } : {} });
+    // Once each: two releases built from one commit are two floors, one commit to place.
+    { dryRun: !write, ...atLeast.length ? { atLeast: [...new Set(atLeast.map(({ commit: floor }) => floor))] } : {} });
   // The full SHA, once upstream's history gave it; until then, the commit as decided.
   const commit = result.to || decision.commit;
   const outcome = (fields: Pick<PinOutcome, "ok" | "pin" | "behind" | "moved">): PinOutcome =>
@@ -508,8 +766,10 @@ export async function settlePin(
           result.reason,
           "Deploying a pin behind a commit a Worker runs would put older code over storage the instance has already " +
             "migrated, which cannot be undone, so the command is not one for what the instance runs. Get a fresh one " +
-            "from the deploy flow, pass a --commit that is at or past every commit its Workers name, or leave --release " +
-            "and --commit out to take the instance over at the release its Workers report.",
+            "from the deploy flow, or leave --release and --commit out to take the instance over at the release its " +
+            "Workers report. Where that stops too (a later build from an older revision), move the pin forward first, " +
+            "to a commit at or past every one above, with `pnpm cf-os update --to <commit>`, then run this again " +
+            "without --release and --commit: a pin already past the release is held to these commits where it stands.",
           "Nothing was moved or written.",
         ].join("\n"));
         return outcome({ ok: false, pin, behind: null, moved: false });
@@ -628,9 +888,32 @@ export async function run(
   const standing = await settlePin(ctx, decision, { write: out !== undefined }, pin);
   if (!standing.ok) return 1;
 
-  const discovery = discoverInstance(instance, inventory, await catalog(ctx.root), { names, instance: hosted });
+  const gatekeepers = await catalog(ctx.root);
+  const discovery = discoverInstance(instance, inventory, gatekeepers, { names, instance: hosted });
   const { removals, note } = foreignGatekeepers(file, account.id, instance, discovery, names.router);
   if (note) discovery.notes.push(note);
+  // Whether the output deploys the renderer: a Gatekeeper it selects, the file's or the instance's, binds one.
+  const listed = valueAtPath(file, ["gatekeepers"]);
+  const selected = [
+    ...listed && typeof listed === "object" ? Object.keys(listed) : [],
+    ...discovery.foundGatekeepers.map(({ slug }) => slug),
+  ].filter((slug) => !removals.some((removal) => removal.path.join(".") === `gatekeepers.${slug}`));
+  // Another deployment's Worker names this output resets free those names: the renderer's reset aside,
+  // which is the renderer step's own to settle.
+  const pendingResets = foreignWorkers(file, account.id, instance, names.router, discovery).resets
+    .filter((reset) => reset.path.join(".") !== RENDERER_PATH.join("."));
+  const stop = await settleRenderer(file, account.id, instance, names.router, discovery, inventory.workers, {
+    edits: [...removals, ...pendingResets],
+    deploys: selected.some((slug) => gatekeepers.offered.some((entry) => entry.slug === slug && bindsPdfRenderer(entry))),
+    // `import` asks nothing, as it moves the pin unasked: --pdf-renderer answers it, or it stops.
+    client: cache.quiet, instance: hosted, prompter: null, chosen: flags["pdf-renderer"], write: out !== undefined,
+    say: (text) => discovery.notes.push(text),
+  });
+  if (stop) {
+    ctx.out.log(`\n${stop} Nothing was written` +
+      `${standing.moved ? `, but the cloudflare-os pin had moved to ${standing.pin}, staged and not committed, and stays there` : ""}.`);
+    return 1;
+  }
   const { resets, note: workersNote } = foreignWorkers(file, account.id, instance, names.router, discovery);
   if (workersNote) discovery.notes.push(workersNote);
   const { removals: pushRemovals, note: pushNote } = foreignPushIdentity(file, account.id, instance, discovery, names.router);

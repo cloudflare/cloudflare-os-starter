@@ -678,7 +678,8 @@ export type CommitDecision =
 
 /**
  * A commit one of the instance's Workers names as the one it runs, through its release id, where the
- * commit to pin is another. The command's `--release` and `--commit` are the operator's word, and a
+ * commit to pin is another: whatever its run number, as a higher one elsewhere is a later build, not
+ * proof of a later commit. The command's `--release` and `--commit` are the operator's word, and a
  * Worker's own release id is the account's: whatever the flags say, the pin must not end up behind a
  * commit a Worker runs, and only upstream's commit graph can say whether it would.
  */
@@ -711,16 +712,15 @@ function movedPast({ release }: ReleaseReport, made: Release): boolean {
 }
 
 /**
- * The commits `reports` hold a pin of `commit` to ({@link CommitFloor}): the one each of the newest
- * of them that names a commit does, where it is not `commit` itself. A report is left out only when
- * a run number puts it behind another that names a commit, which then stands for it. A newer report
- * that names none (a bare run number, an id with no commit in it) stands for nothing: the commit
- * the Workers behind it name is still the newest one known to run.
+ * The commits `reports` hold a pin of `commit` to ({@link CommitFloor}): every one a report names,
+ * where it is not `commit` itself. None is left out for a higher run number elsewhere: run order is
+ * build order, not Git ancestry, so a later build from an older revision does not put the newer
+ * commit another Worker runs behind it. Only upstream's history can, which is where the pin is held
+ * to each of them.
  */
 function floors(reports: readonly ReleaseReport[], commit: string): CommitFloor[] {
   const found = new Map<string, CommitFloor>();
   for (const { name, release } of reports) {
-    if (reports.some((other) => other.release.sha7 !== null && olderThan(release, other.release))) continue;
     if (release.id === null || release.sha7 === null || commit.startsWith(release.sha7)) continue;
     const floor = found.get(release.id) ?? { commit: release.sha7, release: release.id, workers: [] };
     if (!floor.workers.includes(name)) floor.workers.push(name);
@@ -754,11 +754,12 @@ function held(decision: CommitDecision, reports: readonly ReleaseReport[]): Comm
  * be resolved in upstream's history. A release that is unknown, or whose id names no commit, stops
  * and asks for `--commit`.
  *
- * Either way the flags are not the last word on a commit to pin: where the newest release a Worker
- * itself reports that names a commit names another one, the decision carries it (`atLeast`), for the
- * pin to be held against in upstream's history too. A `--release` no Worker reports, with a run
- * number above them all, would otherwise pass an older commit as the newest; so would a `--commit`
- * given because one Worker's newer release names none.
+ * Either way the flags are not the last word on a commit to pin: every other commit a Worker itself
+ * reports, through a release id that names one, the decision carries (`atLeast`), for the pin to be
+ * held against in upstream's history too. A `--release` no Worker reports, with a run number above
+ * them all, would otherwise pass an older commit as the newest; so would a `--commit` given because
+ * one Worker's newer release names none, or a later build from an older revision than another
+ * Worker runs.
  */
 export function decideCommit(
   reports: readonly ReleaseReport[],
@@ -898,6 +899,14 @@ export interface HostedInstance {
   backend: BackendValues | null;
   /** The router and backend names it was read under, when it was read from an account ({@link readInstance}). */
   asked?: { router: string; backend: string };
+  /**
+   * The Worker bearing the hosted flow's name for the instance's PDF renderer, where the account has
+   * one and it was asked for ({@link readInstance}): `proven` when every version serving its traffic
+   * carries the hosted flow's tag with the instance's installation fingerprint. Not one of `workers`:
+   * it holds no data, so its release holds no pin, and a Worker that merely bears the name is no
+   * reason to stop a takeover.
+   */
+  renderer?: { name: string; proven: boolean };
 }
 
 /** `reading` judged as the instance's `role`. */
@@ -1206,7 +1215,7 @@ export async function readWorkers(
 export async function readInstance(
   client: CloudflareClient,
   accountId: string,
-  { router, backend, others = [] }: { router: string; backend: string; others?: readonly string[] },
+  { router, backend, others = [], renderer }: { router: string; backend: string; others?: readonly string[]; renderer?: string },
 ): Promise<HostedInstance> {
   const backendReading = await readWorker(client, accountId, backend);
   // What each version serving the backend's traffic binds: a rollout's smaller share may bind a
@@ -1239,5 +1248,49 @@ export async function readInstance(
     if (!reading || !entry) missing.push(name);
     else workers.push(instanceWorker(reading, entry.role, entry.slug));
   }
-  return hostedInstance(workers, missing, { router, backend });
+  const instance = hostedInstance(workers, missing, { router, backend });
+  if (renderer === undefined) return instance;
+  // Read for its tag alone, which says whether it is the instance's. It is no part of the instance:
+  // it holds no data, so what it runs holds no pin, and a Worker merely bearing the name stops nothing.
+  return { ...instance, renderer: { name: renderer, proven: await installationOf(client, accountId, renderer, instance) === "this" } };
+}
+
+/**
+ * Whose installation Worker `name` is, by the hosted flow's own word, its tag's fingerprint: `this`
+ * when every version serving its traffic carries the one `instance`'s router and backend share,
+ * `another` when one carries a different one, `none` when it was read and nothing says (untagged, as
+ * a self-hosted deploy leaves it, or with no deployment), and `unknown` when that cannot be told:
+ * reading it failed, or it is tagged but the router and backend share no one fingerprint to hold it
+ * to (both redeployed by the starter, say). Either of the two will do, as a backend redeployed by
+ * hand loses its tag and the router still says whose installation it is; a Gatekeeper's will not, as
+ * one bound by only part of the backend's traffic may be another installation's.
+ */
+export async function installationOf(
+  client: CloudflareClient,
+  accountId: string,
+  name: string,
+  instance: HostedInstance,
+): Promise<"this" | "another" | "none" | "unknown"> {
+  let reading: WorkerReading | null;
+  try {
+    reading = await readWorker(client, accountId, name);
+  } catch {
+    return "unknown";
+  }
+  return installationOfRead(reading, instance);
+}
+
+/** {@link installationOf}, of what a Worker was read to run: null for one with no deployment. */
+function installationOfRead(reading: WorkerReading | null, instance: HostedInstance): "this" | "another" | "none" | "unknown" {
+  const tags = (reading?.versions ?? []).map((version) => flowTag(version)?.fingerprint);
+  if (tags.every((tag) => tag === undefined)) return "none";
+  // The fingerprint the instance's router and backend carry, which are the instance by name and
+  // binding: a Gatekeeper's alone, one bound by only part of the backend's traffic say, could be
+  // another installation's, and would vouch for its renderer.
+  const carried = [...new Set(instance.workers.filter(({ role }) => role === "router" || role === "backend")
+    .flatMap((worker) => worker.fingerprints))];
+  if (carried.length !== 1) return "unknown";
+  const [fingerprint] = carried;
+  if (tags.some((tag) => tag !== undefined && tag !== fingerprint)) return "another";
+  return tags.every((tag) => tag === fingerprint) ? "this" : "none";
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { testCatalog } from "../test-support.ts";
-import { editsAsFragment } from "./edits.ts";
+import { editsAsFragment, type DeploymentEdit } from "./edits.ts";
 import {
   adminsProblem,
   defaultHost,
@@ -154,6 +154,19 @@ test("finds which derived names are taken, the chosen optional Gatekeepers' incl
   const workers = [{ name: "acme-gk-github" }, { name: "acme-gk-slack" }];
   assert.deepEqual(nameCollisions("acme", workers), []);
   assert.deepEqual(nameCollisions("acme", workers, ["github", "notion"]), ["acme-gk-github"]);
+  // Not the PDF renderer's: deployed only beside a Gatekeeper that binds it, which init asks about.
+  assert.deepEqual(nameCollisions("acme", [{ name: "acme-pdf-renderer" }]), []);
+  assert.deepEqual(nameCollisions("acme", [{ name: "acme-pdf-renderer" }], ["google"]), []);
+});
+
+/** The PDF renderer's name `edits` write. */
+function renderer(edits: DeploymentEdit[]): unknown {
+  return edits.find((edit) => edit.path.join(".") === "workers.pdfRenderer.name")?.value;
+}
+
+test("records the PDF renderer's name: the one asked for, else the derived one", () => {
+  assert.equal(renderer(newDeploymentEdits(answers({ customDomain: "os.example.com" }))), "acme-pdf-renderer");
+  assert.equal(renderer(newDeploymentEdits({ ...answers({ customDomain: "os.example.com" }), pdfRenderer: "acme-pdf" })), "acme-pdf");
 });
 
 test("offers os.<zone> and keeps the hostname inside the zone", () => {

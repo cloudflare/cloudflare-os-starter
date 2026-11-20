@@ -91,10 +91,16 @@ export interface TakeoverFlags {
   release?: string;
   /** `--commit`: the cloudflare-os commit that release was built from, all 40 hex digits. */
   commit?: string;
+  /**
+   * `--pdf-renderer`: the Worker name to deploy the PDF renderer as, answering the question a takeover
+   * asks where a Worker stands under the renderer's name that nothing shows is this deployment's. A
+   * Worker by that name is the operator's to deploy over.
+   */
+  "pdf-renderer"?: string;
 }
 
 /** The {@link TakeoverFlags}, in the order a printed command gives them. */
-export const TAKEOVER_FLAGS = ["router", "backend", "release", "commit"] as const satisfies readonly (keyof TakeoverFlags)[];
+export const TAKEOVER_FLAGS = ["router", "backend", "release", "commit", "pdf-renderer"] as const satisfies readonly (keyof TakeoverFlags)[];
 
 /** What each of {@link TAKEOVER_FLAGS} must look like, and how a value that does not is described. */
 const TAKEOVER_FLAG_FORMS: Record<keyof TakeoverFlags, { pattern: RegExp; expected: string }> = {
@@ -102,6 +108,7 @@ const TAKEOVER_FLAG_FORMS: Record<keyof TakeoverFlags, { pattern: RegExp; expect
   backend: { pattern: WORKER_NAME, expected: "a Worker name: lowercase letters, digits and inner hyphens, at most 63 characters" },
   release: { pattern: RELEASE_ID, expected: "a release id, such as r004945-6c8d301: copy it from the deploy flow" },
   commit: { pattern: FULL_COMMIT, expected: "a full commit SHA: all 40 hex digits" },
+  "pdf-renderer": { pattern: WORKER_NAME, expected: "a Worker name: lowercase letters, digits and inner hyphens, at most 63 characters" },
 };
 
 /** The option `name` of `values` as text; undefined when it was not given. */

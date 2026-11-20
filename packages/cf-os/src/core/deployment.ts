@@ -13,7 +13,7 @@ import type {
   ProdWranglerConfig,
   RouterRoute,
 } from "./deployment-config.ts";
-import { PDF_RENDERER_SERVICE, type CatalogGatekeeper, type GatekeeperCatalog } from "./gatekeepers.ts";
+import { bindsPdfRenderer, PDF_RENDERER_SERVICE, type CatalogGatekeeper, type GatekeeperCatalog } from "./gatekeepers.ts";
 import { PUSH_IDENTITY_VARS, type PushIdentity } from "./hosted-release.ts";
 import { BUILT_IN_GATEKEEPER_SLUGS, WORKER_NAME } from "./naming.ts";
 
@@ -86,8 +86,18 @@ export function pdfRendererName(config: DeploymentConfig): string {
  * Gatekeeper that uses it, so a deployment without one has no Worker nothing calls.
  */
 export function deploysPdfRenderer(config: DeploymentConfig, catalog: GatekeeperCatalog): boolean {
-  return gatekeeperSlugs(config).some((slug) => offeredGatekeeper(catalog, slug).config.services
-    ?.some((service) => service.service === PDF_RENDERER_SERVICE));
+  return gatekeeperSlugs(config).some((slug) => bindsPdfRenderer(offeredGatekeeper(catalog, slug)));
+}
+
+/**
+ * The PDF renderer's base config, which a deployment that deploys the renderer needs: a pin from
+ * before upstream had the package cannot deploy a Gatekeeper that binds it.
+ */
+function requirePdfRendererBase(bases: BaseConfigs): ProdWranglerConfig {
+  if (bases.pdfRenderer) return bases.pdfRenderer;
+  throw new Error(
+    `${PACKAGE_DIRS.pdfRenderer}/wrangler.jsonc is missing: the pinned cloudflare-os has no PDF renderer, which ` +
+    "a selected Gatekeeper binds. Move the pin to a release that has it (`cf-os update`), or leave that Gatekeeper out.");
 }
 
 /** Every generated config, by the Worker it is for. */
@@ -197,7 +207,11 @@ export function publicOrigin(config: DeploymentConfig): string {
   return `https://${config.workers.router.route.customDomain!}`;
 }
 
-function validatePublicBaseUrl(config: DeploymentConfig, route: RouterRoute): void {
+/**
+ * Throws unless `publicBaseUrl` is null on a custom domain, or an `https://` origin the router
+ * answers on: its custom domain, or `https://<router name>.<subdomain>.workers.dev`.
+ */
+export function validatePublicBaseUrl(config: DeploymentConfig, route: RouterRoute): void {
   const value = config.publicBaseUrl;
   if (value === undefined) {
     throw new Error(
@@ -709,7 +723,7 @@ export function generateConfigs(
     ? structuredClone(bases.errorReporter)
     : undefined;
   const pdfRenderer = deploysPdfRenderer(config, catalog)
-    ? structuredClone(bases.pdfRenderer)
+    ? structuredClone(requirePdfRendererBase(bases))
     : undefined;
   const origin = publicOrigin(config);
   const optional = Object.entries(config.gatekeepers ?? {});

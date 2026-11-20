@@ -76,6 +76,7 @@ flags in its own copy yet; `npx cf-os@latest update` brings them.
 | `--router <name>`, `--backend <name>` | Its router and backend Workers, when they are not `N` and `N-backend` (section 4) |
 | `--release <id>` | The release it runs, as the hosted flow names it (section 3) |
 | `--commit <sha>` | The `cloudflare-os` commit that release was built from, all 40 hex digits (section 3) |
+| `--pdf-renderer <name>` | The Worker to deploy the PDF renderer as, where a Worker stands under its name that nothing shows is this deployment's: the answer to the question a takeover asks there ([The PDF renderer](#the-pdf-renderer)) |
 
 Whichever way it starts, a takeover does these in order, and stops with nothing written at the
 first that fails:
@@ -209,14 +210,21 @@ refused too: take the instance over at its own release, then move on with `pnpm 
 Nor are the flags the last word where the Workers themselves say otherwise. A `--release` no Worker
 reports, with a run number above them all, would read as the newest release whatever commit came
 with it; so would a `--commit` given for a hand-built release beside a CI one, or because one
-Worker's newer release names no commit. Wherever the newest release a Worker reports that names a
-commit names another than the one to pin, the pin is held against that commit too, in upstream's
-commit graph: where the takeover would leave the pin must be at or past it. A newer report that
-names no commit (a version known by its tag's run number alone, an id with no commit in it) does not
-stand in for the commit the other Workers name. A pin that would be behind it, or that cannot be
-placed against it, stops the takeover and the read-only report alike, with nothing moved: get a
-fresh command from the hosted flow, or leave `--release` and `--commit` out to take the instance
-over at the release its Workers report.
+Worker's newer release names no commit. Every commit a live Worker names through its release id,
+not only the newest release's, holds the pin when it is another than the one to pin, in upstream's
+commit graph: where the takeover would leave the pin must be at or past each of them. A higher run
+number elsewhere does not excuse one: runs order builds, not commits, and a later build from an
+older revision would otherwise leave the pin behind code another Worker already runs. A report that
+names no commit (a version known by its tag's run number alone, an id with no commit in it) holds
+the pin to nothing. A pin that would be behind one of them, or that cannot be placed against it,
+stops the takeover and the read-only report alike, with nothing moved: get a fresh command from the
+hosted flow, or leave `--release` and `--commit` out to take the instance over at the release its
+Workers report. Where that release's own commit is the one behind (a later build from an older
+revision), no `--commit` gets past it: one that is not that release's commit is refused before any
+history is read. Move the pin forward first instead, to a commit at or past every one the message
+lists, with `pnpm cf-os update --to <commit>`, review and commit it, then run the takeover again
+without `--release` and `--commit`. A pin already past the instance's release stays where it is,
+and is held to those commits there.
 
 ### Moving the pin
 
@@ -547,11 +555,25 @@ Every deploy sends those four again. The key that signs with them is the secret
 deploy leaves a Worker's secrets in place, so the key stays bound as long as the Worker keeps its
 name. It is never in `deployment.jsonc`, and a key added to the block is refused. The block is all
 or nothing: `null` is a deployment without push, whose notifications reach open browser tabs only.
-An instance that never had a push identity stays that way, and the report says so. The identity
-belongs to the one installation: `pnpm cf-os init` setting up **A new deployment** over a file that
-holds one sets the block to `null`, unless the new deployment is the same Workshop Worker in the same
-account and that Worker may still be there to hold the key. A new deployment's name is one no Worker
-in the account has, so that is only where the account's Workers could not be listed.
+An instance that never had a push identity stays that way, and the report says so. The four are held
+to what `cf-os check` accepts: the service address is written as the backend's URL parser reads it,
+where it parses as an `https:` URL as it is: the spaces and control characters the parser drops
+around it dropped, and any whitespace inside encoded, with a note. One that does not parse as it is
+(a non-breaking space before it, say) is left for the hand edit below. A browser key check would
+refuse costs browser push enrollment alone: the rest is carried over with `webPushPublicKey` null,
+since native push signs without it, and a note names the variable. Without the key a browser can no
+longer enroll or renew its subscription, and the setting is hidden, but browsers already subscribed
+keep receiving pushes, which the backend still sends, until their subscriptions lapse. Anything else
+check would refuse (an install id or key id with whitespace inside, an address that is not `https:`)
+is not written at all: the report marks the row, and a note names the variable, the reason, and that
+`pushIdentity` has to be set by hand to the identity the hosted flow registered. A block the file
+already holds (a rerun over the instance's own file) is left as it is and deployed as it is, so
+check it against the backend's variables; without one, the deploy sends none and push notifications
+stop. The identity belongs to the one installation: `pnpm cf-os init` setting up **A new
+deployment** over a file that holds one sets the block to `null`, unless the new deployment is the
+same Workshop Worker in the same account and that Worker may still be there to hold the key. A new
+deployment's name is one no Worker in the account has, so that is only where the account's Workers
+could not be listed.
 
 Two things only the hosted flow can do, so a taken-over deployment cannot:
 
@@ -588,9 +610,29 @@ it.
 ### The PDF renderer
 
 An instance on a release with Google's scanned-PDF reading also runs `N-pdf-renderer`, which the
-hosted flow deploys with every instance. The lookup writes its name as `workers.pdfRenderer.name`,
-and with Google carried over the deploy updates it in place. Without Google the starter deploys no
-renderer: the instance's keeps running unbound, holding no data, and can be deleted the same way.
+hosted flow deploys with every instance. A deploy under a Worker's name replaces whatever Worker has
+it, and the renderer holds no data, so no migration check stands in the way: the takeover takes a
+Worker under the renderer's name for this deployment's only on the hosted flow's word, a tag on what
+it runs with the installation's fingerprint, or on yours. Tagged, `N-pdf-renderer` is written as
+`workers.pdfRenderer.name`, and with Google carried over the deploy updates it in place. Its release
+holds no pin (section 3): it stores nothing, and is deployed with Google from the same pin, so older
+renderer code over newer leaves nothing behind. The instance's own file keeps the name it gives,
+over the hosted one too, where no Worker has that name yet or its Worker carries this installation's
+tag; otherwise the name is asked about like any other, as the file cannot say whether it was an
+answer or only reserved (this project's deploys leave the renderer untagged, so a takeover run again
+once it has deployed asks again, or takes `--pdf-renderer`). Anywhere else a Worker stands under the
+name the renderer would be deployed as, the hosted one or the one derived from a router name of its
+own, and nothing shows it is this deployment's: where a Gatekeeper the deployment selects binds the
+renderer, `init --take-over` asks, once the Gatekeepers are chosen, whether to deploy over it or use
+another name, the first free one offered; where none does, nothing is deployed there now, and the
+first free name is written without asking, so a Gatekeeper added later does not go over that Worker.
+`import`, which asks nothing, says so without `--out` and, where the renderer is deployed, stops
+with it, naming `--pdf-renderer <name>`, which answers the question for either command (naming the
+Worker standing there deploys over it). Without Google the starter deploys no renderer: the
+instance's keeps running unbound, holding no data, and can be deleted the same way. An instance
+without one, taken over in a file another deployment's renderer name is in, gets `N-pdf-renderer` in
+its place, from `init --take-over` and `import --out` alike: the other name is that deployment's
+Worker, which a deploy with Google would deploy over.
 
 ## 9. Verify
 

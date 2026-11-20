@@ -8,6 +8,12 @@ import { CANCEL, scratchProject, scriptedPrompter, TEMPLATE, testContext, type S
 import { DEFAULT_TEMPLATE, UPSTREAM } from "./scaffold.ts";
 import { BRIEF, findSubmodule, movePin, update, type PinMove, type UpdateDeps, type UpdateOptions } from "./update.ts";
 
+// Keeps the git commands this suite runs, and those of the code it drives, out of any trace2
+// listener in the user's git config: one that writes into a repository's .git can race the
+// cleanup of a scratch repository, failing it with ENOTEMPTY, or hold the run open past the test
+// runner's idle limit. The environment variable overrides trace2.eventTarget.
+process.env.GIT_TRACE2_EVENT = "0";
+
 const OLD_HEAD = "a".repeat(40);
 const TARGET = "b".repeat(40);
 const OLD_PIN = "c".repeat(40);

@@ -19,16 +19,19 @@ import {
   BACK,
   CANCEL,
   DEFAULT,
+  fixtureVersionId,
   HOSTED_COMMIT,
   HOSTED_RELEASE,
   hostedAccount,
   hostedAccountLive,
+  hostedInstanceLive,
   hostedWorkerLive,
   recordingPinMove,
   scratchProject,
   scriptedPrompter,
   TEMPLATE,
   testCatalog,
+  testCatalogWithGoogle,
   testContext,
   type PinMoveCall,
   type Step,
@@ -270,6 +273,41 @@ test("configures a new deployment on a custom domain, steering around a taken ho
   assert.equal(readFileSync(join(root, "deployment.jsonc"), "utf8"), TEMPLATE, "--out wrote in place");
   const create = calls.find((call) => call.args.includes("create"))!;
   assert.equal(JSON.parse(flag(create.args, "--body")!).domain, "cf-os.example.com");
+});
+
+test("a new deployment asks about a taken PDF renderer name only once a chosen Gatekeeper binds the renderer", async (t) => {
+  const replies = account({ "workers list": [{ name: "ops-pdf-renderer" }] });
+  const start: Step[] = [
+    ["What are you setting up?", "new"],
+    ["Base name", "ops"],
+    ["Where will people reach it?", "custom"],
+    ["Which zone?", "zone-1"],
+    ["Hostname", "ops.example.com"],
+  ];
+  const end: Step[] = [["No Access application covers ops.example.com", "create"], ["Deploy now?", false]];
+  // Without Google the renderer is not deployed, so the name is no reason to rename: ops is taken as
+  // typed. The file still names the renderer for a Gatekeeper added later by hand, which no prompt
+  // guards, so it names a free one, not the account's Worker.
+  const without = await init(t, [...start, ...REST, ...end], replies, { catalog: testCatalogWithGoogle() });
+  assert.equal(without.code, 0);
+  assert.equal(valueAtPath(without.written(), ["workers", "router", "name"]), "ops");
+  assert.equal(valueAtPath(without.written(), ["workers", "pdfRenderer", "name"]), "ops-pdf-renderer-2");
+  assert.match(without.stderr(), /ops-pdf-renderer is a Worker the account already has, so workers\.pdfRenderer\.name is ops-pdf-renderer-2/);
+  assert.doesNotMatch(without.stderr(), /Already in the account/);
+  assert.ok(!without.prompter.asked.some(({ message }) => message === "PDF renderer Worker name"));
+
+  // With Google, the renderer would go over the account's Worker of that name: asked, and the answer written.
+  const rest = REST.map((step): Step => step[0] === "Which Gatekeepers?" ? ["Which Gatekeepers?", ["custom", "google"]] : step);
+  const withGoogle = await init(t, [...start, ...rest, ["PDF renderer Worker name", "ops-pdf"], ...end], replies,
+    { catalog: testCatalogWithGoogle() });
+  assert.equal(withGoogle.code, 0);
+  assert.equal(withGoogle.prompter.asked.find(({ message }) => message === "PDF renderer Worker name")!.initial, "ops-pdf-renderer");
+  assert.match(withGoogle.stderr(), /The PDF renderer would be deployed as ops-pdf-renderer, a Worker the account already has, and a Gatekeeper chosen binds it\./);
+  assert.equal(valueAtPath(withGoogle.written(), ["workers", "pdfRenderer", "name"]), "ops-pdf");
+  assert.deepEqual(valueAtPath(withGoogle.written(), ["gatekeepers"]), { google: { name: "ops-gk-google" } });
+  // A name another of this deployment's Workers takes is refused, though the account has no Worker by it yet.
+  await assert.rejects(init(t, [...start, ...rest, ["PDF renderer Worker name", "ops-gk-google"]], replies,
+    { catalog: testCatalogWithGoogle() }), /"ops-gk-google" fails "PDF renderer Worker name": ops-gk-google is another of this deployment's Workers\./);
 });
 
 test("a new deployment does not send the push identity a takeover left in the file", async (t) => {
@@ -1802,6 +1840,137 @@ test("--take-over is the takeover of that instance, without asking what is being
   assert.match(log, /\nWrote 26 values to init\.jsonc, comments intact\./);
 });
 
+test("--take-over names the instance's PDF renderer, not the one another deployment's file names", async (t) => {
+  // beta's file names beta's renderer, and acme has none: `import --out` resets it the same way.
+  const template = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"beta"').replace('"<CLOUDFLARE_ACCOUNT_ID>"', `"${FAKE_ACCOUNT}"`)
+    .replace('"workers": {', '"workers": { "pdfRenderer": { "name": "beta-pdf-renderer" },');
+  assert.ok(template.includes("beta-pdf-renderer"));
+  const { code, written, stderr } = await init(t, TAKEOVER, liveAccount(), { ...takingOver(), template });
+  assert.equal(code, 0);
+  assert.equal(valueAtPath(written(), ["workers", "pdfRenderer", "name"]), "acme-pdf-renderer");
+  assert.match(stderr(), new RegExp(`The file is beta's, not acme's in account ${FAKE_ACCOUNT}, so the PDF renderer name it ` +
+    "gives, workers\\.pdfRenderer\\.name \\(beta-pdf-renderer\\), may be that deployment's\\. workers\\.pdfRenderer\\.name " +
+    "goes to acme-pdf-renderer instead"));
+});
+
+test("--take-over asks, once the Gatekeepers are chosen, about a renderer standing that nothing shows is this deployment's", async (t) => {
+  // acme-pdf-renderer is in the account, untagged, and acme's Google, which binds the renderer, is kept.
+  const live = liveAccount({
+    "acme-backend": { services: { GATEKEEPER_GOOGLE: "acme-gk-google" } },
+    "acme-gk-google": { operation: "gk-google" },
+    "acme-pdf-renderer": { annotations: {} },
+  });
+  const replies = { ...live, "workers list": [...live["workers list"] as { name: string }[], { name: "acme-gk-google" }, { name: "acme-pdf-renderer" }] };
+  const options = { ...takingOver(), catalog: testCatalogWithGoogle() };
+  const before = TAKEOVER.slice(0, -1);
+  const renamed = await init(t, [...before, ["Worker acme-pdf-renderer", "rename"], ["PDF renderer Worker name", "acme-renderer"], ["Deploy now?", false]],
+    replies, options);
+  assert.equal(renamed.code, 0, renamed.stderr());
+  assert.equal(valueAtPath(renamed.written(), ["workers", "pdfRenderer", "name"]), "acme-renderer");
+  const question = renamed.prompter.asked.find(({ message }) => message.startsWith("Worker acme-pdf-renderer"))!.message;
+  assert.match(question, /^Worker acme-pdf-renderer, the name the hosted flow gives acme's renderer, runs what is not tagged as this installation's: nothing shows it is this deployment's PDF renderer, and deploying the renderer as acme-pdf-renderer replaces it\. Is it this deployment's\?$/);
+  // After the Gatekeepers are chosen.
+  const order = renamed.prompter.asked.map(({ message }) => message);
+  assert.ok(order.findIndex((message) => message.startsWith("Which Gatekeepers?")) < order.indexOf(question));
+  const over = await init(t, [...before, ["Worker acme-pdf-renderer", "over"], ["Deploy now?", false]], replies, options);
+  assert.equal(valueAtPath(over.written(), ["workers", "pdfRenderer", "name"]), "acme-pdf-renderer");
+  // --pdf-renderer answers it, and nothing is asked.
+  const flagged = await init(t, TAKEOVER, replies, { ...takingOver({ "pdf-renderer": "acme-pdf-renderer" }), catalog: testCatalogWithGoogle() });
+  assert.equal(flagged.code, 0, flagged.stderr());
+  assert.equal(valueAtPath(flagged.written(), ["workers", "pdfRenderer", "name"]), "acme-pdf-renderer");
+  assert.ok(!flagged.prompter.asked.some(({ message }) => message.startsWith("Worker acme-pdf-renderer")));
+  // Google left out: nothing deploys the renderer, so nothing is asked, and a free name is kept.
+  const without = await init(t, TAKEOVER.map((step): Step => step[0] === "Which Gatekeepers?" ? ["Which Gatekeepers?", ["custom", "github"]] : step),
+    replies, options);
+  assert.equal(without.code, 0, without.stderr());
+  assert.equal(valueAtPath(without.written(), ["workers", "pdfRenderer", "name"]), "acme-pdf-renderer-2");
+  assert.ok(!without.prompter.asked.some(({ message }) => message.startsWith("Worker acme-pdf-renderer")));
+});
+
+test("--take-over lets no saved renderer name stand that a Gatekeeper answered in the wizard takes", async (t) => {
+  // acme's own file keeps acme-gk-google for its renderer, and the backend binds no Google yet; the
+  // operator adds Google under that default name. The proven acme-pdf-renderer stands instead.
+  const live = liveAccount({ "acme-pdf-renderer": {} });
+  const replies = { ...live, "workers list": [...live["workers list"] as { name: string }[], { name: "acme-pdf-renderer" }] };
+  const template = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"acme"').replace('"<CLOUDFLARE_ACCOUNT_ID>"', `"${FAKE_ACCOUNT}"`)
+    .replace('"workers": {', '"workers": { "pdfRenderer": { "name": "acme-gk-google" },');
+  const steps = TAKEOVER.map((step): Step => step[0] === "Which Gatekeepers?" ? ["Which Gatekeepers?", ["custom", "github", "google"]] : step);
+  const { code, written, stderr } = await init(t, steps, replies, { ...takingOver(), template, catalog: testCatalogWithGoogle() });
+  assert.equal(code, 0, stderr());
+  assert.equal(valueAtPath(written(), ["gatekeepers", "google", "name"]), "acme-gk-google");
+  assert.equal(valueAtPath(written(), ["workers", "pdfRenderer", "name"]), "acme-pdf-renderer");
+});
+
+/** `step`, with Google chosen too at the Gatekeeper question. */
+function choosingGoogle(step: Step): Step {
+  return step[0] === "Which Gatekeepers?" ? ["Which Gatekeepers?", ["custom", "github", "google"]] : step;
+}
+
+/** A step mapper answering the Error Reporter's name with `name`. */
+function reporterNamed(name: string): (step: Step) => Step {
+  return (step) => step[0] === "Error Reporter Worker name" ? ["Error Reporter Worker name", name] : step;
+}
+
+test("--take-over keeps the renderer off a name the wizard gives another Worker, derived or suggested", async (t) => {
+  const options = { ...takingOver(), catalog: testCatalogWithGoogle() };
+  // The Error Reporter answered as acme-pdf-renderer: the renderer, with Google, does not derive it too.
+  const derived = await init(t, TAKEOVER.map(choosingGoogle).map(reporterNamed("acme-pdf-renderer")), liveAccount(), options);
+  assert.equal(derived.code, 0, derived.stderr());
+  assert.equal(valueAtPath(derived.written(), ["workers", "errorReporter", "name"]), "acme-pdf-renderer");
+  assert.equal(valueAtPath(derived.written(), ["workers", "pdfRenderer", "name"]), "acme-pdf-renderer-2");
+  // acme-pdf-renderer occupied, the reporter acme-pdf-renderer-2: the name offered for the renderer skips it.
+  const live = liveAccount({ "acme-pdf-renderer": { annotations: {} } });
+  const replies = { ...live, "workers list": [...live["workers list"] as { name: string }[], { name: "acme-pdf-renderer" }] };
+  const steps = TAKEOVER.map(choosingGoogle).map(reporterNamed("acme-pdf-renderer-2"));
+  const offered = await init(t, [...steps.slice(0, -1), ["Worker acme-pdf-renderer", "rename"], ["PDF renderer Worker name", DEFAULT], ["Deploy now?", false]],
+    replies, options);
+  assert.equal(offered.code, 0, offered.stderr());
+  assert.equal(offered.prompter.asked.find(({ message }) => message === "PDF renderer Worker name")!.initial, "acme-pdf-renderer-3");
+  assert.equal(valueAtPath(offered.written(), ["workers", "pdfRenderer", "name"]), "acme-pdf-renderer-3");
+});
+
+test("--take-over asks only for another name where the renderer's is reserved and no free one is left", async (t) => {
+  // 10% of the router still routes to acme-pdf-renderer, and every name a free one would take is
+  // taken: deploying over it is no answer, so only a name is asked for.
+  const live = hostedInstanceLive({
+    "acme-backend": { services: { GATEKEEPER_GOOGLE: "acme-gk-google" } },
+    "acme-gk-google": { operation: "gk-google" },
+    "acme-pdf-renderer": { annotations: {} },
+  });
+  const router = live.acme;
+  const [majority] = router.versions;
+  const minority = { ...majority, id: fixtureVersionId("acme", 3), number: 3,
+    bindings: [...majority.bindings!, { name: "GATEKEEPER_LEGACY", type: "service", service: "acme-pdf-renderer" }] };
+  router.versions = [majority, minority];
+  router.deployments = [{ ...router.deployments[0], versions: [{ version_id: majority.id, percentage: 90 }, { version_id: minority.id, percentage: 10 }] }];
+  const taken = [...Array.from({ length: 98 }, (_, i) => `acme-pdf-renderer-${i + 2}`), ...Array.from({ length: 98 }, (_, i) => `acme-pdf-${i + 2}`)];
+  const base = liveAccount();
+  const replies = { ...base, ...workerLiveReplies(live),
+    "workers list": [...base["workers list"] as { name: string }[], ...["acme-gk-google", "acme-pdf-renderer", ...taken].map((name) => ({ name }))] };
+  const steps = TAKEOVER.map(choosingGoogle);
+  const { code, written, prompter, stderr } = await init(t,
+    [...steps.slice(0, -1), ["acme-pdf-renderer is another of this deployment's Workers", "acme-renderer"], ["Deploy now?", false]],
+    replies, { ...takingOver(), catalog: testCatalogWithGoogle() });
+  assert.equal(code, 0, stderr());
+  assert.equal(valueAtPath(written(), ["workers", "pdfRenderer", "name"]), "acme-renderer");
+  assert.ok(!prompter.asked.some(({ message }) => message.startsWith("Worker acme-pdf-renderer")));
+});
+
+test("--take-over says so where the file's own renderer stands in place of the hosted one", async (t) => {
+  const live = liveAccount({
+    "acme-backend": { services: { GATEKEEPER_GOOGLE: "acme-gk-google" } },
+    "acme-gk-google": { operation: "gk-google" },
+    "acme-pdf-renderer": {},
+  });
+  const replies = { ...live, "workers list": [...live["workers list"] as { name: string }[], { name: "acme-gk-google" }, { name: "acme-pdf-renderer" }] };
+  const template = TEMPLATE.replace('"<ROUTER_WORKER_NAME>"', '"acme"').replace('"<CLOUDFLARE_ACCOUNT_ID>"', `"${FAKE_ACCOUNT}"`)
+    .replace('"workers": {', '"workers": { "pdfRenderer": { "name": "acme-new-renderer" },');
+  const { code, written, stderr } = await init(t, TAKEOVER, replies, { ...takingOver(), template, catalog: testCatalogWithGoogle() });
+  assert.equal(code, 0, stderr());
+  assert.equal(valueAtPath(written(), ["workers", "pdfRenderer", "name"]), "acme-new-renderer");
+  assert.match(stderr(), /The file names acme-new-renderer as workers\.pdfRenderer\.name, which stays in place of acme-pdf-renderer, the hosted renderer/);
+});
+
 test("--take-over confirms the pin move, saying from which commit to which and why, before anything is read from the submodule or written", async (t) => {
   const seen: { config: string; out: boolean }[] = [];
   const { code, root, prompter, written, stderr, moves, events } = await init(t, [[MOVE_QUESTION, true], ...TAKEOVER], liveAccount(), {
@@ -1940,7 +2109,9 @@ test("--take-over without a terminal fails naming the import command, with every
 
 test("refuses a take-over flag of the wrong form, or one given without --take-over, before anything is read", async (t) => {
   const cases: [Record<string, string>, RegExp][] = [
-    [{ router: "moss-os" }, /--router, --backend, --release and --commit describe the hosted instance to take over: pass --take-over <instance> with them\./],
+    [{ router: "moss-os" }, /--router, --backend, --release, --commit and --pdf-renderer are for the takeover of a hosted instance: pass --take-over <instance> with them\./],
+    [{ "pdf-renderer": "acme-pdf-renderer" }, /pass --take-over <instance> with them/],
+    [{ "take-over": "moss", "pdf-renderer": "PDF Renderer" }, /--pdf-renderer "PDF Renderer" is not a Worker name/],
     [{ release: HOSTED_RELEASE, commit: HOSTED_COMMIT }, /pass --take-over <instance> with them/],
     [{ "take-over": "Moss OS" }, /--take-over "Moss OS" is not an instance name/],
     [{ "take-over": "moss", commit: "6c8d301" }, /--commit "6c8d301" is not a full commit SHA: all 40 hex digits/],

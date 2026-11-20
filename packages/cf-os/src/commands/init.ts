@@ -58,7 +58,7 @@ import { fetchInventory, type FoundGatekeeper } from "../core/discovery.ts";
 import { isPlaceholder, placeholderPaths, valueAtPath, type DeploymentEdit } from "../core/edits.ts";
 import { publicOrigin } from "../core/deployment.ts";
 import type { AiGatewayProvider, DeploymentConfig } from "../core/deployment-config.ts";
-import { secretSetup, UNDECLARED_VARS, type GatekeeperCatalog } from "../core/gatekeepers.ts";
+import { bindsPdfRenderer, secretSetup, UNDECLARED_VARS, type GatekeeperCatalog } from "../core/gatekeepers.ts";
 import { decideCommit } from "../core/hosted-release.ts";
 import {
   baseNameProblem,
@@ -104,6 +104,8 @@ import {
   discoverInstance,
   fileIsInstance,
   foreignPushIdentity,
+  foreignRenderer,
+  settleRenderer,
   formatInstance,
   formatReport,
   inspectInstance,
@@ -617,10 +619,13 @@ async function newDeployment(session: Session, file: Record<string, unknown>): P
   ]);
   const customGatekeeper = choice.custom ? await askDisplay(session, file) : null;
   const gatekeepers = await nameGatekeepers(session, workers, name, choice.slugs);
+  const { pdfRenderer: _derived, ...always } = workerNames(name);
+  const pdfRenderer = await nameRenderer(session, workers, name, choice.slugs, catalog,
+    [...Object.values(always), ...Object.values(gatekeepers)]);
 
   const answers = {
     accountId: account.id, name, route, admins, aiGateway: { name: gateway, providers }, customGatekeeper,
-    gatekeepers, removedGatekeepers: deselected(listed, choice, catalog),
+    gatekeepers, removedGatekeepers: deselected(listed, choice, catalog), ...pdfRenderer && { pdfRenderer },
   };
   // Another deployment's push identity, left in the file by a takeover, is not this one's to send.
   // The name was accepted against `workers`, so where they were listed its Workshop Worker is not there.
@@ -783,6 +788,43 @@ async function nameGatekeepers(
 }
 
 /**
+ * The PDF renderer's Worker name for a new deployment `n`, where `<n>-pdf-renderer` is a Worker the
+ * account already has; undefined means that derived name. With a chosen Gatekeeper that binds the
+ * renderer, the deploy would overwrite it, so the name is asked for. Without one it is not deployed
+ * yet, and the base name stands; but the file still names the renderer for a Gatekeeper added later
+ * by hand, which no prompt guards, so the first free `<n>-pdf-renderer-<i>` is written instead.
+ * `reserved` are the names this deployment's other Workers take.
+ */
+async function nameRenderer(
+  session: Session,
+  workers: CfWorker[] | null | undefined,
+  n: string,
+  slugs: string[],
+  catalog: GatekeeperCatalog,
+  reserved: readonly string[],
+): Promise<string | undefined> {
+  const binds = slugs.some((slug) => {
+    const entry = catalog.offered.find((candidate) => candidate.slug === slug);
+    return entry !== undefined && bindsPdfRenderer(entry);
+  });
+  const derived = workerNames(n).pdfRenderer;
+  const taken = (name: string) => workers?.some((worker) => worker.name === name) || reserved.includes(name);
+  if (!taken(derived)) return undefined;
+  if (!binds) {
+    const free = Array.from({ length: 98 }, (_, i) => `${derived}-${i + 2}`)
+      .find((name) => WORKER_NAME.test(name) && !taken(name));
+    if (free) {
+      session.ctx.out.log(`${derived} is a Worker the account already has, so workers.pdfRenderer.name is ${free}: ` +
+        "the PDF renderer is deployed only beside a Gatekeeper that binds it, under that name.");
+      return free;
+    }
+  }
+  session.ctx.out.log(`The PDF renderer would be deployed as ${derived}, a Worker the account already has` +
+    (binds ? ", and a Gatekeeper chosen binds it." : "."));
+  return askNewWorker(session, workers ?? [], "PDF renderer Worker name", derived, undefined, reserved);
+}
+
+/**
  * The {@link UNDECLARED_VARS} the Gatekeepers `slugs` need that the file does not set usably, asked
  * for. One the account already runs is asked too: a deploy replaces its plain vars, and discovery
  * cannot read the value it has. Left empty, the file keeps what it has, for `cf-os check` to warn about.
@@ -846,7 +888,8 @@ async function askDisplay(session: Session, file: Record<string, unknown>): Prom
  * The name of a Worker a takeover adds, which the instance does not have yet. One the account
  * already has is this deployment's only if the operator says so (a rerun after a deploy), or if it
  * is `own`, the name this deployment's file already gives it; otherwise deploying would overwrite
- * another application's Worker, so it asks again.
+ * another application's Worker, so it asks again. One of `reserved`, a name another of this
+ * deployment's Workers takes, is refused outright.
  */
 async function askNewWorker(
   session: Session,
@@ -854,10 +897,13 @@ async function askNewWorker(
   question: string,
   initial: string,
   own?: string,
+  reserved: readonly string[] = [],
 ): Promise<string> {
   const { prompter, ctx } = session;
+  const validate = (name: string) => workerNameProblem(name) ??
+    (reserved.includes(name) ? `${name} is another of this deployment's Workers.` : undefined);
   for (;;) {
-    const name = await prompter.text(question, { initial, validate: workerNameProblem });
+    const name = await prompter.text(question, { initial, validate });
     if (name === own || !workers.some((worker) => worker.name === name)) return name;
     ctx.out.log(`Already in the account: ${name}. Deploying would overwrite it.`);
     if (await prompter.confirm(`Is ${name} this deployment's own, to deploy over?`, false)) return name;
@@ -933,6 +979,24 @@ async function takeover(
     gatekeepers: await nameGatekeepers(session, inventory.workers, instance, choice.slugs, live),
     removedGatekeepers: deselected(gatekeepersIn(file), choice, catalog),
   };
+  // Where the renderer goes, asked once the Gatekeepers are chosen: a Worker standing under its name
+  // that nothing shows is this deployment's is the operator's to deploy over, or to name around,
+  // where one of them binds the renderer; else a free name is kept for one added later.
+  const stop = await settleRenderer(file, account.id, instance, core.router, discovery, inventory.workers, {
+    client, instance: hosted, prompter, chosen: chosen?.flags["pdf-renderer"], write: true, say: (text) => ctx.out.log(text),
+    // What the answers write, which the output deploys under as surely as the file's.
+    edits: takeoverEdits(answers),
+    deploys: choice.slugs.some((slug) => catalog.offered.some((entry) => entry.slug === slug && bindsPdfRenderer(entry))),
+  });
+  // At a terminal, as init always is, it asks rather than stops, but for a --pdf-renderer that cannot be.
+  if (stop) {
+    ctx.out.log(`${stop} Nothing was written` +
+      `${pin.moved ? `, though the cloudflare-os pin had moved to ${pin.pin}, staged and not committed, and stays there` : ""}.`);
+    return null;
+  }
+  // Another deployment's renderer name, which a deploy with Google would deploy over, as `--out` resets it.
+  const { reset: rendererReset, note: rendererNote } = foreignRenderer(file, account.id, instance, core.router, discovery);
+  if (rendererNote) ctx.out.log(rendererNote);
   // takeoverEdits records the Gatekeepers chosen, found or not; discovery's are only what it found.
   const asked = [...takeoverEdits(answers), ...await askUndeclaredVars(session, file, choice.slugs)];
   // An answer stands in place of the value discovery found for the same path, which was its default.
@@ -940,6 +1004,8 @@ async function takeover(
   const edits = [
     ...discovery.edits.filter((edit) => edit.path[0] !== "gatekeepers" && !answered.has(edit.path.join("."))),
     ...pushRemovals,
+    // Before the answers, which win over it.
+    ...rendererReset ? [rendererReset] : [],
     ...asked,
   ];
   if (!discovery.edits.some((edit) => edit.path.join(".") === "access.audience")) {

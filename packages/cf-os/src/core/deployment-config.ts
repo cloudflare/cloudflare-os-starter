@@ -307,7 +307,11 @@ export interface BaseConfigs {
   websearch: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
   errorReporter: ProdWranglerConfig;
-  pdfRenderer: ProdWranglerConfig;
+  /**
+   * Present only when a selected optional Gatekeeper binds the PDF renderer: a pin from before
+   * upstream had the package has none to read.
+   */
+  pdfRenderer?: ProdWranglerConfig;
 }
 
 /** One build step a check or deploy runs before deploying. See `buildCommands`. */

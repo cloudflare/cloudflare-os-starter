@@ -90,9 +90,10 @@ const TAKEOVER_OPTIONS = {
   backend: { type: "string" },
   release: { type: "string" },
   commit: { type: "string" },
+  "pdf-renderer": { type: "string" },
 } as const satisfies Record<(typeof TAKEOVER_FLAGS)[number], { type: "string" }>;
 
-const TAKEOVER_SYNOPSIS = "[--router <name>] [--backend <name>] [--release <id>] [--commit <sha>]";
+const TAKEOVER_SYNOPSIS = "[--router <name>] [--backend <name>] [--release <id>] [--commit <sha>] [--pdf-renderer <name>]";
 
 const TAKEOVER_HELP = [
   "  --router <name>        the instance's router Worker, when it is not named after the instance",
@@ -103,6 +104,9 @@ const TAKEOVER_HELP = [
   "                         With it, stops if the account shows the instance past --release. Without",
   "                         it, the commit is the one the newest release id ends in. The project's",
   "                         pin is moved forward to it before anything is written, never back",
+  "  --pdf-renderer <name>  the Worker to deploy the PDF renderer as, where one stands under its name",
+  "                         that nothing shows is this deployment's (asked at a terminal). Naming that",
+  "                         Worker deploys over it",
 ];
 
 const COMMANDS: Record<string, CommandSpec> = {
